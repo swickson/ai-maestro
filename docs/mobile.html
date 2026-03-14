@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-W72WHGDW');</script>
+    <!-- End Google Tag Manager -->
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile AI Agent Dashboard: Monitor Claude Code Remotely</title>
+    <meta name="description" content="Mobile AI agent dashboard for Claude Code, Aider, Cursor. Secure remote access to autonomous agents from phone or tablet. Future of work: code from anywhere.">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ai-maestro.23blocks.com/mobile.html">
+    <meta property="og:title" content="Mobile & Remote Access - AI Maestro">
+    <meta property="og:description" content="Access your AI coding agents from anywhere. Monitor and control agents from your phone or tablet.">
+    <meta property="og:image" content="https://ai-maestro.23blocks.com/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="AI Maestro - Orchestrate your AI coding agents">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:site_name" content="AI Maestro">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Mobile & Remote Access - AI Maestro">
+    <meta name="twitter:description" content="Access your AI coding agents from anywhere.">
+    <meta name="twitter:image" content="https://ai-maestro.23blocks.com/og-image.png">
+    <meta name="twitter:creator" content="@jkpelaez">
+
+    <!-- Additional SEO -->
+    <meta name="keywords" content="mobile AI agent dashboard, remote AI coding, Claude Code mobile, AI agents remote access, future of work remote, monitor AI agents phone, autonomous agents mobile, AI coding from anywhere, Tailscale AI dashboard, mobile developer tools">
+    <link rel="canonical" href="https://ai-maestro.23blocks.com/mobile.html">
+
+    <!-- Favicon & Icons -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon-180x180.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="apple-touch-icon-152x152.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="apple-touch-icon-120x120.png">
+    <link rel="manifest" href="site.webmanifest">
+    <link rel="mask-icon" href="safari-pinned-tab.svg" color="#6366f1">
+
+    <!-- Theme Colors -->
+    <meta name="theme-color" content="#6366f1">
+    <meta name="msapplication-TileColor" content="#6366f1">
+    <meta name="msapplication-config" content="browserconfig.xml">
+
+    <!-- Apple Mobile Web App -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="AI Maestro">
+
+    <!-- Application Info -->
+    <meta name="application-name" content="AI Maestro">
+    <meta name="format-detection" content="telephone=no">
+
+    <!-- Schema.org Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "MobileApplication",
+      "name": "AI Maestro Mobile",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "iOS 12.0+, Android 8.0+, Browser-based",
+      "description": "Mobile dashboard for monitoring and controlling AI coding agents like Claude Code, Aider, and Cursor from phones and tablets with secure remote access",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "featureList": [
+        "Touch-optimized interface for AI agent monitoring",
+        "Secure Tailscale VPN connectivity",
+        "Real-time terminal output streaming",
+        "Session notes editing on mobile",
+        "Auto-collapsing sidebar for small screens",
+        "Read-only terminal for safety",
+        "Works on iOS Safari, Chrome, Firefox"
+      ],
+      "screenshot": [
+        "https://ai-maestro.23blocks.com/images/aimaestro-mobile.png",
+        "https://ai-maestro.23blocks.com/images/aimaestro-sidebar.png"
+      ],
+      "url": "https://ai-maestro.23blocks.com/mobile.html",
+      "isPartOf": {
+        "@type": "SoftwareApplication",
+        "name": "AI Maestro",
+        "url": "https://ai-maestro.23blocks.com"
+      }
+    }
+    </script>
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "HowTo",
+      "name": "How to Access AI Agents from Mobile Device",
+      "description": "Set up secure remote access to AI Maestro dashboard from phone or tablet",
+      "totalTime": "PT5M",
+      "tool": [{
+        "@type": "HowToTool",
+        "name": "Tailscale VPN"
+      },{
+        "@type": "HowToTool",
+        "name": "Mobile Browser (Safari, Chrome, Firefox)"
+      }],
+      "supply": [{
+        "@type": "HowToSupply",
+        "name": "Development machine with AI Maestro installed"
+      },{
+        "@type": "HowToSupply",
+        "name": "Mobile device (iOS or Android)"
+      }],
+      "step": [{
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Install Tailscale on Development Machine",
+        "text": "Run: brew install tailscale (macOS) or curl -fsSL https://tailscale.com/install.sh | sh (Linux)"
+      },{
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Install Tailscale Mobile App",
+        "text": "Download from App Store (iOS) or Google Play (Android)"
+      },{
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Sign In to Same Tailscale Account",
+        "text": "Use same account (Google, Microsoft, or GitHub) on both devices"
+      },{
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Start AI Maestro Server",
+        "text": "Run: cd ai-maestro && yarn dev (starts on port 23000)"
+      },{
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Access from Mobile Browser",
+        "text": "Navigate to http://YOUR-MACHINE-NAME:23000 from mobile browser"
+      }]
+    }
+    </script>
+    <!-- Typography: Syne (display) + DM Sans (body) + JetBrains Mono (code) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        display: ['Syne', 'system-ui', 'sans-serif'],
+                        sans: ['DM Sans', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        slate: {
+                            950: '#020617',
+                            900: '#0f172a',
+                            850: '#131c31',
+                            800: '#1e293b',
+                        },
+                        cyan: {
+                            400: '#22d3ee',
+                            500: '#00d4ff',
+                        },
+                        amber: {
+                            400: '#fbbf24',
+                            500: '#f59e0b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+
+    <!-- GSAP CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+
+    
+    <style>
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: 80px;
+        }
+
+        body {
+            background-color: #0f172a;
+            color: #e2e8f0;
+        }
+
+        /* Noise texture overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.03;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            z-index: 9999;
+        }
+
+        /* Gradient text */
+        .gradient-text {
+            background: linear-gradient(135deg, #00d4ff 0%, #22d3ee 50%, #fbbf24 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Hamburger menu */
+        .hamburger span {
+            display: block;
+            width: 24px;
+            height: 2px;
+            background: #e2e8f0;
+            transition: all 0.3s ease;
+        }
+        .hamburger.active span:nth-child(1) {
+            transform: rotate(45deg) translate(5px, 5px);
+        }
+        .hamburger.active span:nth-child(2) {
+            opacity: 0;
+        }
+        .hamburger.active span:nth-child(3) {
+            transform: rotate(-45deg) translate(7px, -6px);
+        }
+        .mobile-menu {
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+        .mobile-menu.active {
+            opacity: 1;
+            transform: translateY(0);
+            display: block !important;
+            pointer-events: auto;
+        }
+
+        /* Horizontal rule accent */
+        .hr-accent {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #00d4ff, transparent);
+        }
+
+        /* Typing cursor */
+        .typing-cursor {
+            display: inline-block;
+            width: 3px;
+            height: 1em;
+            background-color: #00d4ff;
+            margin-left: 4px;
+            animation: blink 1s infinite;
+            vertical-align: text-bottom;
+        }
+
+        @keyframes blink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0; }
+        }
+    </style>
+
+</head>
+<body class="font-sans antialiased">
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-W72WHGDW"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    
+    <!-- Copy for AI Button -->
+    <button
+        onclick="copyForAI()"
+        class="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2 bg-slate-800 border border-slate-700 text-cyan-400 font-mono text-sm rounded hover:bg-slate-700 hover:border-cyan-500/50 transition-all duration-200"
+        title="Copy this page for AI assistants">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        COPY FOR AI
+    </button>
+
+
+    <!-- Navigation (same as index.html) -->
+    <nav class="sticky top-0 bg-slate-900/95 backdrop-blur-lg border-b border-slate-800 z-[100]">
+        <div class="max-w-7xl mx-auto px-4 md:px-8">
+            <div class="flex justify-between items-center py-4">
+                <a href="index.html" class="flex items-center gap-3 text-white no-underline hover:opacity-80 transition-opacity duration-200">
+                    <img src="logo-constellation.svg" alt="AI Maestro" class="w-8 h-8 md:w-10 md:h-10">
+                    <span class="font-display font-bold text-lg md:text-xl tracking-tight">AI MAESTRO</span>
+                </a>
+
+                <!-- Desktop Navigation -->
+                <div class="hidden md:flex gap-8 items-center">
+                    <a href="index.html#personas" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">WHO IT'S FOR</a>
+                    <a href="index.html#features" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">FEATURES</a>
+                    <a href="index.html#quick-start" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">GET STARTED</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="text-slate-400 no-underline hover:text-cyan-400 transition-colors duration-200" title="View on GitHub">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    </a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro#readme" class="inline-flex items-center gap-2 px-5 py-2.5 rounded bg-cyan-500 text-slate-900 font-bold text-sm tracking-wide hover:bg-cyan-400 transition-all duration-200" target="_blank">
+                        START FREE
+                    </a>
+                </div>
+
+                <!-- Mobile Navigation -->
+                <div class="flex md:hidden items-center gap-3">
+                    <a href="https://github.com/23blocks-OS/ai-maestro#readme" class="px-3 py-2 rounded bg-cyan-500 text-slate-900 font-bold text-xs tracking-wide" target="_blank">START</a>
+                    <button class="hamburger bg-transparent border-0 cursor-pointer p-2 flex flex-col gap-1.5 z-[1001]" id="hamburger" aria-label="Toggle menu">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Mobile Menu -->
+            <div class="mobile-menu hidden absolute top-full left-0 right-0 bg-slate-900 border-b border-slate-800 py-4" id="mobile-menu">
+                <a href="index.html#personas" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Who It's For</a>
+                <a href="index.html#features" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Features</a>
+                <a href="index.html#quick-start" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Get Started</a>
+                <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="flex items-center gap-3 px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    GitHub
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <script>
+        const hamburger = document.getElementById('hamburger');
+        const mobileMenu = document.getElementById('mobile-menu');
+
+        hamburger.addEventListener('click', () => {
+            hamburger.classList.toggle('active');
+            mobileMenu.classList.toggle('active');
+        });
+
+        mobileMenu.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => {
+                hamburger.classList.remove('active');
+                mobileMenu.classList.remove('active');
+            });
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!hamburger.contains(e.target) && !mobileMenu.contains(e.target)) {
+                hamburger.classList.remove('active');
+                mobileMenu.classList.remove('active');
+            }
+        });
+    </script>
+
+    <!-- Hero Section -->
+    <header class="py-12 md:py-24 text-center px-4 md:px-0 bg-gradient-to-br from-secondary/10 to-primary/10">
+        <div class="max-w-[1200px] mx-auto">
+            <p class="text-[2rem] md:text-[3rem] font-semibold text-slate-500 mb-4" id="announcement"><span class="typing-cursor"></span></p>
+            <h1 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight leading-tight mb-6 max-w-[900px] mx-auto">Your Agents, Anywhere</h1>
+            <p class="text-lg md:text-xl text-slate-400 max-w-[700px] mx-auto mb-8">Your AI agents go wherever you go. Monitor and control your coding agents from your phone, tablet, or any device. Secure remote access with zero port forwarding.</p>
+            <div class="flex flex-col md:flex-row gap-4 justify-center mb-8 md:items-center max-w-[400px] md:max-w-none mx-auto">
+                <a href="#setup" class="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-secondary text-white hover:bg-cyan-400 hover:-translate-y-0.5 hover:shadow-[0_4px_12px_rgba(139,92,246,0.4)] text-lg">Quick Setup Guide</a>
+                <a href="index.html" class="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-slate-900 text-secondary border-2 border-secondary hover:bg-secondary hover:text-white text-lg">Back to Features</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Who Benefits Section -->
+    <section class="py-12 bg-slate-900/50 border-y border-slate-800">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-center font-display text-xl font-semibold text-slate-400 mb-8">Remote access for everyone</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <!-- Developer -->
+                <div class="bg-slate-800/30 rounded-xl p-4 border border-slate-700/50 text-center">
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-green-500/30 to-green-600/10 border border-green-500/50 flex items-center justify-center mx-auto mb-3">
+                        <span class="text-lg">👤</span>
+                    </div>
+                    <span class="px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/30 rounded-full text-xs font-mono">Developer</span>
+                    <p class="text-xs text-slate-500 mt-2">Check builds from anywhere</p>
+                </div>
+                <!-- Startup -->
+                <div class="bg-slate-800/30 rounded-xl p-4 border border-slate-700/50 text-center">
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-amber-500/30 to-amber-600/10 border border-amber-500/50 flex items-center justify-center mx-auto mb-3">
+                        <span class="text-lg">👥</span>
+                    </div>
+                    <span class="px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded-full text-xs font-mono">Startup</span>
+                    <p class="text-xs text-slate-500 mt-2">Monitor agents on the go</p>
+                </div>
+                <!-- Team -->
+                <div class="bg-slate-800/30 rounded-xl p-4 border border-slate-700/50 text-center">
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500/30 to-purple-600/10 border border-purple-500/50 flex items-center justify-center mx-auto mb-3">
+                        <span class="text-lg">👥</span>
+                    </div>
+                    <span class="px-2 py-0.5 bg-purple-500/10 text-purple-400 border border-purple-500/30 rounded-full text-xs font-mono">Team</span>
+                    <p class="text-xs text-slate-500 mt-2">Distributed team visibility</p>
+                </div>
+                <!-- Company -->
+                <div class="bg-slate-800/30 rounded-xl p-4 border border-slate-700/50 text-center">
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-500/30 to-cyan-600/10 border border-cyan-500/50 flex items-center justify-center mx-auto mb-3">
+                        <span class="text-lg">🏢</span>
+                    </div>
+                    <span class="px-2 py-0.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded-full text-xs font-mono">Company</span>
+                    <p class="text-xs text-slate-500 mt-2">Enterprise fleet monitoring</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Screenshots Section -->
+    <section class="py-16 px-8">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white text-center mb-4">AI Maestro on Mobile</h2>
+            <p class="text-center text-lg text-slate-400 max-w-[700px] mx-auto mb-12">Full-featured dashboard optimized for touch</p>
+
+            <div class="flex justify-center gap-8 md:gap-12 mb-8 flex-wrap">
+                <img src="images/aimaestro-mobile.png" alt="AI Maestro on Mobile" class="w-[45%] md:w-[320px] min-w-[200px] rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.15)]">
+                <img src="images/aimaestro-sidebar.png" alt="Mobile Sidebar" class="w-[45%] md:w-[320px] min-w-[200px] rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.15)]">
+            </div>
+        </div>
+    </section>
+
+    <!-- Problem-Solution Section -->
+    <section class="py-16 bg-slate-950 px-8">
+        <div class="max-w-[1200px] mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div class="p-8 bg-slate-900 rounded-2xl border border-slate-700">
+                <h2 class="text-red-600 mb-4 text-2xl font-display font-bold">Before: Tied to Your Desk</h2>
+                <p class="leading-relaxed text-slate-400 mb-4">You started a long build before lunch. Now you're at a coffee shop wondering if it finished.</p>
+                <ul class="list-none p-0 space-y-2">
+                    <li class="text-slate-400">❌ Can't check agent progress remotely</li>
+                    <li class="text-slate-400">❌ No way to monitor builds on the go</li>
+                    <li class="text-slate-400">❌ Missing important completions</li>
+                    <li class="text-slate-400">❌ Anxious about work status</li>
+                </ul>
+            </div>
+            <div class="p-8 bg-slate-900 rounded-2xl border border-slate-700">
+                <h2 class="text-emerald-600 mb-4 text-2xl font-display font-bold">After: Freedom to Move</h2>
+                <p class="leading-relaxed text-slate-400 mb-4">Check your agents from your phone. Monitor progress from anywhere. Stay informed without being desk-bound.</p>
+                <ul class="list-none p-0 space-y-2">
+                    <li class="text-emerald-600">✅ Full dashboard on any device</li>
+                    <li class="text-emerald-600">✅ Secure encrypted access</li>
+                    <li class="text-emerald-600">✅ Touch-optimized interface</li>
+                    <li class="text-emerald-600">✅ Peace of mind anywhere</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- Mobile Features Section -->
+    <section class="py-16 md:py-24 px-8">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white text-center mb-4">Mobile-First Design</h2>
+            <p class="text-center text-lg text-slate-400 max-w-[700px] mx-auto mb-12">Every pixel optimized for small screens</p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <div class="text-4xl mb-4">✨</div>
+                    <h3 class="text-xl font-display font-bold mb-3 text-white">Touch-Optimized</h3>
+                    <p class="text-slate-400">Tap targets sized for fingers, not mice. Swipe gestures for quick navigation. Smooth scrolling throughout.</p>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <div class="text-4xl mb-4">📱</div>
+                    <h3 class="text-xl font-display font-bold mb-3 text-white">Auto-Collapsing Sidebar</h3>
+                    <p class="text-slate-400">Maximizes terminal space on small screens. Toggle with a tap. Remembers your preference.</p>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <div class="text-4xl mb-4">🎯</div>
+                    <h3 class="text-xl font-display font-bold mb-3 text-white">Compact Header</h3>
+                    <p class="text-slate-400">Only essential info visible. More space for what matters. Clean, distraction-free interface.</p>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <div class="text-4xl mb-4">📝</div>
+                    <h3 class="text-xl font-display font-bold mb-3 text-white">Smart Notes Panel</h3>
+                    <p class="text-slate-400">Collapsed by default on mobile. Expand when needed. Full editing support with auto-save.</p>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <div class="text-4xl mb-4">⚡</div>
+                    <h3 class="text-xl font-display font-bold mb-3 text-white">Full Terminal Access</h3>
+                    <p class="text-slate-400">View complete output. Scroll through history. Copy text selections. Read-only for safety.</p>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <div class="text-4xl mb-4">🎨</div>
+                    <h3 class="text-xl font-display font-bold mb-3 text-white">Responsive Layout</h3>
+                    <p class="text-slate-400">Adapts to any screen size. Portrait or landscape. Phone, tablet, or desktop. Always beautiful.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tailscale Section -->
+    <section class="py-16 md:py-24 bg-slate-950 px-8" id="setup">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white text-center mb-4">🔒 Secure Remote Access with Tailscale</h2>
+            <p class="text-center text-lg text-slate-400 max-w-[700px] mx-auto mb-12">Zero-config VPN that just works. No port forwarding, no firewall hassles.</p>
+
+            <div class="bg-slate-900 p-8 rounded-2xl border border-slate-700 mb-8">
+                <p class="bg-amber-50 border-l-[3px] border-amber-500 px-4 py-3 mb-8 rounded text-sm text-amber-900">
+                    <strong>Note:</strong> AI Maestro is not endorsed by or affiliated with Tailscale in any way. We simply use it and recommend it based on our positive experience.
+                </p>
+
+                <h3 class="text-2xl font-display font-bold mb-6 text-white">Why Tailscale?</h3>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    <div class="p-6 bg-slate-950 rounded-xl">
+                        <div class="text-4xl mb-3">🛡️</div>
+                        <h4 class="text-lg mb-2 text-white font-semibold">Zero Port Forwarding</h4>
+                        <p class="text-slate-400">No need to expose ports to the internet. No router configuration. Works behind any firewall.</p>
+                    </div>
+
+                    <div class="p-6 bg-slate-950 rounded-xl">
+                        <div class="text-4xl mb-3">🔐</div>
+                        <h4 class="text-lg mb-2 text-white font-semibold">Encrypted Connections</h4>
+                        <p class="text-slate-400">All traffic automatically encrypted. WireGuard protocol. Military-grade security.</p>
+                    </div>
+
+                    <div class="p-6 bg-slate-950 rounded-xl">
+                        <div class="text-4xl mb-3">🌍</div>
+                        <h4 class="text-lg mb-2 text-white font-semibold">Works Anywhere</h4>
+                        <p class="text-slate-400">Behind NAT, firewalls, routers. Coffee shops. Hotel Wi-Fi. Cellular networks. Just works.</p>
+                    </div>
+
+                    <div class="p-6 bg-slate-950 rounded-xl">
+                        <div class="text-4xl mb-3">💰</div>
+                        <h4 class="text-lg mb-2 text-white font-semibold">Free for Personal Use</h4>
+                        <p class="text-slate-400">Up to 100 devices. No credit card required. Perfect for individual developers.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Setup Guide -->
+            <div class="bg-slate-900 p-8 rounded-2xl border border-slate-700 mb-8">
+                <h3 class="text-2xl font-display font-bold mb-6 text-white">Quick Setup (5 Minutes)</h3>
+
+                <div class="space-y-6">
+                    <div class="flex gap-4">
+                        <div class="flex-shrink-0 w-10 h-10 bg-secondary text-white rounded-full flex items-center justify-center font-display font-bold">1</div>
+                        <div>
+                            <h4 class="font-semibold text-white mb-2">Install on Your Development Machine</h4>
+                            <pre class="bg-gray-800 text-green-400 p-3 rounded text-sm overflow-x-auto">brew install tailscale</pre>
+                            <p class="text-sm text-slate-400 mt-2">For Linux: <code class="bg-slate-800 px-2 py-1 rounded">curl -fsSL https://tailscale.com/install.sh | sh</code></p>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-4">
+                        <div class="flex-shrink-0 w-10 h-10 bg-secondary text-white rounded-full flex items-center justify-center font-display font-bold">2</div>
+                        <div>
+                            <h4 class="font-semibold text-white mb-2">Install on Your Mobile Device</h4>
+                            <div class="flex gap-4 mt-3">
+                                <a href="https://apps.apple.com/app/tailscale/id1470499037" target="_blank" class="inline-flex items-center gap-2 px-4 py-2 bg-black text-white rounded-lg text-sm no-underline hover:bg-gray-800">
+                                    <span>📱</span> App Store
+                                </a>
+                                <a href="https://play.google.com/store/apps/details?id=com.tailscale.ipn" target="_blank" class="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm no-underline hover:bg-emerald-700">
+                                    <span>🤖</span> Google Play
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-4">
+                        <div class="flex-shrink-0 w-10 h-10 bg-secondary text-white rounded-full flex items-center justify-center font-display font-bold">3</div>
+                        <div>
+                            <h4 class="font-semibold text-white mb-2">Sign In on Both Devices</h4>
+                            <p class="text-slate-400">Use the same account (Google, Microsoft, or GitHub). They'll automatically connect to each other.</p>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-4">
+                        <div class="flex-shrink-0 w-10 h-10 bg-secondary text-white rounded-full flex items-center justify-center font-display font-bold">4</div>
+                        <div>
+                            <h4 class="font-semibold text-white mb-2">Start AI Maestro</h4>
+                            <pre class="bg-gray-800 text-green-400 p-3 rounded text-sm overflow-x-auto">cd ai-maestro
+yarn dev</pre>
+                            <p class="text-sm text-slate-400 mt-2">Server starts on port 23000</p>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-4">
+                        <div class="flex-shrink-0 w-10 h-10 bg-secondary text-white rounded-full flex items-center justify-center font-display font-bold">5</div>
+                        <div>
+                            <h4 class="font-semibold text-white mb-2">Access from Mobile</h4>
+                            <p class="text-slate-400 mb-2">Open your mobile browser and navigate to:</p>
+                            <code class="bg-slate-800 px-3 py-2 rounded block text-sm">http://YOUR-MACHINE-NAME:23000</code>
+                            <p class="text-sm text-slate-400 mt-2">Find your machine name in Tailscale app → Machines</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-8 bg-slate-950 border-l-4 border-primary p-4 rounded-r-lg">
+                    <p class="font-semibold text-white mb-1">💡 Pro Tip</p>
+                    <p class="text-slate-200 text-sm">Bookmark the URL on your mobile device for instant access. Add it to your home screen for a native app-like experience!</p>
+                </div>
+            </div>
+
+            <!-- Use Cases -->
+            <div class="bg-slate-900 p-8 rounded-2xl border border-slate-700">
+                <h3 class="text-2xl font-display font-bold mb-6 text-white">Real-World Use Cases</h3>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="p-4 bg-slate-800/50 border border-slate-700 rounded-lg">
+                        <div class="text-2xl mb-2">📊</div>
+                        <h4 class="font-semibold text-white mb-2">Monitor Long Builds</h4>
+                        <p class="text-sm text-slate-200">Started a 30-minute build? Grab lunch and check progress from your phone. Get notified when it's done.</p>
+                    </div>
+
+                    <div class="p-4 bg-slate-800/50 border border-slate-700 rounded-lg">
+                        <div class="text-2xl mb-2">🐛</div>
+                        <h4 class="font-semibold text-white mb-2">Check Agent Progress</h4>
+                        <p class="text-sm text-slate-200">Away from desk? See what your agents are working on. Read their output. No need to rush back.</p>
+                    </div>
+
+                    <div class="p-4 bg-slate-800/50 border border-slate-700 rounded-lg">
+                        <div class="text-2xl mb-2">📝</div>
+                        <h4 class="font-semibold text-white mb-2">Review Session Notes</h4>
+                        <p class="text-sm text-slate-200">Read notes on your tablet while thinking through a problem. Update todos from your phone during commute.</p>
+                    </div>
+
+                    <div class="p-4 bg-slate-800/50 border border-slate-700 rounded-lg">
+                        <div class="text-2xl mb-2">✅</div>
+                        <h4 class="font-semibold text-white mb-2">Verify Completions</h4>
+                        <p class="text-sm text-slate-200">Quick glance to see if tests passed. Check if deployment succeeded. Stay informed without interrupting flow.</p>
+                    </div>
+
+                    <div class="p-4 bg-slate-800/50 border border-slate-700 rounded-lg">
+                        <div class="text-2xl mb-2">🏠</div>
+                        <h4 class="font-semibold text-white mb-2">Work from Couch</h4>
+                        <p class="text-sm text-slate-200">Monitor agents from tablet while relaxing. Full visibility without being at desk. Remote doesn't mean disconnected.</p>
+                    </div>
+
+                    <div class="p-4 bg-slate-800/50 border border-slate-700 rounded-lg">
+                        <div class="text-2xl mb-2">✈️</div>
+                        <h4 class="font-semibold text-white mb-2">Check While Traveling</h4>
+                        <p class="text-sm text-slate-200">Airport delay? Check your builds. Hotel room? Review what agents accomplished. Always connected.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Technical Details Section -->
+    <section class="py-16 px-8">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white text-center mb-12">Technical Details</h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <h3 class="text-xl font-display font-bold mb-4 text-white">Responsive Breakpoints</h3>
+                    <div class="space-y-2 text-sm">
+                        <div class="flex justify-between p-2 bg-slate-950 rounded">
+                            <span class="font-mono text-slate-400">Mobile</span>
+                            <span class="text-white">&lt; 768px</span>
+                        </div>
+                        <div class="flex justify-between p-2 bg-slate-950 rounded">
+                            <span class="font-mono text-slate-400">Tablet</span>
+                            <span class="text-white">768px - 1024px</span>
+                        </div>
+                        <div class="flex justify-between p-2 bg-slate-950 rounded">
+                            <span class="font-mono text-slate-400">Desktop</span>
+                            <span class="text-white">&gt; 1024px</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <h3 class="text-xl font-display font-bold mb-4 text-white">Network Requirements</h3>
+                    <ul class="space-y-2 text-sm">
+                        <li class="flex items-start gap-2">
+                            <span class="text-emerald-600 mt-1">✓</span>
+                            <span class="text-slate-200"><strong>Bandwidth:</strong> Minimal (text-based terminal output)</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-emerald-600 mt-1">✓</span>
+                            <span class="text-slate-200"><strong>Latency:</strong> WebSocket keeps it snappy</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-emerald-600 mt-1">✓</span>
+                            <span class="text-slate-200"><strong>Connection:</strong> Works on 4G/5G/Wi-Fi</span>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <h3 class="text-xl font-display font-bold mb-4 text-white">Browser Compatibility</h3>
+                    <ul class="space-y-2 text-sm">
+                        <li class="flex items-center gap-2">
+                            <span>🌐</span>
+                            <span class="text-slate-200">Safari (iOS 12.0+)</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <span>🌐</span>
+                            <span class="text-slate-200">Chrome (Mobile & Desktop)</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <span>🌐</span>
+                            <span class="text-slate-200">Firefox (Mobile & Desktop)</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <span>🌐</span>
+                            <span class="text-slate-200">Edge (Chromium-based)</span>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                    <h3 class="text-xl font-display font-bold mb-4 text-white">Security Features</h3>
+                    <ul class="space-y-2 text-sm">
+                        <li class="flex items-start gap-2">
+                            <span class="text-blue-400 mt-1">🔒</span>
+                            <span class="text-slate-200">Tailscale encryption (WireGuard)</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-blue-400 mt-1">🔒</span>
+                            <span class="text-slate-200">No public internet exposure</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-blue-400 mt-1">🔒</span>
+                            <span class="text-slate-200">Read-only terminal on mobile</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="py-16 md:py-24 text-center bg-gradient-to-br from-secondary to-primary text-white px-8">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight mb-4">Ready to work from anywhere?</h2>
+            <p class="text-xl mb-8 opacity-90">Set up mobile access in under 5 minutes.</p>
+            <div class="flex flex-col md:flex-row gap-4 justify-center">
+                <a href="https://github.com/23blocks-OS/ai-maestro" class="inline-flex items-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-slate-900 text-secondary hover:bg-slate-950 hover:-translate-y-0.5 text-lg" target="_blank">
+                    Get Started on GitHub
+                </a>
+                <a href="index.html" class="inline-flex items-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-transparent text-white border-2 border-white hover:bg-slate-900 hover:text-secondary text-lg">
+                    Back to AI Maestro
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer (same as index.html) -->
+    <footer class="py-16 pb-8 bg-slate-950 border-t border-slate-800 px-4 md:px-8">
+        <div class="max-w-7xl mx-auto">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-12 mb-12">
+                <div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <img src="logo-constellation.svg" alt="AI Maestro" class="w-8 h-8">
+                        <span class="font-display font-bold text-lg text-white">AI MAESTRO</span>
+                    </div>
+                    <p class="text-slate-400 text-sm">The future of work is here. Orchestrate multiple AI coding agents from one dashboard.</p>
+                </div>
+                <div>
+                    <h4 class="font-mono text-xs text-slate-500 tracking-widest mb-4">LINKS</h4>
+                    <a href="https://github.com/23blocks-OS/ai-maestro" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">GitHub</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro/issues" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">Issues</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro/blob/main/CONTRIBUTING.md" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">Contributing</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro/blob/main/LICENSE" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">License (MIT)</a>
+                </div>
+                <div>
+                    <h4 class="font-mono text-xs text-slate-500 tracking-widest mb-4">BUILT BY</h4>
+                    <p class="text-slate-400 text-sm mb-2">
+                        <a href="https://x.com/jkpelaez" target="_blank" class="text-white hover:text-cyan-400 transition-colors">Juan Peláez</a> @ <a href="https://23blocks.com" target="_blank" class="text-white hover:text-cyan-400 transition-colors">23blocks</a>
+                    </p>
+                    <p class="text-slate-500 text-xs">Made with <span class="text-red-500">♥</span> in Boulder, Colorado</p>
+                    <p class="text-slate-500 text-xs mt-1">Coded with Claude</p>
+                </div>
+            </div>
+            <div class="pt-8 border-t border-slate-800 text-center">
+                <p class="text-slate-500 text-sm">© 2025 Juan Peláez / 23blocks. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- GSAP Animations -->
+    <script>
+        gsap.registerPlugin(ScrollTrigger);
+
+        // Typing animation for announcement
+        const announcement = document.getElementById('announcement');
+        const text = "Code from anywhere.";
+        const cursor = announcement.querySelector('.typing-cursor');
+        let charIndex = 0;
+
+        function typeCharacter() {
+            if (charIndex < text.length) {
+                const char = text[charIndex];
+                const textNode = document.createTextNode(char);
+                announcement.insertBefore(textNode, cursor);
+                charIndex++;
+                setTimeout(typeCharacter, 50);
+            }
+        }
+
+        // Start typing after 1.5 second delay
+        setTimeout(typeCharacter, 1500);
+
+        // Fade in sections on scroll
+        gsap.utils.toArray("section").forEach((section) => {
+            gsap.from(section, {
+                opacity: 0,
+                y: 50,
+                duration: 0.8,
+                ease: "power2.out",
+                scrollTrigger: {
+                    trigger: section,
+                    start: "top 80%",
+                    end: "top 50%",
+                    toggleActions: "play none none none"
+                }
+            });
+        });
+
+        // Mobile screenshots parallax effect
+        gsap.to("section img", {
+            y: -20,
+            ease: "none",
+            scrollTrigger: {
+                trigger: "section",
+                start: "top bottom",
+                end: "bottom top",
+                scrub: 1
+            }
+        });
+    </script>
+
+    <!-- Copy for AI functionality -->
+    <script src="copy-for-ai.js"></script>
+</body>
+</html>

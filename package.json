@@ -1,0 +1,92 @@
+{
+  "name": "ai-maestro",
+  "version": "0.25.4",
+  "description": "Web dashboard for orchestrating multiple AI coding agents with hierarchical organization and real-time terminals",
+  "author": "Juan Peláez <juan@23blocks.com> (https://23blocks.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/23blocks-OS/ai-maestro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/23blocks-OS/ai-maestro/issues"
+  },
+  "homepage": "https://github.com/23blocks-OS/ai-maestro#readme",
+  "keywords": [
+    "claude-code",
+    "ai",
+    "terminal",
+    "dashboard",
+    "tmux",
+    "xterm",
+    "websocket",
+    "agents",
+    "nextjs",
+    "macos"
+  ],
+  "scripts": {
+    "dev": "NEXT_PRIVATE_SKIP_LOCKFILE_CHECK=1 tsx server.mjs",
+    "dev:linux": "NEXT_PRIVATE_SKIP_LOCKFILE_CHECK=1 tsx server.mjs",
+    "build": "NEXT_PRIVATE_SKIP_LOCKFILE_CHECK=1 next build",
+    "start": "NODE_ENV=production NEXT_PRIVATE_SKIP_LOCKFILE_CHECK=1 tsx server.mjs",
+    "headless": "MAESTRO_MODE=headless tsx server.mjs",
+    "headless:prod": "NODE_ENV=production MAESTRO_MODE=headless tsx server.mjs",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:services": "vitest run tests/services/",
+    "test:lib": "vitest run --exclude 'tests/services/**'"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@xterm/addon-clipboard": "^0.2.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
+    "archiver": "^7.0.1",
+    "cozo-node": "^0.7.6",
+    "cytoscape": "^3.33.1",
+    "cytoscape-dagre": "^2.5.0",
+    "form-data": "^4.0.5",
+    "framer-motion": "^12.23.25",
+    "gray-matter": "^4.0.3",
+    "lucide-react": "^0.545.0",
+    "minisearch": "^7.2.0",
+    "next": "14.2.35",
+    "node-pty": "^1.0.0",
+    "onnxruntime-node": "1.17.0",
+    "pg": "^8.16.3",
+    "react": "^18.3.0",
+    "react-cytoscapejs": "^2.0.0",
+    "react-dom": "^18.3.0",
+    "source-map-support": "^0.5.21",
+    "ts-morph": "^27.0.2",
+    "uuid": "^13.0.0",
+    "tsx": "~4.21.0",
+    "ws": "^8.18.0",
+    "yauzl": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^7.0.0",
+    "@types/node": "^20.14.0",
+    "@types/pg": "^8.15.6",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@types/uuid": "^11.0.0",
+    "@types/ws": "^8.5.0",
+    "@types/yauzl": "^2.10.3",
+    "autoprefixer": "^10.4.0",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.0",
+    "postcss": "^8.4.0",
+    "sharp": "^0.34.4",
+    "tailwindcss": "^3.4.0",
+    "to-ico": "^1.1.5",
+    "typescript": "^5.4.0",
+    "vitest": "^4.0.18"
+  },
+  "resolutions": {
+    "onnxruntime-node": "1.17.0"
+  }
+}

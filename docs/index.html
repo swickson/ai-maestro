@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-W72WHGDW');</script>
+    <!-- End Google Tag Manager -->
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Maestro - The Future of Work: Humans + AI Agents</title>
+    <meta name="description" content="The future of work is here. Orchestrate multiple AI coding agents from one dashboard. One human. Multiple AI agents. Working together.">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ai-maestro.23blocks.com/">
+    <meta property="og:title" content="AI Maestro - The Future of Work: Humans + AI Agents">
+    <meta property="og:description" content="The future of work is here. One human. Multiple AI agents. Working together. Orchestrate Claude Code, Aider, Cursor from one dashboard.">
+    <meta property="og:image" content="https://ai-maestro.23blocks.com/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="AI Maestro - Orchestrate your AI coding agents">
+    <meta property="og:site_name" content="AI Maestro">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://ai-maestro.23blocks.com/">
+    <meta name="twitter:title" content="AI Maestro - The Future of Work: Humans + AI Agents">
+    <meta name="twitter:description" content="The future of work is here. One human. Multiple AI agents. Working together.">
+    <meta name="twitter:image" content="https://ai-maestro.23blocks.com/og-image.png">
+    <meta name="twitter:creator" content="@jkpelaez">
+
+    <!-- Additional SEO -->
+    <meta name="author" content="Juan Peláez">
+    <meta name="keywords" content="AI agent orchestration, Claude Code dashboard, autonomous agents, AI agents communication, multi-agent systems, AI pair programming, future of work AI, human AI collaboration, tmux AI dashboard, Claude skills, agent-to-agent messaging">
+    <link rel="canonical" href="https://ai-maestro.23blocks.com/">
+
+    <!-- Favicon & Icons -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon-180x180.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="apple-touch-icon-152x152.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="apple-touch-icon-120x120.png">
+    <link rel="manifest" href="site.webmanifest">
+    <link rel="mask-icon" href="safari-pinned-tab.svg" color="#00d4ff">
+
+    <!-- Theme Colors -->
+    <meta name="theme-color" content="#0f172a">
+    <meta name="msapplication-TileColor" content="#0f172a">
+    <meta name="msapplication-config" content="browserconfig.xml">
+
+    <!-- Apple Mobile Web App -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="AI Maestro">
+
+    <!-- Application Info -->
+    <meta name="application-name" content="AI Maestro">
+    <meta name="format-detection" content="telephone=no">
+
+    <!-- Schema.org Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "AI Maestro",
+      "alternateName": "Claude Code Dashboard",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "macOS 12.0+, Windows 10/11 (WSL2), Linux",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "description": "The future of work platform. Orchestrate multiple AI coding agents (Claude Code, Aider, Cursor, GitHub Copilot) from one unified dashboard. One human, multiple AI agents, working together.",
+      "softwareVersion": "0.25.4",
+      "releaseNotes": "https://github.com/23blocks-OS/ai-maestro/releases",
+      "url": "https://ai-maestro.23blocks.com",
+      "screenshot": "https://ai-maestro.23blocks.com/images/aiteam-web.png",
+      "license": "https://opensource.org/licenses/MIT",
+      "author": {
+        "@type": "Person",
+        "name": "Juan Peláez",
+        "url": "https://x.com/jkpelaez"
+      },
+      "publisher": {
+        "@type": "Organization",
+        "name": "23blocks"
+      },
+      "featureList": [
+        "Multi-agent AI orchestration",
+        "Claude Code integration",
+        "Terminal agent management",
+        "Real-time WebSocket streaming",
+        "Agent Messaging Protocol (AMP) for secure inter-agent communication",
+        "Ed25519 cryptographic signatures for message authenticity",
+        "Federation with external AMP providers (CrabMail, etc.)",
+        "Email identity management with domain control",
+        "Webhook subscriptions for external integrations",
+        "Slack integration for team collaboration",
+        "Persistent memory with CozoDB",
+        "Code Graph visualization",
+        "Mobile remote access",
+        "Portable agents with export/import",
+        "Cross-host agent transfer",
+        "Team Meetings with multi-agent war room sessions",
+        "Kanban Board with 5-column drag-and-drop task management",
+        "Composable Plugin Builder for custom agent skill sets",
+        "Agent Skills Standard compliant - works with Claude Code, OpenCode, Codex CLI, Gemini CLI, Cursor, GitHub Copilot, and 30+ agents"
+      ]
+    }
+    </script>
+
+    <!-- Typography: Darker Grotesque (display) + JetBrains Mono (technical) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        display: ['Syne', 'system-ui', 'sans-serif'],
+                        sans: ['DM Sans', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        slate: {
+                            950: '#020617',
+                            900: '#0f172a',
+                            850: '#131c31',
+                            800: '#1e293b',
+                        },
+                        cyan: {
+                            400: '#22d3ee',
+                            500: '#00d4ff',
+                        },
+                        amber: {
+                            400: '#fbbf24',
+                            500: '#f59e0b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- GSAP CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+
+    <style>
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: 80px;
+        }
+
+        body {
+            background-color: #0f172a;
+            color: #e2e8f0;
+        }
+
+        /* Noise texture overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.03;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            z-index: 9999;
+        }
+
+        /* Gradient text */
+        .gradient-text {
+            background: linear-gradient(135deg, #00d4ff 0%, #22d3ee 50%, #fbbf24 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Status pulse animation */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(2); opacity: 0; }
+        }
+
+        .status-pulse::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            animation: pulse-ring 2s ease-out infinite;
+        }
+
+        .status-online::before { background: #22c55e; }
+        .status-busy::before { background: #f59e0b; }
+
+        /* Crew badge hover effect */
+        .crew-badge {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .crew-badge::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+            transition: left 0.5s ease;
+        }
+
+        .crew-badge:hover::before {
+            left: 100%;
+        }
+
+        /* Typing cursor */
+        .typing-cursor {
+            display: inline-block;
+            width: 3px;
+            height: 1em;
+            background-color: #00d4ff;
+            margin-left: 4px;
+            animation: blink 1s infinite;
+            vertical-align: text-bottom;
+        }
+
+        @keyframes blink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0; }
+        }
+
+        /* Hamburger menu */
+        .hamburger span {
+            display: block;
+            width: 24px;
+            height: 2px;
+            background: #e2e8f0;
+            transition: all 0.3s ease;
+        }
+        .hamburger.active span:nth-child(1) {
+            transform: rotate(45deg) translate(5px, 5px);
+        }
+        .hamburger.active span:nth-child(2) {
+            opacity: 0;
+        }
+        .hamburger.active span:nth-child(3) {
+            transform: rotate(-45deg) translate(7px, -6px);
+        }
+        .mobile-menu {
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+        .mobile-menu.active {
+            opacity: 1;
+            transform: translateY(0);
+            display: block !important;
+            pointer-events: auto;
+        }
+
+        /* Grid pattern background */
+        .grid-pattern {
+            background-image:
+                linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+        }
+
+        /* Horizontal rule accent */
+        .hr-accent {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #00d4ff, transparent);
+        }
+
+        /* Feature card glow on hover */
+        .feature-card {
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover {
+            box-shadow: 0 0 40px rgba(0, 212, 255, 0.15);
+            border-color: rgba(0, 212, 255, 0.3);
+        }
+
+        /* Stagger animation classes */
+        .stagger-1 { animation-delay: 0.1s; }
+        .stagger-2 { animation-delay: 0.2s; }
+        .stagger-3 { animation-delay: 0.3s; }
+        .stagger-4 { animation-delay: 0.4s; }
+
+        /* Alt link styles for persona cards */
+        .alt-link {
+            transition: all 0.2s ease;
+        }
+        .alt-link:hover {
+            color: #22d3ee !important;
+            background-color: #334155 !important;
+        }
+    </style>
+</head>
+<body class="font-sans antialiased">
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-W72WHGDW"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    <!-- Copy for AI Button -->
+    <button
+        onclick="copyForAI()"
+        class="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2 bg-slate-800 border border-slate-700 text-cyan-400 font-mono text-sm rounded hover:bg-slate-700 hover:border-cyan-500/50 transition-all duration-200"
+        title="Copy this page for AI assistants">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        COPY FOR AI
+    </button>
+
+    <!-- Navigation -->
+    <nav class="sticky top-0 bg-slate-900/95 backdrop-blur-lg border-b border-slate-800 z-[100]">
+        <div class="max-w-7xl mx-auto px-4 md:px-8">
+            <div class="flex justify-between items-center py-4">
+                <a href="#" class="flex items-center gap-3 text-white no-underline hover:opacity-80 transition-opacity duration-200">
+                    <img src="logo-constellation.svg" alt="AI Maestro" class="w-8 h-8 md:w-10 md:h-10">
+                    <span class="font-display font-bold text-lg md:text-xl tracking-tight">AI MAESTRO</span>
+                </a>
+
+                <!-- Desktop Navigation -->
+                <div class="hidden md:flex gap-8 items-center">
+                    <a href="#personas" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">WHO IT'S FOR</a>
+                    <a href="#features" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">FEATURES</a>
+                    <a href="#quick-start" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">GET STARTED</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="text-slate-400 no-underline hover:text-cyan-400 transition-colors duration-200" title="View on GitHub">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    </a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro#readme" class="inline-flex items-center gap-2 px-5 py-2.5 rounded bg-cyan-500 text-slate-900 font-bold text-sm tracking-wide hover:bg-cyan-400 transition-all duration-200" target="_blank">
+                        START FREE
+                    </a>
+                </div>
+
+                <!-- Mobile Navigation -->
+                <div class="flex md:hidden items-center gap-3">
+                    <a href="https://github.com/23blocks-OS/ai-maestro#readme" class="px-3 py-2 rounded bg-cyan-500 text-slate-900 font-bold text-xs tracking-wide" target="_blank">START</a>
+                    <button class="hamburger bg-transparent border-0 cursor-pointer p-2 flex flex-col gap-1.5 z-[1001]" id="hamburger" aria-label="Toggle menu">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Mobile Menu -->
+            <div class="mobile-menu hidden absolute top-full left-0 right-0 bg-slate-900 border-b border-slate-800 py-4" id="mobile-menu">
+                <a href="#personas" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Who It's For</a>
+                <a href="#features" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Features</a>
+                <a href="#quick-start" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Get Started</a>
+                <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="flex items-center gap-3 px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    GitHub
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <script>
+        const hamburger = document.getElementById('hamburger');
+        const mobileMenu = document.getElementById('mobile-menu');
+        hamburger.addEventListener('click', () => {
+            hamburger.classList.toggle('active');
+            mobileMenu.classList.toggle('active');
+        });
+        mobileMenu.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => {
+                hamburger.classList.remove('active');
+                mobileMenu.classList.remove('active');
+            });
+        });
+        document.addEventListener('click', (e) => {
+            if (!hamburger.contains(e.target) && !mobileMenu.contains(e.target)) {
+                hamburger.classList.remove('active');
+                mobileMenu.classList.remove('active');
+            }
+        });
+    </script>
+
+    <!-- HERO SECTION -->
+    <header class="relative min-h-[90vh] flex items-center grid-pattern overflow-hidden">
+        <!-- Gradient orbs background -->
+        <div class="absolute top-20 left-10 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl"></div>
+        <div class="absolute bottom-20 right-10 w-80 h-80 bg-amber-500/10 rounded-full blur-3xl"></div>
+
+        <div class="max-w-7xl mx-auto px-4 md:px-8 py-20 md:py-32 relative z-10">
+            <div class="max-w-4xl">
+                <!-- Pre-headline -->
+                <div class="flex items-center gap-3 mb-8">
+                    <div class="relative w-3 h-3">
+                        <span class="absolute inset-0 bg-green-500 rounded-full"></span>
+                        <span class="absolute inset-0 bg-green-500 rounded-full animate-ping opacity-75"></span>
+                    </div>
+                    <span class="font-mono text-sm text-slate-400 tracking-widest">OPEN SOURCE • MIT LICENSE • FREE FOREVER</span>
+                </div>
+
+                <!-- Main headline with typing effect -->
+                <h1 class="font-display text-5xl md:text-7xl lg:text-8xl font-extrabold leading-[0.9] tracking-tight mb-6">
+                    <span id="typed-headline" class="text-white"></span><span class="typing-cursor"></span>
+                </h1>
+
+                <!-- Subheadline -->
+                <p class="text-xl md:text-2xl text-slate-300 max-w-2xl mb-4 leading-relaxed" id="subheadline" style="opacity: 0;">
+                    Orchestrate your AI coding agents from one dashboard.
+                </p>
+
+                <!-- Vision statement -->
+                <p class="text-lg text-cyan-400 font-mono mb-10" id="vision" style="opacity: 0;">
+                    One human. Multiple AI agents. Working together.
+                </p>
+
+                <!-- CTAs -->
+                <div class="flex flex-col sm:flex-row gap-4 mb-12" id="ctas" style="opacity: 0;">
+                    <a href="https://github.com/23blocks-OS/ai-maestro" class="inline-flex items-center justify-center gap-3 px-8 py-4 rounded bg-white text-slate-900 font-bold text-lg hover:bg-slate-100 transition-all duration-200" target="_blank">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                        </svg>
+                        Get Started on GitHub
+                    </a>
+                    <a href="#personas" class="inline-flex items-center justify-center gap-2 px-8 py-4 rounded border-2 border-slate-600 text-slate-300 font-bold text-lg hover:border-cyan-500 hover:text-cyan-400 transition-all duration-200">
+                        See Who It's For
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    </a>
+                </div>
+
+                <!-- Stats row -->
+                <div class="flex flex-wrap gap-8 text-sm font-mono text-slate-500" id="stats" style="opacity: 0;">
+                    <div class="flex items-center gap-2">
+                        <span class="text-cyan-400">▸</span>
+                        <span>v0.25.4</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-cyan-400">▸</span>
+                        <span>macOS • Windows (WSL2) • Linux</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-cyan-400">▸</span>
+                        <span>Claude Code • Aider • Cursor • Any AI Agent</span>
+                    </div>
+                    <a href="https://agentskills.io/specification" target="_blank" class="flex items-center gap-2 text-emerald-400 hover:text-emerald-300 transition-colors no-underline">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        <span>Agent Skills Standard</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Divider -->
+    <div class="hr-accent"></div>
+
+    <!-- PROBLEM / SOLUTION -->
+    <section class="py-20 md:py-32 px-4 md:px-8">
+        <div class="max-w-7xl mx-auto">
+            <div class="grid md:grid-cols-2 gap-8 md:gap-12">
+                <!-- Problem -->
+                <div class="bg-slate-850 border border-slate-800 rounded-lg p-8 md:p-10 relative overflow-hidden">
+                    <div class="absolute top-0 left-0 w-1 h-full bg-red-500/50"></div>
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="w-10 h-10 rounded bg-red-500/20 flex items-center justify-center">
+                            <span class="text-red-400 text-xl">✕</span>
+                        </div>
+                        <h2 class="font-display text-2xl font-bold text-red-400 tracking-tight">THE PROBLEM</h2>
+                    </div>
+                    <div class="space-y-4 text-slate-300">
+                        <div class="flex items-start gap-3">
+                            <span class="text-red-500 mt-1">—</span>
+                            <p><strong class="text-white">Chaos:</strong> 5 terminals, 5 agents, zero visibility</p>
+                        </div>
+                        <div class="flex items-start gap-3">
+                            <span class="text-red-500 mt-1">—</span>
+                            <p><strong class="text-white">Amnesia:</strong> Every session starts from scratch</p>
+                        </div>
+                        <div class="flex items-start gap-3">
+                            <span class="text-red-500 mt-1">—</span>
+                            <p><strong class="text-white">Isolation:</strong> You relay every message between agents</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Solution -->
+                <div class="bg-slate-850 border border-cyan-500/30 rounded-lg p-8 md:p-10 relative overflow-hidden">
+                    <div class="absolute top-0 left-0 w-1 h-full bg-cyan-500"></div>
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="w-10 h-10 rounded bg-cyan-500/20 flex items-center justify-center">
+                            <span class="text-cyan-400 text-xl">✓</span>
+                        </div>
+                        <h2 class="font-display text-2xl font-bold text-cyan-400 tracking-tight">THE SOLUTION</h2>
+                    </div>
+                    <div class="space-y-4 text-slate-300">
+                        <div class="flex items-start gap-3">
+                            <span class="text-cyan-500 mt-1">—</span>
+                            <p><strong class="text-white">One Dashboard:</strong> See all agents, switch instantly</p>
+                        </div>
+                        <div class="flex items-start gap-3">
+                            <span class="text-cyan-500 mt-1">—</span>
+                            <p><strong class="text-white">Persistent Memory:</strong> Agents remember everything</p>
+                        </div>
+                        <div class="flex items-start gap-3">
+                            <span class="text-cyan-500 mt-1">—</span>
+                            <p><strong class="text-white">Direct Communication:</strong> Agents talk to each other</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Screenshot -->
+    <section class="pb-20 md:pb-32 px-4 md:px-8">
+        <div class="max-w-6xl mx-auto">
+            <div class="relative">
+                <div class="absolute -inset-4 bg-gradient-to-r from-cyan-500/20 via-transparent to-amber-500/20 rounded-2xl blur-xl"></div>
+                <img src="images/aiteam-web.png" alt="AI Maestro Dashboard" class="relative w-full rounded-lg border border-slate-700 shadow-2xl">
+            </div>
+        </div>
+    </section>
+
+    <!-- Divider -->
+    <div class="hr-accent"></div>
+
+    <!-- WHO IT'S FOR - PERSONA CARDS -->
+    <section id="personas" class="py-20 md:py-32 px-4 md:px-8 relative">
+        <!-- Subtle grid background for this section -->
+        <div class="absolute inset-0 opacity-30" style="background-image: linear-gradient(rgba(34, 211, 238, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(34, 211, 238, 0.03) 1px, transparent 1px); background-size: 50px 50px;"></div>
+
+        <div class="max-w-7xl mx-auto relative">
+            <!-- Section header -->
+            <div class="text-center mb-16">
+                <div class="inline-flex items-center gap-2 px-4 py-2 bg-cyan-500/10 border border-cyan-500/30 rounded-full mb-6">
+                    <span class="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
+                    <span class="font-mono text-cyan-400 text-sm tracking-wide">CREW MANIFEST</span>
+                </div>
+                <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4">Who It's For</h2>
+                <p class="text-xl text-slate-400 max-w-2xl mx-auto">From solo developers to enterprise teams. Start where you are, scale when you need to.</p>
+            </div>
+
+            <!-- Persona cards as "crew badges" -->
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Developer -->
+                <a href="single-computer.html" class="group relative block no-underline h-full">
+                    <div class="absolute -inset-0.5 bg-gradient-to-r from-green-500/50 to-green-600/50 rounded-xl blur opacity-0 group-hover:opacity-75 transition duration-500"></div>
+                    <div class="relative bg-slate-900 border border-slate-700 rounded-xl p-6 hover:border-green-500/50 transition-all duration-300 h-full">
+                        <div class="flex items-center justify-between mb-6">
+                            <div class="w-14 h-14 rounded-full bg-gradient-to-br from-green-500/30 to-green-600/10 border-2 border-green-500/50 flex items-center justify-center shadow-lg shadow-green-500/20">
+                                <span class="text-2xl">👤</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="font-mono text-xs text-green-400">ONLINE</span>
+                                <span class="w-3 h-3 bg-green-500 rounded-full block status-pulse"></span>
+                            </div>
+                        </div>
+                        <h3 class="font-display text-2xl font-bold text-white mb-1 group-hover:text-green-400 transition-colors">Developer</h3>
+                        <div class="text-cyan-400 font-mono text-sm mb-4 flex items-center gap-2">
+                            <span class="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
+                            Me + Agents
+                        </div>
+                        <p class="text-slate-300 text-sm leading-relaxed mb-6">"I build on my MacBook with 3 Claude Code agents — backend, frontend, tests."</p>
+                        <div class="pt-4 border-t border-slate-700/50">
+                            <div class="font-mono text-xs text-slate-500 mb-3 uppercase tracking-wider">Infrastructure</div>
+                            <div class="flex flex-wrap gap-2">
+                                <span class="px-3 py-1.5 bg-green-500/10 text-green-400 border border-green-500/30 rounded-full text-xs font-mono">1-2 computers</span>
+                                <span class="px-3 py-1.5 bg-green-500/10 text-green-400 border border-green-500/30 rounded-full text-xs font-mono">local</span>
+                            </div>
+                            <div class="flex flex-wrap gap-2 mt-3 relative z-10">
+                                <span class="font-mono text-xs text-slate-500">Also try:</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="docker-local.html">docker-local</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="multi-computer.html">multi-computer</span>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Startup -->
+                <a href="multi-computer.html" class="group relative block no-underline h-full">
+                    <div class="absolute -inset-0.5 bg-gradient-to-r from-amber-500/50 to-orange-600/50 rounded-xl blur opacity-0 group-hover:opacity-75 transition duration-500"></div>
+                    <div class="relative bg-slate-900 border border-slate-700 rounded-xl p-6 hover:border-amber-500/50 transition-all duration-300 h-full">
+                        <div class="flex items-center justify-between mb-6">
+                            <div class="w-14 h-14 rounded-full bg-gradient-to-br from-amber-500/30 to-orange-600/10 border-2 border-amber-500/50 flex items-center justify-center shadow-lg shadow-amber-500/20">
+                                <span class="text-2xl">🚀</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="font-mono text-xs text-amber-400">SCALING</span>
+                                <span class="w-3 h-3 bg-amber-500 rounded-full block status-pulse"></span>
+                            </div>
+                        </div>
+                        <h3 class="font-display text-2xl font-bold text-white mb-1 group-hover:text-amber-400 transition-colors">Startup</h3>
+                        <div class="text-cyan-400 font-mono text-sm mb-4 flex items-center gap-2">
+                            <span class="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
+                            Us + Agents
+                        </div>
+                        <p class="text-slate-300 text-sm leading-relaxed mb-6">"Our 3-person team shares a dev server. Agents run where the resources are."</p>
+                        <div class="pt-4 border-t border-slate-700/50">
+                            <div class="font-mono text-xs text-slate-500 mb-3 uppercase tracking-wider">Infrastructure</div>
+                            <div class="flex flex-wrap gap-2">
+                                <span class="px-3 py-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded-full text-xs font-mono">laptops + server</span>
+                            </div>
+                            <div class="flex flex-wrap gap-2 mt-3 relative z-10">
+                                <span class="font-mono text-xs text-slate-500">Also try:</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="peers.html">peers</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="docker-local.html">docker-local</span>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Team -->
+                <a href="peers.html" class="group relative block no-underline h-full">
+                    <div class="absolute -inset-0.5 bg-gradient-to-r from-purple-500/50 to-violet-600/50 rounded-xl blur opacity-0 group-hover:opacity-75 transition duration-500"></div>
+                    <div class="relative bg-slate-900 border border-slate-700 rounded-xl p-6 hover:border-purple-500/50 transition-all duration-300 h-full">
+                        <div class="flex items-center justify-between mb-6">
+                            <div class="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500/30 to-violet-600/10 border-2 border-purple-500/50 flex items-center justify-center shadow-lg shadow-purple-500/20">
+                                <span class="text-2xl">👥</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="font-mono text-xs text-purple-400">DISTRIBUTED</span>
+                                <span class="w-3 h-3 bg-purple-500 rounded-full block status-pulse"></span>
+                            </div>
+                        </div>
+                        <h3 class="font-display text-2xl font-bold text-white mb-1 group-hover:text-purple-400 transition-colors">Team</h3>
+                        <div class="text-cyan-400 font-mono text-sm mb-4 flex items-center gap-2">
+                            <span class="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
+                            Us + Agents
+                        </div>
+                        <p class="text-slate-300 text-sm leading-relaxed mb-6">"Developers in 3 cities. Agents on local machines and our cloud. They coordinate."</p>
+                        <div class="pt-4 border-t border-slate-700/50">
+                            <div class="font-mono text-xs text-slate-500 mb-3 uppercase tracking-wider">Infrastructure</div>
+                            <div class="flex flex-wrap gap-2">
+                                <span class="px-3 py-1.5 bg-purple-500/10 text-purple-400 border border-purple-500/30 rounded-full text-xs font-mono">multi-location</span>
+                                <span class="px-3 py-1.5 bg-purple-500/10 text-purple-400 border border-purple-500/30 rounded-full text-xs font-mono">cloud</span>
+                            </div>
+                            <div class="flex flex-wrap gap-2 mt-3 relative z-10">
+                                <span class="font-mono text-xs text-slate-500">Also try:</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="docker-hybrid.html">docker-hybrid</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="multi-computer.html">multi-computer</span>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Company -->
+                <a href="advanced-setup.html" class="group relative block no-underline h-full">
+                    <div class="absolute -inset-0.5 bg-gradient-to-r from-cyan-500/50 to-blue-600/50 rounded-xl blur opacity-0 group-hover:opacity-75 transition duration-500"></div>
+                    <div class="relative bg-slate-900 border border-slate-700 rounded-xl p-6 hover:border-cyan-500/50 transition-all duration-300 h-full">
+                        <div class="flex items-center justify-between mb-6">
+                            <div class="w-14 h-14 rounded-full bg-gradient-to-br from-cyan-500/30 to-blue-600/10 border-2 border-cyan-500/50 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+                                <span class="text-2xl">🏢</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="font-mono text-xs text-cyan-400">ENTERPRISE</span>
+                                <span class="w-3 h-3 bg-cyan-500 rounded-full block status-pulse"></span>
+                            </div>
+                        </div>
+                        <h3 class="font-display text-2xl font-bold text-white mb-1 group-hover:text-cyan-400 transition-colors">Company</h3>
+                        <div class="text-cyan-400 font-mono text-sm mb-4 flex items-center gap-2">
+                            <span class="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
+                            Teams + Agents
+                        </div>
+                        <p class="text-slate-300 text-sm leading-relaxed mb-6">"Each department has specialized AI agents. Security, docs, testing. Autonomous coordination."</p>
+                        <div class="pt-4 border-t border-slate-700/50">
+                            <div class="font-mono text-xs text-slate-500 mb-3 uppercase tracking-wider">Infrastructure</div>
+                            <div class="flex flex-wrap gap-2">
+                                <span class="px-3 py-1.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded-full text-xs font-mono">distributed</span>
+                                <span class="px-3 py-1.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded-full text-xs font-mono">data centers</span>
+                            </div>
+                            <div class="flex flex-wrap gap-2 mt-3 relative z-10">
+                                <span class="font-mono text-xs text-slate-500">Also try:</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="peers.html">peers</span>
+                                <span class="alt-link px-2 py-1 bg-slate-800 text-slate-400 rounded text-xs font-mono cursor-pointer" data-href="docker-hybrid.html">docker-hybrid</span>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- Divider -->
+    <div class="hr-accent"></div>
+
+    <!-- FEATURES - Three Tiers -->
+    <section id="features" class="py-20 md:py-32 px-4 md:px-8 relative">
+        <!-- Background pattern -->
+        <div class="absolute inset-0 opacity-20" style="background-image: radial-gradient(circle at 1px 1px, rgba(34, 211, 238, 0.15) 1px, transparent 0); background-size: 40px 40px;"></div>
+
+        <div class="max-w-7xl mx-auto relative">
+            <!-- Section header -->
+            <div class="text-center mb-16">
+                <div class="inline-flex items-center gap-2 px-4 py-2 bg-amber-500/10 border border-amber-500/30 rounded-full mb-6">
+                    <span class="w-2 h-2 bg-amber-400 rounded-full animate-pulse"></span>
+                    <span class="font-mono text-amber-400 text-sm tracking-wide">SYSTEM CAPABILITIES</span>
+                </div>
+                <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4">Everything You Need</h2>
+                <p class="text-xl text-slate-400 max-w-2xl mx-auto">Orchestrate AI agents at any scale — from solo developer to enterprise team.</p>
+            </div>
+
+            <!-- TIER 1: Core -->
+            <div class="mb-20">
+                <div class="flex items-center gap-4 mb-8">
+                    <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-cyan-500/20 to-cyan-600/5 border border-cyan-500/30 flex items-center justify-center shadow-lg shadow-cyan-500/10">
+                        <span class="text-cyan-400 font-mono font-bold text-lg">01</span>
+                    </div>
+                    <div>
+                        <h3 class="font-display text-2xl font-bold text-white">The Foundation</h3>
+                        <p class="text-slate-400 text-sm">Everything you need to manage multiple AI agents</p>
+                    </div>
+                </div>
+                <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+                    <div class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-cyan-500/50 hover:bg-slate-900 transition-all duration-300">
+                        <div class="w-12 h-12 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">🎯</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-cyan-400 transition-colors">Zero Configuration</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Auto-discovers all tmux sessions. No config files. Just run and start coding.</p>
+                    </div>
+                    <div class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-cyan-500/50 hover:bg-slate-900 transition-all duration-300">
+                        <div class="w-12 h-12 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">🤖</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-cyan-400 transition-colors">Universal Support</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Works with Claude Code, Aider, Cursor, GitHub Copilot, or any terminal-based AI.</p>
+                    </div>
+                    <div class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-cyan-500/50 hover:bg-slate-900 transition-all duration-300">
+                        <div class="w-12 h-12 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">⚡</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-cyan-400 transition-colors">Real-time Terminals</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">WebSocket streaming. No lag, no polling. Keyboard shortcuts for power users.</p>
+                    </div>
+                    <div class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-cyan-500/50 hover:bg-slate-900 transition-all duration-300">
+                        <div class="w-12 h-12 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">📁</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-cyan-400 transition-colors">Smart Organization</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">3-level hierarchy with dynamic colors. Instant visual organization for any project.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TIER 2: Intelligence -->
+            <div class="mb-20">
+                <div class="flex items-center gap-4 mb-8">
+                    <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-purple-500/20 to-purple-600/5 border border-purple-500/30 flex items-center justify-center shadow-lg shadow-purple-500/10">
+                        <span class="text-purple-400 font-mono font-bold text-lg">02</span>
+                    </div>
+                    <div>
+                        <h3 class="font-display text-2xl font-bold text-white">The Superpowers</h3>
+                        <p class="text-slate-400 text-sm">Your agents remember, learn, and understand your codebase</p>
+                    </div>
+                </div>
+                <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+                    <a href="agent-intelligence.html" class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-purple-500/50 hover:bg-slate-900 transition-all duration-300 no-underline">
+                        <div class="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">🧠</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-purple-400 transition-colors">Persistent Memory</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">CozoDB embedded database. Agents learn your codebase and remember past conversations.</p>
+                    </a>
+                    <a href="agent-intelligence.html" class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-purple-500/50 hover:bg-slate-900 transition-all duration-300 no-underline">
+                        <div class="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">🗺️</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-purple-400 transition-colors">Code Graph</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Visualize your entire codebase structure. Multi-language support with delta indexing.</p>
+                    </a>
+                    <a href="conversations.html" class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-purple-500/50 hover:bg-slate-900 transition-all duration-300 no-underline">
+                        <div class="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">💬</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-purple-400 transition-colors">Conversation History</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Browse, search, and analyze every agent conversation. Full thinking and tool tracking.</p>
+                    </a>
+                    <a href="skills.html" class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-purple-500/50 hover:bg-slate-900 transition-all duration-300 no-underline">
+                        <div class="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">📚</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-purple-400 transition-colors">Docs Search</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Auto-generated documentation index. Agents search function signatures and API specs before coding.</p>
+                    </a>
+                </div>
+            </div>
+
+            <!-- TIER 3: Scale -->
+            <div>
+                <div class="flex items-center gap-4 mb-8">
+                    <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-amber-500/20 to-orange-600/5 border border-amber-500/30 flex items-center justify-center shadow-lg shadow-amber-500/10">
+                        <span class="text-amber-400 font-mono font-bold text-lg">03</span>
+                    </div>
+                    <div>
+                        <h3 class="font-display text-2xl font-bold text-white">The Multiplier</h3>
+                        <p class="text-slate-400 text-sm">From your MacBook to cloud infrastructure</p>
+                    </div>
+                </div>
+                <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+                    <a href="messaging.html" class="group relative bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-amber-500/50 hover:bg-slate-900 transition-all duration-300 no-underline overflow-hidden">
+                        <div class="absolute top-3 right-3 flex gap-1">
+                            <span class="px-2 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-bold rounded-full shadow-lg shadow-purple-500/25">+ SLACK</span>
+                            <span class="px-2 py-1 bg-gradient-to-r from-cyan-500 to-blue-500 text-white text-xs font-bold rounded-full shadow-lg shadow-cyan-500/25">+ EMAIL</span>
+                        </div>
+                        <div class="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">📬</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-amber-400 transition-colors">Agent Communication</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Agents talk securely, connect via Slack, and get email addresses on your domains.</p>
+                    </a>
+                    <a href="peers.html" class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-amber-500/50 hover:bg-slate-900 transition-all duration-300 no-underline">
+                        <div class="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">🌐</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-amber-400 transition-colors">Peer Mesh Network</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Control agents across multiple computers and cloud servers from one dashboard.</p>
+                    </a>
+                    <a href="mobile.html" class="group bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-amber-500/50 hover:bg-slate-900 transition-all duration-300 no-underline">
+                        <div class="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">📱</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-amber-400 transition-colors">Mobile Access</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Monitor your AI agents from anywhere. Touch-optimized with secure Tailscale VPN.</p>
+                    </a>
+                    <a href="agent-management.html" class="group relative bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-amber-500/50 hover:bg-slate-900 transition-all duration-300 no-underline overflow-hidden">
+                        <div class="absolute top-3 right-3">
+                            <span class="px-2 py-1 bg-gradient-to-r from-cyan-500 to-blue-500 text-white text-xs font-bold rounded-full shadow-lg shadow-cyan-500/25">NEW</span>
+                        </div>
+                        <div class="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">🔄</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-amber-400 transition-colors">Portable Agents</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Export to .zip, import anywhere. Transfer agents between hosts with full state.</p>
+                    </a>
+                    <a href="plugin-builder.html" class="group relative bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-amber-500/50 hover:bg-slate-900 transition-all duration-300 no-underline overflow-hidden">
+                        <div class="absolute top-3 right-3">
+                            <span class="px-2 py-1 bg-gradient-to-r from-cyan-500 to-blue-500 text-white text-xs font-bold rounded-full shadow-lg shadow-cyan-500/25">NEW</span>
+                        </div>
+                        <div class="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">🧩</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-amber-400 transition-colors">Plugin Builder</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">Build custom skill sets for each agent. Pick from GitHub, mix your own, assemble the perfect plugin.</p>
+                    </a>
+                    <a href="#" class="group relative bg-slate-900/80 border border-slate-700 rounded-xl p-6 hover:border-amber-500/50 hover:bg-slate-900 transition-all duration-300 no-underline overflow-hidden feature-card">
+                        <div class="absolute top-3 right-3">
+                            <span class="px-2 py-1 bg-gradient-to-r from-cyan-500 to-blue-500 text-white text-xs font-bold rounded-full shadow-lg shadow-cyan-500/25">NEW</span>
+                        </div>
+                        <div class="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                            <span class="text-2xl">📋</span>
+                        </div>
+                        <h4 class="font-bold text-white text-lg mb-2 group-hover:text-amber-400 transition-colors">Team Meetings & Kanban</h4>
+                        <p class="text-slate-400 text-sm leading-relaxed">War room for agents with drag-and-drop Kanban board, shared tasks, and real-time chat.</p>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Divider -->
+    <div class="hr-accent"></div>
+
+    <!-- QUICK START -->
+    <section id="quick-start" class="py-20 md:py-32 px-4 md:px-8">
+        <div class="max-w-4xl mx-auto">
+            <!-- Section header -->
+            <div class="text-center mb-16">
+                <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4">GET STARTED</h2>
+                <p class="text-xl text-slate-400">Up and running in under 5 minutes.</p>
+            </div>
+
+            <!-- Steps -->
+            <div class="space-y-8">
+                <!-- Step 1 -->
+                <div class="bg-slate-850 border border-slate-800 rounded-lg p-8">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-12 h-12 rounded-full bg-cyan-500 text-slate-900 flex items-center justify-center font-display font-extrabold text-xl">1</div>
+                        <h3 class="font-display text-2xl font-bold text-white">Install</h3>
+                    </div>
+
+                    <!-- One-line installer (Primary) -->
+                    <div class="bg-slate-900 rounded-lg p-4 font-mono text-sm overflow-x-auto mb-4 relative group/install">
+                        <div class="text-slate-500 mb-2"># One command installs everything</div>
+                        <div class="flex items-center justify-between gap-4">
+                            <code id="install-command" class="text-cyan-400 select-all">curl -fsSL https://raw.githubusercontent.com/23blocks-OS/ai-maestro/main/scripts/remote-install.sh | sh</code>
+                            <button
+                                onclick="copyInstallCommand()"
+                                id="copy-btn"
+                                class="flex-shrink-0 flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 hover:border-cyan-500 rounded text-slate-400 hover:text-cyan-400 transition-all duration-200"
+                                title="Copy to clipboard">
+                                <svg id="copy-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                </svg>
+                                <span id="copy-text" class="text-xs font-sans">Copy</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Manual install (Collapsible) -->
+                    <details class="group">
+                        <summary class="text-slate-500 text-sm cursor-pointer hover:text-slate-300 transition-colors flex items-center gap-2">
+                            <span class="text-cyan-400 group-open:rotate-90 transition-transform">▸</span>
+                            Or install manually
+                        </summary>
+                        <div class="bg-slate-900 rounded-lg p-4 font-mono text-sm overflow-x-auto mt-3">
+                            <div class="text-cyan-400">git clone https://github.com/23blocks-OS/ai-maestro.git</div>
+                            <div class="text-cyan-400">cd ai-maestro && yarn install && yarn dev</div>
+                        </div>
+                    </details>
+
+                    <!-- Claude Code Plugin (Collapsible) -->
+                    <details class="group mt-2">
+                        <summary class="text-slate-500 text-sm cursor-pointer hover:text-slate-300 transition-colors flex items-center gap-2">
+                            <span class="text-purple-400 group-open:rotate-90 transition-transform">▸</span>
+                            Or install Claude Code skills only (no service)
+                        </summary>
+                        <div class="bg-slate-900 rounded-lg p-4 font-mono text-sm overflow-x-auto mt-3">
+                            <div class="text-purple-400">/plugin marketplace add 23blocks-OS/ai-maestro</div>
+                            <div class="text-purple-400">/plugin install ai-maestro@ai-maestro-marketplace</div>
+                        </div>
+                        <div class="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                            <p class="text-sm text-slate-300"><span class="text-amber-400 font-bold">Note:</span> Plugin-only installs 5 skills, but <strong class="text-white">only the planning skill works standalone</strong>. The other 4 skills require the full AI Maestro service running. <a href="skills.html" class="text-cyan-400 hover:underline">Learn more →</a></p>
+                        </div>
+                    </details>
+
+                    <p class="mt-4 text-slate-400 text-sm">Dashboard opens at <code class="bg-slate-800 px-2 py-1 rounded text-cyan-400">http://localhost:23000</code></p>
+                    <div class="mt-4 p-4 bg-slate-800/50 border-l-2 border-amber-500 rounded">
+                        <p class="text-sm text-slate-300"><span class="text-amber-400 font-bold">Windows Users:</span> See our <a href="https://github.com/23blocks-OS/ai-maestro/blob/main/docs/WINDOWS-INSTALLATION.md" class="text-cyan-400 hover:underline" target="_blank">Windows installation guide</a> for WSL2 setup.</p>
+                    </div>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="bg-slate-850 border border-slate-800 rounded-lg p-8">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-12 h-12 rounded-full bg-cyan-500 text-slate-900 flex items-center justify-center font-display font-extrabold text-xl">2</div>
+                        <h3 class="font-display text-2xl font-bold text-white">Create Your First Agent</h3>
+                    </div>
+                    <ol class="space-y-3 text-slate-300">
+                        <li class="flex items-start gap-3">
+                            <span class="text-cyan-400 font-mono">▸</span>
+                            <span>Click the <strong class="text-white">+ button</strong> in the sidebar</span>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="text-cyan-400 font-mono">▸</span>
+                            <span>Enter a name with hyphens: <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-400 text-sm">myproject-backend-api</code></span>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="text-cyan-400 font-mono">▸</span>
+                            <span>Choose your working directory</span>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="text-cyan-400 font-mono">▸</span>
+                            <span>Click <strong class="text-white">Create Agent</strong></span>
+                        </li>
+                    </ol>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="bg-slate-850 border border-slate-800 rounded-lg p-8">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-12 h-12 rounded-full bg-cyan-500 text-slate-900 flex items-center justify-center font-display font-extrabold text-xl">3</div>
+                        <h3 class="font-display text-2xl font-bold text-white">Start Coding</h3>
+                    </div>
+                    <p class="text-slate-300">Your agent is live. Click to switch between agents. Add notes. Organize your work. <strong class="text-white">That's it.</strong></p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Divider -->
+    <div class="hr-accent"></div>
+
+    <!-- WHY SECTION -->
+    <section class="py-20 md:py-32 px-4 md:px-8 bg-slate-950/50">
+        <div class="max-w-7xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4">WHY AI MAESTRO?</h2>
+            </div>
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div class="text-center">
+                    <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center">
+                        <span class="text-3xl">🧠</span>
+                    </div>
+                    <h3 class="font-display text-lg font-bold text-white mb-2">Agents That Remember</h3>
+                    <p class="text-slate-400 text-sm">Persistent memory powered by CozoDB. They learn your codebase.</p>
+                </div>
+                <div class="text-center">
+                    <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center">
+                        <span class="text-3xl">💬</span>
+                    </div>
+                    <h3 class="font-display text-lg font-bold text-white mb-2">Agents That Communicate</h3>
+                    <p class="text-slate-400 text-sm">Direct agent-to-agent messaging. No human relay required.</p>
+                </div>
+                <div class="text-center">
+                    <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center">
+                        <span class="text-3xl">🌐</span>
+                    </div>
+                    <h3 class="font-display text-lg font-bold text-white mb-2">Agents Everywhere</h3>
+                    <p class="text-slate-400 text-sm">Run on laptops, servers, Docker, or cloud. One dashboard.</p>
+                </div>
+                <div class="text-center">
+                    <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center">
+                        <span class="text-3xl">🗺️</span>
+                    </div>
+                    <h3 class="font-display text-lg font-bold text-white mb-2">Agents That Understand</h3>
+                    <p class="text-slate-400 text-sm">Code Graph shows your entire codebase structure.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Divider -->
+    <div class="hr-accent"></div>
+
+    <!-- SOCIAL PROOF SECTION -->
+    <section class="py-20 md:py-24 px-4 md:px-8">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-12">
+                <h2 class="font-display text-3xl md:text-4xl font-extrabold tracking-tight text-white mb-4">Join the Community</h2>
+                <p class="text-lg text-slate-400">Developers are already orchestrating AI agents with AI Maestro</p>
+            </div>
+
+            <!-- GitHub Stats -->
+            <div class="flex flex-wrap justify-center gap-6 mb-12">
+                <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="group flex items-center gap-3 px-6 py-4 bg-slate-900 border border-slate-700 rounded-xl hover:border-cyan-500/50 transition-all no-underline">
+                    <svg class="w-8 h-8 text-slate-400 group-hover:text-cyan-400 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                    </svg>
+                    <div class="text-left">
+                        <div class="text-white font-bold group-hover:text-cyan-400 transition-colors">Star on GitHub</div>
+                        <div class="text-slate-500 text-sm">Support the project</div>
+                    </div>
+                </a>
+                <a href="https://github.com/23blocks-OS/ai-maestro/blob/main/LICENSE" target="_blank" class="group flex items-center gap-3 px-6 py-4 bg-slate-900 border border-slate-700 rounded-xl hover:border-green-500/50 transition-all no-underline">
+                    <div class="w-8 h-8 rounded-full bg-green-500/20 border border-green-500/30 flex items-center justify-center">
+                        <span class="text-green-400 text-lg">&#10003;</span>
+                    </div>
+                    <div class="text-left">
+                        <div class="text-white font-bold group-hover:text-green-400 transition-colors">MIT License</div>
+                        <div class="text-slate-500 text-sm">100% free, forever</div>
+                    </div>
+                </a>
+                <a href="vision.html" class="group flex items-center gap-3 px-6 py-4 bg-slate-900 border border-slate-700 rounded-xl hover:border-amber-500/50 transition-all no-underline">
+                    <div class="w-8 h-8 rounded-full bg-amber-500/20 border border-amber-500/30 flex items-center justify-center">
+                        <span class="text-amber-400 text-lg">&#9733;</span>
+                    </div>
+                    <div class="text-left">
+                        <div class="text-white font-bold group-hover:text-amber-400 transition-colors">Why AI Maestro?</div>
+                        <div class="text-slate-500 text-sm">Read our vision</div>
+                    </div>
+                </a>
+            </div>
+
+            <!-- Testimonial placeholder / Early adopter message -->
+            <div class="max-w-3xl mx-auto">
+                <div class="bg-gradient-to-br from-cyan-500/5 to-amber-500/5 border border-slate-700 rounded-2xl p-8 text-center">
+                    <p class="text-xl text-slate-300 italic mb-4">"The future of work is humans orchestrating teams of AI agents. We're building the dashboard for that future."</p>
+                    <div class="flex items-center justify-center gap-3">
+                        <div class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center">
+                            <span class="text-lg">&#128075;</span>
+                        </div>
+                        <div class="text-left">
+                            <div class="text-white font-medium">Juan Pelaez</div>
+                            <div class="text-slate-500 text-sm">Creator of AI Maestro</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Divider -->
+    <div class="hr-accent"></div>
+
+    <!-- FAQ SECTION -->
+    <section class="py-20 md:py-24 px-4 md:px-8 bg-slate-950/50">
+        <div class="max-w-4xl mx-auto">
+            <div class="text-center mb-12">
+                <h2 class="font-display text-3xl md:text-4xl font-extrabold tracking-tight text-white mb-4">Frequently Asked Questions</h2>
+            </div>
+
+            <div class="space-y-4">
+                <!-- FAQ 0 - What is it -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden" open>
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">What is AI Maestro?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>AI Maestro is an <strong class="text-white">open-source orchestration platform</strong> for AI coding agents. You deploy it yourself—on your laptop, your team's server, or your company's cloud infrastructure. It's not a SaaS or subscription service. Your infrastructure, your agents, your data. Runs anywhere you have Node.js and tmux. Free and MIT licensed, forever.</p>
+                    </div>
+                </details>
+
+                <!-- FAQ 1 -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">Why not just use tmux directly?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>tmux is powerful but requires memorizing keyboard shortcuts and manual session management. AI Maestro adds: visual dashboard, agent auto-discovery, persistent notes, memory integration, agent-to-agent messaging, mobile access, and zero configuration. You get all the power of tmux with a modern interface designed for AI agents.</p>
+                    </div>
+                </details>
+
+                <!-- FAQ 2 -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">Does this work with Claude Code, Aider, Cursor, etc.?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>Yes! AI Maestro works with any terminal-based AI coding agent. Claude Code, Aider, Continue, GitHub Copilot CLI, and others all work out of the box. If it runs in a terminal, AI Maestro can manage it.</p>
+                    </div>
+                </details>
+
+                <!-- FAQ 3 -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">Is my data stored locally or in the cloud?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>Everything is local. AI Maestro runs on your machine and stores all data locally. Agent notes, memory, conversation history - it's all on your computer. We don't have servers, we don't collect data, we don't phone home. Your code stays yours.</p>
+                    </div>
+                </details>
+
+                <!-- FAQ 4 -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">Can I use this with my team?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>Absolutely. AI Maestro supports multi-computer setups with distributed peers. Team members can run agents on their laptops while sharing resources across the mesh. Mobile access via Tailscale means everyone can monitor from anywhere. Check out our <a href="multi-computer.html" class="text-cyan-400 hover:underline">multi-computer setup guide</a>.</p>
+                    </div>
+                </details>
+
+                <!-- FAQ 5 -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">What platforms are supported?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>AI Maestro runs on macOS 12.0+, Linux, and Windows 10/11 via WSL2. It requires Node.js 18.17+ and tmux 3.0+. Docker deployments are also supported for both local and hybrid setups.</p>
+                    </div>
+                </details>
+
+                <!-- FAQ 6 -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">Is it really free?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>Yes, completely free and open source under the MIT license. No premium tiers, no feature gates, no usage limits. We believe multi-agent orchestration should be accessible to everyone. Star us on GitHub if you find it useful!</p>
+                    </div>
+                </details>
+
+                <!-- FAQ 7 - Skills -->
+                <details class="group bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer list-none">
+                        <h3 class="font-display text-lg font-bold text-white pr-4">How do the superpowers work under the hood?</h3>
+                        <span class="text-cyan-400 text-2xl group-open:rotate-45 transition-transform">+</span>
+                    </summary>
+                    <div class="px-6 pb-6 text-slate-400">
+                        <p>AI Maestro ships 6 skills that comply with the open <a href="https://agentskills.io/specification" target="_blank" class="text-cyan-400 hover:underline">Agent Skills Standard</a>. They work with Claude Code, OpenCode, Codex CLI, Gemini CLI, Cursor, GitHub Copilot, and 30+ compatible agents. Skills automatically trigger memory searches, code graph queries, and documentation lookups. The <strong class="text-white">planning</strong> skill works standalone on any agent; the other 5 need the AI Maestro service. <a href="skills.html" class="text-cyan-400 hover:underline">Learn more about Skills →</a></p>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA SECTION -->
+    <section class="py-20 md:py-32 px-4 md:px-8 relative overflow-hidden">
+        <div class="absolute inset-0 bg-gradient-to-br from-cyan-500/10 via-transparent to-amber-500/10"></div>
+        <div class="max-w-4xl mx-auto text-center relative z-10">
+            <h2 class="font-display text-4xl md:text-6xl font-extrabold tracking-tight text-white mb-6">Ready to orchestrate your AI team?</h2>
+            <p class="text-xl text-slate-400 mb-10">Free and open source. MIT Licensed. Forever.</p>
+            <a href="https://github.com/23blocks-OS/ai-maestro" class="inline-flex items-center gap-3 px-10 py-5 rounded bg-white text-slate-900 font-bold text-xl hover:bg-slate-100 transition-all duration-200" target="_blank">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                </svg>
+                Get Started on GitHub
+            </a>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="py-16 pb-8 bg-slate-950 border-t border-slate-800 px-4 md:px-8">
+        <div class="max-w-7xl mx-auto">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-12 mb-12">
+                <div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <img src="logo-constellation.svg" alt="AI Maestro" class="w-8 h-8">
+                        <span class="font-display font-bold text-lg text-white">AI MAESTRO</span>
+                    </div>
+                    <p class="text-slate-400 text-sm">The future of work is here. Orchestrate multiple AI coding agents from one dashboard.</p>
+                </div>
+                <div>
+                    <h4 class="font-mono text-xs text-slate-500 tracking-widest mb-4">LINKS</h4>
+                    <a href="https://github.com/23blocks-OS/ai-maestro" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">GitHub</a>
+                    <a href="plugin-builder.html" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">Plugin Builder</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro/issues" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">Issues</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro/blob/main/CONTRIBUTING.md" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">Contributing</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro/blob/main/LICENSE" class="block text-slate-400 no-underline mb-2 hover:text-cyan-400 transition-colors text-sm">License (MIT)</a>
+                </div>
+                <div>
+                    <h4 class="font-mono text-xs text-slate-500 tracking-widest mb-4">BUILT BY</h4>
+                    <p class="text-slate-400 text-sm mb-2">
+                        <a href="https://x.com/jkpelaez" target="_blank" class="text-white hover:text-cyan-400 transition-colors">Juan Peláez</a> @ <a href="https://23blocks.com" target="_blank" class="text-white hover:text-cyan-400 transition-colors">23blocks</a>
+                    </p>
+                    <p class="text-slate-500 text-xs">Made with <span class="text-red-500">♥</span> in Boulder, Colorado</p>
+                    <p class="text-slate-500 text-xs mt-1">Coded with Claude</p>
+                </div>
+            </div>
+            <div class="pt-8 border-t border-slate-800 text-center">
+                <p class="text-slate-500 text-sm">© 2025 Juan Peláez / 23blocks. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- GSAP Animations -->
+    <script>
+        gsap.registerPlugin(ScrollTrigger);
+
+        // Typing animation for headline
+        const headline = document.getElementById('typed-headline');
+        const text = "The future of work is here.";
+        let charIndex = 0;
+
+        function typeCharacter() {
+            if (charIndex < text.length) {
+                headline.textContent += text[charIndex];
+                charIndex++;
+                setTimeout(typeCharacter, 60);
+            } else {
+                // After typing completes, fade in other elements
+                gsap.to('#subheadline', { opacity: 1, y: 0, duration: 0.8, ease: 'power2.out' });
+                gsap.to('#vision', { opacity: 1, y: 0, duration: 0.8, delay: 0.2, ease: 'power2.out' });
+                gsap.to('#ctas', { opacity: 1, y: 0, duration: 0.8, delay: 0.4, ease: 'power2.out' });
+                gsap.to('#stats', { opacity: 1, y: 0, duration: 0.8, delay: 0.6, ease: 'power2.out' });
+            }
+        }
+
+        // Start typing after short delay
+        setTimeout(typeCharacter, 500);
+
+        // Scroll-triggered animations
+        gsap.utils.toArray('section').forEach((section) => {
+            gsap.from(section, {
+                opacity: 0,
+                y: 40,
+                duration: 0.8,
+                ease: 'power2.out',
+                scrollTrigger: {
+                    trigger: section,
+                    start: 'top 85%',
+                    toggleActions: 'play none none none'
+                }
+            });
+        });
+
+        // Stagger persona cards
+        gsap.from('.crew-badge', {
+            opacity: 0,
+            y: 30,
+            duration: 0.6,
+            stagger: 0.1,
+            ease: 'power2.out',
+            scrollTrigger: {
+                trigger: '#personas',
+                start: 'top 70%',
+                toggleActions: 'play none none none'
+            }
+        });
+
+        // Stagger feature cards
+        gsap.from('.feature-card', {
+            opacity: 0,
+            y: 20,
+            duration: 0.5,
+            stagger: 0.05,
+            ease: 'power2.out',
+            scrollTrigger: {
+                trigger: '#features',
+                start: 'top 70%',
+                toggleActions: 'play none none none'
+            }
+        });
+    </script>
+
+    <!-- Alt-link click handlers for persona cards -->
+    <script>
+        document.querySelectorAll('.alt-link').forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = this.dataset.href;
+            });
+        });
+    </script>
+
+    <!-- Copy install command functionality -->
+    <script>
+        function copyInstallCommand() {
+            const command = document.getElementById('install-command').textContent;
+            const btn = document.getElementById('copy-btn');
+            const text = document.getElementById('copy-text');
+            const icon = document.getElementById('copy-icon');
+
+            navigator.clipboard.writeText(command).then(() => {
+                // Success feedback
+                text.textContent = 'Copied!';
+                btn.classList.add('border-green-500', 'text-green-400');
+                btn.classList.remove('border-slate-600', 'text-slate-400');
+                icon.innerHTML = '<polyline points="20 6 9 17 4 12"></polyline>';
+
+                // Reset after 2 seconds
+                setTimeout(() => {
+                    text.textContent = 'Copy';
+                    btn.classList.remove('border-green-500', 'text-green-400');
+                    btn.classList.add('border-slate-600', 'text-slate-400');
+                    icon.innerHTML = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>';
+                }, 2000);
+            });
+        }
+    </script>
+
+    <!-- Copy for AI functionality -->
+    <script src="copy-for-ai.js"></script>
+</body>
+</html>

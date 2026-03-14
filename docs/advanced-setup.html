@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Setup - Enterprise-Grade AI Agent Orchestration | AI Maestro</title>
+    <meta name="description" content="Enterprise-grade AI agent orchestration with unlimited scalability. Combine local, distributed, and cloud resources in one unified platform.">
+
+    <!-- Additional SEO -->
+    <meta name="keywords" content="advanced AI setup, enterprise AI agents, distributed AI infrastructure, cloud AI agents, scalable AI orchestration, multi-machine AI, hybrid AI deployment, AI fleet management, enterprise development tools">
+    <link rel="canonical" href="https://ai-maestro.23blocks.com/advanced-setup.html">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ai-maestro.23blocks.com/advanced-setup.html">
+    <meta property="og:title" content="Advanced Setup - Enterprise AI Agent Orchestration | AI Maestro">
+    <meta property="og:description" content="Enterprise-grade AI agent orchestration with unlimited scalability. Combine local, distributed, and cloud resources in one unified platform.">
+    <meta property="og:image" content="https://ai-maestro.23blocks.com/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="AI Maestro - Orchestrate your AI coding agents">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://ai-maestro.23blocks.com/advanced-setup.html">
+    <meta property="twitter:title" content="Advanced Setup - Enterprise AI Agent Orchestration | AI Maestro">
+    <meta property="twitter:description" content="Enterprise-grade AI agent orchestration with unlimited scalability. Combine local, distributed, and cloud resources in one unified platform.">
+    <meta property="twitter:image" content="https://ai-maestro.23blocks.com/og-image.png">
+    <meta name="twitter:creator" content="@jkpelaez">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+    <!-- Fonts -->
+    <!-- Typography: Syne (display) + DM Sans (body) + JetBrains Mono (code) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        display: ['Syne', 'system-ui', 'sans-serif'],
+                        sans: ['DM Sans', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        slate: {
+                            950: '#020617',
+                            900: '#0f172a',
+                            850: '#131c31',
+                            800: '#1e293b',
+                        },
+                        cyan: {
+                            400: '#22d3ee',
+                            500: '#00d4ff',
+                        },
+                        amber: {
+                            400: '#fbbf24',
+                            500: '#f59e0b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-W72WHGDW');</script>
+    <!-- End Google Tag Manager -->
+
+    <!-- Schema.org Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "TechArticle",
+      "name": "Advanced Setup - Enterprise-Grade AI Agent Orchestration",
+      "description": "Enterprise-grade AI agent orchestration with unlimited scalability. Combine local, distributed, and cloud resources in one unified platform.",
+      "keywords": "advanced AI setup, enterprise AI agents, distributed AI infrastructure, cloud AI agents, scalable AI orchestration",
+      "isPartOf": {
+        "@type": "SoftwareApplication",
+        "name": "AI Maestro",
+        "url": "https://ai-maestro.23blocks.com"
+      },
+      "author": {
+        "@type": "Person",
+        "name": "Juan Peláez",
+        "url": "https://x.com/jkpelaez"
+      }
+    }
+    </script>
+
+    
+    <style>
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: 80px;
+        }
+
+        body {
+            background-color: #0f172a;
+            color: #e2e8f0;
+        }
+
+        /* Noise texture overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.03;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            z-index: 9999;
+        }
+
+        /* Gradient text */
+        .gradient-text {
+            background: linear-gradient(135deg, #00d4ff 0%, #22d3ee 50%, #fbbf24 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Hamburger menu */
+        .hamburger span {
+            display: block;
+            width: 24px;
+            height: 2px;
+            background: #e2e8f0;
+            transition: all 0.3s ease;
+        }
+        .hamburger.active span:nth-child(1) {
+            transform: rotate(45deg) translate(5px, 5px);
+        }
+        .hamburger.active span:nth-child(2) {
+            opacity: 0;
+        }
+        .hamburger.active span:nth-child(3) {
+            transform: rotate(-45deg) translate(7px, -6px);
+        }
+        .mobile-menu {
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+        .mobile-menu.active {
+            opacity: 1;
+            transform: translateY(0);
+            display: block !important;
+            pointer-events: auto;
+        }
+
+        /* Horizontal rule accent */
+        .hr-accent {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #00d4ff, transparent);
+        }
+
+        /* Typing cursor */
+        .typing-cursor {
+            display: inline-block;
+            width: 3px;
+            height: 1em;
+            background-color: #00d4ff;
+            margin-left: 4px;
+            animation: blink 1s infinite;
+            vertical-align: text-bottom;
+        }
+
+        @keyframes blink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0; }
+        }
+    </style>
+
+</head>
+<body class="font-sans antialiased">
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-W72WHGDW"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    
+    <!-- Copy for AI Button -->
+    <button
+        onclick="copyForAI()"
+        class="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2 bg-slate-800 border border-slate-700 text-cyan-400 font-mono text-sm rounded hover:bg-slate-700 hover:border-cyan-500/50 transition-all duration-200"
+        title="Copy this page for AI assistants">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        COPY FOR AI
+    </button>
+
+
+    
+    <!-- Navigation -->
+    <nav class="sticky top-0 bg-slate-900/95 backdrop-blur-lg border-b border-slate-800 z-[100]">
+        <div class="max-w-7xl mx-auto px-4 md:px-8">
+            <div class="flex justify-between items-center py-4">
+                <a href="index.html" class="flex items-center gap-3 text-white no-underline hover:opacity-80 transition-opacity duration-200">
+                    <img src="logo-constellation.svg" alt="AI Maestro" class="w-8 h-8 md:w-10 md:h-10">
+                    <span class="font-display font-bold text-lg md:text-xl tracking-tight">AI MAESTRO</span>
+                </a>
+
+                <!-- Desktop Navigation -->
+                <div class="hidden md:flex gap-8 items-center">
+                    <a href="index.html#personas" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">WHO IT'S FOR</a>
+                    <a href="index.html#features" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">FEATURES</a>
+                    <a href="index.html#quick-start" class="text-slate-400 no-underline font-medium hover:text-cyan-400 transition-colors duration-200 text-sm tracking-wide">GET STARTED</a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="text-slate-400 no-underline hover:text-cyan-400 transition-colors duration-200" title="View on GitHub">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    </a>
+                    <a href="https://github.com/23blocks-OS/ai-maestro#readme" class="inline-flex items-center gap-2 px-5 py-2.5 rounded bg-cyan-500 text-slate-900 font-display font-bold text-sm tracking-wide hover:bg-cyan-400 transition-all duration-200" target="_blank">
+                        START FREE
+                    </a>
+                </div>
+
+                <!-- Mobile Navigation -->
+                <div class="flex md:hidden items-center gap-3">
+                    <a href="https://github.com/23blocks-OS/ai-maestro#readme" class="px-3 py-2 rounded bg-cyan-500 text-slate-900 font-display font-bold text-xs tracking-wide" target="_blank">START</a>
+                    <button class="hamburger bg-transparent border-0 cursor-pointer p-2 flex flex-col gap-1.5 z-[1001]" id="hamburger" aria-label="Toggle menu">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Mobile Menu -->
+            <div class="mobile-menu hidden absolute top-full left-0 right-0 bg-slate-900 border-b border-slate-800 py-4" id="mobile-menu">
+                <a href="index.html#personas" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Who It's For</a>
+                <a href="index.html#features" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Features</a>
+                <a href="index.html#quick-start" class="block px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">Get Started</a>
+                <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="flex items-center gap-3 px-8 py-3 text-slate-300 no-underline font-medium hover:text-cyan-400 hover:bg-slate-800/50">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    GitHub
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <script>
+        const hamburger = document.getElementById('hamburger');
+        const mobileMenu = document.getElementById('mobile-menu');
+        hamburger.addEventListener('click', () => {
+            hamburger.classList.toggle('active');
+            mobileMenu.classList.toggle('active');
+        });
+        mobileMenu.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => {
+                hamburger.classList.remove('active');
+                mobileMenu.classList.remove('active');
+            });
+        });
+        document.addEventListener('click', (e) => {
+            if (!hamburger.contains(e.target) && !mobileMenu.contains(e.target)) {
+                hamburger.classList.remove('active');
+                mobileMenu.classList.remove('active');
+            }
+        });
+    </script>
+
+
+    <!-- Hero Section -->
+    <section class="py-16 md:py-24 gradient-bg px-8">
+        <div class="max-w-[1200px] mx-auto text-center">
+            <p class="text-2xl md:text-3xl font-display font-medium text-slate-400 mb-4" id="announcement"><span class="typing-cursor"></span></p>
+            <h1 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight mb-6">
+                <span class="gradient-text">Advanced Setup</span><br/>
+                <span class="text-white">Enterprise-Grade Orchestration</span>
+            </h1>
+            <p class="text-xl text-slate-400 mb-8 max-w-[700px] mx-auto">
+                Combine local, distributed, and cloud resources in one unified platform. Infinite scalability, geographic distribution, and team collaboration at enterprise scale.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="#how-it-works" class="inline-flex items-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-gradient-to-r from-orange-500 to-amber-400 text-white hover:shadow-[0_8px_16px_rgba(249,115,22,0.3)] hover:-translate-y-1">
+                    See How It Works
+                </a>
+                <a href="index.html#personas" class="inline-flex items-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-slate-900 text-white border-2 border-orange-500 hover:bg-orange-50 hover:-translate-y-1">
+                    Compare Work Modes
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Perfect For Section -->
+    <section class="py-12 bg-slate-900/50 border-y border-slate-800">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex flex-col md:flex-row items-center gap-8">
+                <div class="flex-shrink-0">
+                    <div class="w-20 h-20 rounded-full bg-gradient-to-br from-cyan-500/30 to-blue-600/10 border-2 border-cyan-500/50 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+                        <span class="text-4xl">🏢</span>
+                    </div>
+                </div>
+                <div class="text-center md:text-left">
+                    <div class="flex items-center justify-center md:justify-start gap-3 mb-2">
+                        <h2 class="font-display text-2xl font-bold text-white">Perfect for: Company</h2>
+                        <span class="px-3 py-1 bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded-full text-sm font-mono">Teams + Agents</span>
+                    </div>
+                    <p class="text-lg text-slate-300 italic">"Each department has specialized AI agents. Security, docs, testing. Autonomous coordination."</p>
+                    <div class="flex flex-wrap gap-2 mt-4 justify-center md:justify-start">
+                        <span class="px-3 py-1.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono">distributed</span>
+                        <span class="px-3 py-1.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono">data centers</span>
+                        <span class="px-3 py-1.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono">enterprise scale</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Benefits Section -->
+    <section class="py-16 md:py-24 bg-slate-900 px-8">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white text-center mb-6">Why Advanced Setup?</h2>
+            <p class="text-xl text-slate-400 text-center mb-12 max-w-[700px] mx-auto">
+                The ultimate orchestration platform for teams and enterprises demanding maximum flexibility, scale, and control.
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <div class="p-6 bg-slate-950 rounded-lg border border-slate-700 hover:shadow-lg hover:shadow-cyan-500/10 shadow-cyan-500/5 transition-shadow duration-200">
+                    <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-lg mb-4 flex items-center justify-center text-white text-2xl font-display font-bold">∞</div>
+                    <h3 class="text-xl font-display font-bold mb-2 text-white">Infinite Scalability</h3>
+                    <p class="text-slate-400">Scale from 1 agent to 1,000+ across unlimited machines, containers, and cloud instances. Add capacity in seconds.</p>
+                </div>
+                <div class="p-6 bg-slate-950 rounded-lg border border-slate-700 hover:shadow-lg hover:shadow-cyan-500/10 shadow-cyan-500/5 transition-shadow duration-200">
+                    <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-lg mb-4 flex items-center justify-center text-white text-2xl font-display font-bold">🌍</div>
+                    <h3 class="text-xl font-display font-bold mb-2 text-white">Geographic Distribution</h3>
+                    <p class="text-slate-400">Deploy agents worldwide for low-latency access. Process data where it lives. Comply with regional data sovereignty requirements.</p>
+                </div>
+                <div class="p-6 bg-slate-950 rounded-lg border border-slate-700 hover:shadow-lg hover:shadow-cyan-500/10 shadow-cyan-500/5 transition-shadow duration-200">
+                    <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-lg mb-4 flex items-center justify-center text-white text-2xl font-display font-bold">🔄</div>
+                    <h3 class="text-xl font-display font-bold mb-2 text-white">Hybrid Everything</h3>
+                    <p class="text-slate-400">Mix and match: bare metal + VMs + Docker + cloud. Run where it makes sense. Migrate workloads seamlessly.</p>
+                </div>
+                <div class="p-6 bg-slate-950 rounded-lg border border-slate-700 hover:shadow-lg hover:shadow-cyan-500/10 shadow-cyan-500/5 transition-shadow duration-200">
+                    <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-lg mb-4 flex items-center justify-center text-white text-2xl font-display font-bold">👥</div>
+                    <h3 class="text-xl font-display font-bold mb-2 text-white">Team Collaboration</h3>
+                    <p class="text-slate-400">Multiple developers share agent pools. Centralized management. Role-based access control. Real-time collaboration.</p>
+                </div>
+                <div class="p-6 bg-slate-950 rounded-lg border border-slate-700 hover:shadow-lg hover:shadow-cyan-500/10 shadow-cyan-500/5 transition-shadow duration-200">
+                    <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-lg mb-4 flex items-center justify-center text-white text-2xl font-display font-bold">🛡️</div>
+                    <h3 class="text-xl font-display font-bold mb-2 text-white">Fault Tolerance</h3>
+                    <p class="text-slate-400">Automatic failover. Health monitoring. Self-healing infrastructure. Never lose work to infrastructure failures.</p>
+                </div>
+                <div class="p-6 bg-slate-950 rounded-lg border border-slate-700 hover:shadow-lg hover:shadow-cyan-500/10 shadow-cyan-500/5 transition-shadow duration-200">
+                    <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-lg mb-4 flex items-center justify-center text-white text-2xl font-display font-bold">📊</div>
+                    <h3 class="text-xl font-display font-bold mb-2 text-white">Enterprise Observability</h3>
+                    <p class="text-slate-400">Unified dashboard for all resources. Real-time metrics. Usage analytics. Cost tracking. Audit logs.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works Section -->
+    <section id="how-it-works" class="py-16 md:py-24 bg-slate-950 px-8">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white text-center mb-6">How It Works</h2>
+            <p class="text-xl text-slate-400 text-center mb-12 max-w-[700px] mx-auto">
+                Four steps to enterprise-grade AI agent orchestration.
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div class="flex gap-4">
+                    <div class="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-full flex items-center justify-center text-white font-display font-bold text-xl">1</div>
+                    <div>
+                        <h3 class="text-xl font-display font-bold mb-2 text-white">Configure Manager Node</h3>
+                        <p class="text-slate-400 mb-3">Install AI Maestro on your primary machine. This becomes your control plane - the unified dashboard for all agents across all infrastructure.</p>
+                        <div class="bg-gray-900 p-4 rounded-lg font-mono text-sm">
+                            <div class="text-slate-500 mb-1"># One command installs everything</div>
+                            <div class="flex items-center justify-between gap-2 mb-1">
+                                <code class="text-cyan-400 install-cmd">curl -fsSL https://raw.githubusercontent.com/23blocks-OS/ai-maestro/main/scripts/remote-install.sh | sh</code>
+                                <button onclick="copyCmd(this)" class="copy-btn flex-shrink-0 px-2 py-1 bg-slate-700 hover:bg-slate-600 border border-slate-600 hover:border-cyan-500 rounded text-slate-400 hover:text-cyan-400 text-xs transition-all" title="Copy">
+                                    <span class="copy-label">Copy</span>
+                                </button>
+                            </div>
+                            <div class="text-slate-500">// Includes --auto-start option for production</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex gap-4">
+                    <div class="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-full flex items-center justify-center text-white font-display font-bold text-xl">2</div>
+                    <div>
+                        <h3 class="text-xl font-display font-bold mb-2 text-white">Add Peer Machines</h3>
+                        <p class="text-slate-400 mb-3">Configure access to any number of remote machines. They'll auto-discover and join your peer mesh. Mix bare metal, VMs, and cloud instances.</p>
+                        <div class="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm">
+                            <div># Add peer configuration</div>
+                            <div>vi ~/.aimaestro/hosts.json</div>
+                            <div class="text-slate-500">// Add SSH hosts with credentials</div>
+                            <div class="text-slate-500">// Auto-discovery starts immediately</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex gap-4">
+                    <div class="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-full flex items-center justify-center text-white font-display font-bold text-xl">3</div>
+                    <div>
+                        <h3 class="text-xl font-display font-bold mb-2 text-white">Deploy Docker Agents</h3>
+                        <p class="text-slate-400 mb-3">Spin up containerized agents locally or on cloud providers. Perfect environment isolation, zero dependency conflicts. Scale containers up/down on demand.</p>
+                        <div class="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm">
+                            <div># Deploy Docker agents anywhere</div>
+                            <div>docker pull 23blocks/claude-code-agent</div>
+                            <div>docker-compose up -d --scale agent=10</div>
+                            <div class="text-slate-500">// Auto-registers with manager</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex gap-4">
+                    <div class="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-400 rounded-full flex items-center justify-center text-white font-display font-bold text-xl">4</div>
+                    <div>
+                        <h3 class="text-xl font-display font-bold mb-2 text-white">Orchestrate & Monitor</h3>
+                        <p class="text-slate-400 mb-3">Manage everything from one dashboard. See all agents (local, remote, Docker, cloud). Monitor health, metrics, costs. Scale intelligently.</p>
+                        <div class="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm">
+                            <div># Access unified dashboard</div>
+                            <div>open http://localhost:23000</div>
+                            <div class="text-slate-500">// View: 127 agents across 23 hosts</div>
+                            <div class="text-slate-500">// Real-time metrics & control</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Use Cases Section -->
+    <section class="py-16 md:py-24 bg-slate-900 px-8">
+        <div class="max-w-[1200px] mx-auto">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight text-white text-center mb-6">Perfect For</h2>
+            <p class="text-xl text-slate-400 text-center mb-12 max-w-[700px] mx-auto">
+                Enterprise teams and organizations with demanding scale, compliance, or collaboration requirements.
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div class="p-8 bg-slate-950 rounded-lg border border-slate-700">
+                    <div class="text-4xl mb-4">🏢</div>
+                    <h3 class="text-2xl font-display font-bold font-display mb-3 text-white">Enterprise Development Teams</h3>
+                    <p class="text-slate-400 mb-4">
+                        Large organizations need centralized management, role-based access, audit logs, and cost tracking. Advanced Setup provides enterprise-grade orchestration for teams of 10-1000+ developers.
+                    </p>
+                    <ul class="space-y-2 text-slate-400">
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Centralized agent pool for entire organization</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Role-based access control and permissions</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Usage tracking and cost allocation by team</span>
+                        </li>
+                    </ul>
+                </div>
+                <div class="p-8 bg-slate-950 rounded-lg border border-slate-700">
+                    <div class="text-4xl mb-4">🌐</div>
+                    <h3 class="text-2xl font-display font-bold font-display mb-3 text-white">Global Distributed Teams</h3>
+                    <p class="text-slate-400 mb-4">
+                        Teams across time zones and continents need low-latency access everywhere. Deploy agents in multiple regions, process data where it lives, comply with regional regulations.
+                    </p>
+                    <ul class="space-y-2 text-slate-400">
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Agents in US, EU, APAC for low latency</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Data sovereignty compliance (GDPR, etc.)</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>24/7 agent availability across time zones</span>
+                        </li>
+                    </ul>
+                </div>
+                <div class="p-8 bg-slate-950 rounded-lg border border-slate-700">
+                    <div class="text-4xl mb-4">🚀</div>
+                    <h3 class="text-2xl font-display font-bold font-display mb-3 text-white">High-Performance Computing</h3>
+                    <p class="text-slate-400 mb-4">
+                        Workloads requiring massive parallel processing, GPU acceleration, or specialized hardware. Run thousands of agents simultaneously across heterogeneous infrastructure.
+                    </p>
+                    <ul class="space-y-2 text-slate-400">
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Parallel code analysis across 1000+ repos</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>GPU-accelerated ML model training agents</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Specialized hardware (TPUs, FPGAs) integration</span>
+                        </li>
+                    </ul>
+                </div>
+                <div class="p-8 bg-slate-950 rounded-lg border border-slate-700">
+                    <div class="text-4xl mb-4">🔒</div>
+                    <h3 class="text-2xl font-display font-bold font-display mb-3 text-white">Regulated Industries</h3>
+                    <p class="text-slate-400 mb-4">
+                        Financial services, healthcare, government need air-gapped environments, audit trails, compliance controls. Deploy agents in private clouds or on-premises with full control.
+                    </p>
+                    <ul class="space-y-2 text-slate-400">
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Air-gapped deployment (no external internet)</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>Complete audit logs for compliance</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-orange-500 font-display font-bold">•</span>
+                            <span>On-premises deployment with full data control</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="py-16 md:py-24 gradient-bg px-8">
+        <div class="max-w-[800px] mx-auto text-center">
+            <h2 class="font-display text-4xl md:text-5xl font-extrabold tracking-tight mb-6">
+                <span class="gradient-text">Ready for Enterprise Scale?</span>
+            </h2>
+            <p class="text-xl text-slate-400 mb-8">
+                Start with the basics and scale up, or deploy the full advanced setup from day one. You're in control.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="https://github.com/23blocks-OS/ai-maestro#readme" target="_blank" class="inline-flex items-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-gradient-to-r from-orange-500 to-amber-400 text-white hover:shadow-[0_8px_16px_rgba(249,115,22,0.3)] hover:-translate-y-1">
+                    Get Started
+                </a>
+                <a href="index.html#personas" class="inline-flex items-center gap-2 px-8 py-4 rounded-lg no-underline font-semibold transition-all duration-200 bg-slate-900 text-white border-2 border-orange-500 hover:bg-orange-50 hover:-translate-y-1">
+                    Compare All Work Modes
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Other Setup Modes -->
+    <section class="py-16 px-8 bg-slate-900/50">
+        <div class="max-w-5xl mx-auto">
+            <h3 class="font-display text-2xl font-bold text-white text-center mb-8">Other Setup Modes</h3>
+            <div class="grid md:grid-cols-5 gap-4">
+                <a href="single-computer.html" class="group p-4 bg-slate-900 border border-slate-700 rounded-lg hover:border-green-500/50 transition-all duration-300 no-underline">
+                    <span class="text-xl mb-2 block">💻</span>
+                    <span class="font-bold text-white text-sm group-hover:text-green-400 transition-colors">Single Computer</span>
+                    <p class="text-slate-500 text-xs mt-1">Local setup</p>
+                </a>
+                <a href="multi-computer.html" class="group p-4 bg-slate-900 border border-slate-700 rounded-lg hover:border-amber-500/50 transition-all duration-300 no-underline">
+                    <span class="text-xl mb-2 block">🌐</span>
+                    <span class="font-bold text-white text-sm group-hover:text-amber-400 transition-colors">Multi-Computer</span>
+                    <p class="text-slate-500 text-xs mt-1">SSH-powered agents</p>
+                </a>
+                <a href="peers.html" class="group p-4 bg-slate-900 border border-slate-700 rounded-lg hover:border-purple-500/50 transition-all duration-300 no-underline">
+                    <span class="text-xl mb-2 block">⚡</span>
+                    <span class="font-bold text-white text-sm group-hover:text-purple-400 transition-colors">Peers</span>
+                    <p class="text-slate-500 text-xs mt-1">Peer mesh network</p>
+                </a>
+                <a href="docker-local.html" class="group p-4 bg-slate-900 border border-slate-700 rounded-lg hover:border-cyan-500/50 transition-all duration-300 no-underline">
+                    <span class="text-xl mb-2 block">🐳</span>
+                    <span class="font-bold text-white text-sm group-hover:text-cyan-400 transition-colors">Docker Local</span>
+                    <p class="text-slate-500 text-xs mt-1">Isolated containers</p>
+                </a>
+                <a href="docker-hybrid.html" class="group p-4 bg-slate-900 border border-slate-700 rounded-lg hover:border-pink-500/50 transition-all duration-300 no-underline">
+                    <span class="text-xl mb-2 block">☁️</span>
+                    <span class="font-bold text-white text-sm group-hover:text-pink-400 transition-colors">Docker Hybrid</span>
+                    <p class="text-slate-500 text-xs mt-1">Local + cloud</p>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-16 pb-8 bg-slate-950 border-t border-slate-800 px-4 md:px-8">
+        <div class="max-w-7xl mx-auto">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-12 mb-12">
+                <div class="md:col-span-2">
+                    <div class="flex items-center gap-3 mb-4">
+                        <img src="logo-constellation.svg" alt="AI Maestro" class="w-10 h-10">
+                        <span class="font-display font-bold text-xl text-white">AI MAESTRO</span>
+                    </div>
+                    <p class="text-slate-400 leading-relaxed max-w-md">The future of work platform. Orchestrate multiple AI coding agents from one dashboard.</p>
+                    <div class="flex items-center gap-4 mt-6">
+                        <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" class="text-slate-400 hover:text-cyan-400 transition-colors">
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                        </a>
+                        <a href="https://x.com/jkpelaez" target="_blank" class="text-slate-400 hover:text-cyan-400 transition-colors">
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                        </a>
+                    </div>
+                </div>
+                <div>
+                    <h4 class="font-display font-bold text-white mb-4">Resources</h4>
+                    <ul class="space-y-3">
+                        <li><a href="https://github.com/23blocks-OS/ai-maestro#readme" class="text-slate-400 hover:text-cyan-400 transition-colors no-underline">Documentation</a></li>
+                        <li><a href="https://github.com/23blocks-OS/ai-maestro/issues" class="text-slate-400 hover:text-cyan-400 transition-colors no-underline">Issues</a></li>
+                        <li><a href="https://github.com/23blocks-OS/ai-maestro/blob/main/CONTRIBUTING.md" class="text-slate-400 hover:text-cyan-400 transition-colors no-underline">Contributing</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-display font-bold text-white mb-4">Built by</h4>
+                    <p class="text-slate-400">
+                        <a href="https://x.com/jkpelaez" target="_blank" class="hover:text-cyan-400 transition-colors no-underline">Juan Pelaez</a> @ <a href="https://23blocks.com" target="_blank" class="hover:text-cyan-400 transition-colors no-underline">23blocks</a>
+                    </p>
+                    <p class="text-slate-500 text-sm mt-2">Made with <span class="text-red-500">&#9829;</span> in Boulder, CO</p>
+                    <p class="text-slate-500 text-sm">Coded with Claude</p>
+                </div>
+            </div>
+            <div class="pt-8 border-t border-slate-800 text-center">
+                <p class="text-slate-500 text-sm">&copy; 2025 Juan Pelaez / 23blocks. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+
+    <!-- Copy for AI functionality -->
+    <script src="copy-for-ai.js"></script>
+
+    <!-- Copy command functionality -->
+    <script>
+        function copyCmd(btn) {
+            const code = btn.parentElement.querySelector('.install-cmd');
+            const label = btn.querySelector('.copy-label');
+            navigator.clipboard.writeText(code.textContent).then(() => {
+                label.textContent = 'Copied!';
+                btn.classList.add('border-green-500', 'text-green-400');
+                setTimeout(() => {
+                    label.textContent = 'Copy';
+                    btn.classList.remove('border-green-500', 'text-green-400');
+                }, 2000);
+            });
+        }
+    </script>
+
+    <!-- Typing animation -->
+    <script>
+        const announcement = document.getElementById('announcement');
+        const text = "For the power users.";
+        const cursor = announcement.querySelector('.typing-cursor');
+        let charIndex = 0;
+
+        function typeCharacter() {
+            if (charIndex < text.length) {
+                const char = text[charIndex];
+                const textNode = document.createTextNode(char);
+                announcement.insertBefore(textNode, cursor);
+                charIndex++;
+                setTimeout(typeCharacter, 50);
+            }
+        }
+
+        setTimeout(typeCharacter, 800);
+    </script>
+</body>
+</html>

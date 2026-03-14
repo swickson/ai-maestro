@@ -1,0 +1,167 @@
+@import '@xterm/xterm/css/xterm.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-mono: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+html {
+  /* Prevent ALL scroll navigation gestures at root level */
+  overscroll-behavior: none;
+}
+
+body {
+  @apply bg-gray-900 text-gray-100;
+  /* Prevent ALL overscroll behaviors - no pull-to-refresh, no swipe navigation */
+  overscroll-behavior: none;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
+}
+
+/* Mobile-specific improvements */
+@media (max-width: 768px) {
+  /* Ensure full height on mobile */
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* Better tap targets on mobile */
+  button, a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Custom scrollbar for terminal and sidebar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+}
+
+/* xterm.js container styles */
+.xterm {
+  height: 100%;
+  width: 100%;
+  padding: 10px;
+  /* Prevent browser native text selection on ALL terminal DOM elements.
+     xterm.js selection is canvas-based and works independently of user-select.
+     Without this, during the first mount (uncached module imports), the browser
+     can paint the terminal DOM before WebGL loads, allowing native selection
+     (yellow highlights) on viewport/accessibility elements during the gap. */
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* Mobile: reduce padding for more screen space */
+@media (max-width: 768px) {
+  .xterm {
+    padding: 5px;
+  }
+}
+
+.xterm .xterm-viewport {
+  overflow-y: scroll !important;
+  scrollbar-width: thin;
+  scrollbar-color: #424242 #1e1e1e;
+}
+
+/* Custom scrollbar for xterm viewport */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 5px;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+}
+
+/* xterm.js selection styling */
+.xterm-screen {
+  cursor: text;
+}
+
+/* Neutralize xterm accessibility tree to prevent browser native text selection (yellow highlights).
+   Using pointer-events:none + opacity:0 instead of display:none so xterm.js's internal DOM
+   structure remains intact. display:none causes xterm.js to lose track of its elements and
+   breaks the canvas-based selection system on subsequent writes. */
+.xterm .xterm-accessibility,
+.xterm .xterm-accessibility-tree {
+  pointer-events: none !important;
+  opacity: 0 !important;
+  position: absolute !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  height: 1px !important;
+  width: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+/* Prevent text selection on UI elements */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+/* Help panel animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* Thin scrollbar for panels */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 3px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
