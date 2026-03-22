@@ -639,7 +639,9 @@ export async function registerAgent(
         const existingFingerprint = existingAgent.metadata?.amp?.fingerprint
         if (existingFingerprint && existingFingerprint === fingerprint) {
           agent = existingAgent
-          console.log(`[AMP Register] Re-registering agent '${normalizedName}' (same key fingerprint, re-issuing API key)`)
+          // Revoke all previous keys before issuing a new one to prevent key accumulation
+          revokeAllKeysForAgent(agent.id)
+          console.log(`[AMP Register] Re-registering agent '${normalizedName}' (same key fingerprint, revoked old keys, issuing new)`)
         } else {
           return {
             data: {
@@ -652,7 +654,9 @@ export async function registerAgent(
         }
       } else {
         agent = existingAgent
-        console.log(`[AMP Register] Adopting existing agent '${normalizedName}' (${agent.id.substring(0, 8)}...)`)
+        // Revoke any stale keys from previous registrations
+        revokeAllKeysForAgent(agent.id)
+        console.log(`[AMP Register] Adopting existing agent '${normalizedName}' (${agent.id.substring(0, 8)}...), revoked old keys`)
       }
     } else {
       try {

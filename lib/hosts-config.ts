@@ -197,6 +197,82 @@ export function isSelf(hostId: string): boolean {
     // Not a URL, that's fine
   }
 
+  // Fallback: check if hostId matches a cached host whose URL/aliases
+  // resolve to this machine. This catches stale hostnames (e.g. when
+  // the machine was previously known as 'milo-dock.internal' but is
+  // now 'shanes-m3-pro-mbp'). The cachedHosts guard prevents recursion
+  // during initial loadHostsConfig() -> validateHosts() -> isSelf() chain.
+  if (cachedHosts !== null) {
+    // Find host by id OR by alias (handles old hostnames like dock vs WiFi)
+    const matchedHost = cachedHosts.find(h =>
+      h.id.toLowerCase() === hostIdLower ||
+      (h.aliases || []).some(a => a.toLowerCase() === hostIdLower)
+    )
+    if (matchedHost) {
+      // Check the host's URL against our IPs (don't recurse into isSelfHost
+      // to avoid circular calls — just do the URL/alias check inline)
+      if (matchedHost.url) {
+        try {
+          const urlHost = new URL(matchedHost.url).hostname.toLowerCase()
+          if (selfIPs.includes(urlHost) || urlHost === selfId) return true
+        } catch { /* invalid URL */ }
+      }
+      if (matchedHost.aliases) {
+        for (const alias of matchedHost.aliases) {
+          const aliasLower = alias.toLowerCase()
+          if (aliasLower === selfId || selfIPs.includes(aliasLower)) return true
+          try {
+            const aliasHost = new URL(aliasLower).hostname.toLowerCase()
+            if (selfIPs.includes(aliasHost) || aliasHost === selfId) return true
+          } catch { /* not a URL */ }
+        }
+      }
+    }
+  }
+
+  return false
+}
+
+/**
+ * Check if a Host object refers to this machine.
+ * Unlike isSelf(id), this also checks the host's URL and stored aliases,
+ * which handles hostname changes gracefully (e.g., when a laptop moves
+ * between dock and wireless, changing its hostname but keeping its
+ * Tailscale IP).
+ */
+export function isSelfHost(host: Host): boolean {
+  // First try the simple ID-based check
+  if (isSelf(host.id)) return true
+
+  const selfIPs = getLocalIPs().map(i => i.ip.toLowerCase())
+  const selfId = getSelfHostId()
+
+  // Check if the host's URL points to one of our IPs
+  if (host.url) {
+    try {
+      const urlHost = new URL(host.url).hostname.toLowerCase()
+      if (selfIPs.includes(urlHost) || urlHost === selfId) return true
+    } catch {
+      // Not a valid URL, skip
+    }
+  }
+
+  // Check if any stored alias matches our IPs or hostname
+  if (host.aliases) {
+    for (const alias of host.aliases) {
+      const aliasLower = alias.toLowerCase()
+      if (aliasLower === selfId) return true
+      if (selfIPs.includes(aliasLower)) return true
+      // Check URL-form aliases
+      try {
+        const aliasHost = new URL(aliasLower).hostname.toLowerCase()
+        if (selfIPs.includes(aliasHost) || aliasHost === selfId) return true
+      } catch {
+        // Not a URL alias, skip
+      }
+    }
+  }
+
   return false
 }
 
@@ -325,11 +401,39 @@ function validateHosts(hosts: Host[]): Host[] {
     return true
   })
 
-  // Ensure self host exists
-  const hasSelfHost = validHosts.some(host => isSelf(host.id))
-  if (!hasSelfHost) {
+  // Ensure self host exists — use isSelfHost() which checks URL/aliases too,
+  // so we can detect ourselves even after a hostname change
+  const selfIdx = validHosts.findIndex(host => isSelfHost(host))
+  if (selfIdx === -1) {
     validHosts.unshift(getDefaultSelfHost())
     console.log('[Hosts] Added default self host')
+  } else {
+    // Auto-migrate stale hostname: if isSelfHost(host) matched via URL/alias
+    // but isSelf(host.id) fails, the hostname has changed — update the stored ID
+    const selfHost = validHosts[selfIdx]
+    if (!isSelf(selfHost.id)) {
+      const newId = getSelfHostId()
+      const oldId = selfHost.id
+      console.log(`[Hosts] Hostname changed: '${oldId}' → '${newId}', auto-migrating`)
+      // Merge old aliases + old hostname with current aliases so previous
+      // hostnames (e.g., dock vs WiFi) remain recognizable by isSelf()
+      const mergedAliases = Array.from(new Set([
+        ...getSelfAliases(),
+        ...(selfHost.aliases || []),
+        oldId,
+      ]))
+      validHosts[selfIdx] = {
+        ...selfHost,
+        id: newId,
+        aliases: mergedAliases,
+      }
+      // Persist the migration so it doesn't repeat every load
+      // (Use setImmediate to avoid blocking the load path)
+      setImmediate(() => {
+        saveHosts(validHosts)
+        console.log('[Hosts] Persisted hostname migration to hosts.json')
+      })
+    }
   }
 
   return validHosts
