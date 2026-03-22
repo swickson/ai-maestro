@@ -214,7 +214,16 @@ export function getAgentByName(name: string, hostId?: string): Agent | null {
   const normalizedName = name.toLowerCase()
 
   if (hostId) {
-    // Scoped to specific host; exclude soft-deleted agents
+    // If the requested hostId is actually this machine (possibly under a different
+    // hostname due to dock/WiFi switching), use isSelf() for robust matching
+    if (isSelf(hostId)) {
+      return agents.find(a =>
+        !a.deletedAt &&
+        a.name?.toLowerCase() === normalizedName &&
+        a.hostId != null && isSelf(a.hostId)
+      ) || null
+    }
+    // Scoped to specific remote host; exclude soft-deleted agents
     return agents.find(a =>
       !a.deletedAt &&
       a.name?.toLowerCase() === normalizedName &&
@@ -223,11 +232,11 @@ export function getAgentByName(name: string, hostId?: string): Agent | null {
   }
 
   // Default: search on self host only; exclude soft-deleted agents
-  const selfHostId = getSelfHostId().toLowerCase()
+  // Uses isSelf() to handle hostname changes (e.g., dock vs WiFi)
   return agents.find(a =>
     !a.deletedAt &&
     a.name?.toLowerCase() === normalizedName &&
-    a.hostId?.toLowerCase() === selfHostId
+    a.hostId != null && isSelf(a.hostId)
   ) || null
 }
 
@@ -252,15 +261,18 @@ export function getAgentByAlias(alias: string, hostId?: string): Agent | null {
   const agents = loadAgents()
   const normalizedAlias = alias.toLowerCase()
 
-  // Determine which host to search on
-  const targetHostId = hostId?.toLowerCase() || getSelfHostId().toLowerCase()
+  // Determine if target is self (handles hostname changes from dock/WiFi switching)
+  const targetIsSelf = hostId ? isSelf(hostId) : true
+  const targetHostId = hostId?.toLowerCase()
 
   // Try name first (on specific host), then deprecated alias field; exclude soft-deleted
   return agents.find(a =>
     !a.deletedAt &&
     (a.name?.toLowerCase() === normalizedAlias ||
      a.alias?.toLowerCase() === normalizedAlias) &&
-    a.hostId?.toLowerCase() === targetHostId
+    (targetIsSelf
+      ? (a.hostId != null && isSelf(a.hostId))
+      : a.hostId?.toLowerCase() === targetHostId)
   ) || null
 }
 
@@ -392,7 +404,7 @@ export function createAgent(request: CreateAgentRequest): Agent {
     name: agentName,
     label,
     avatar,
-    workingDirectory: request.workingDirectory || process.cwd(),
+    workingDirectory: request.workingDirectory,
     sessions,
     hostId,
     hostName,

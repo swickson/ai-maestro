@@ -13,6 +13,7 @@ vi.mock('uuid', () => ({
 vi.mock('@/lib/hosts-config', () => ({
   getSelfHost: () => ({ id: 'test-host', name: 'Test Host', url: 'http://test-host:23000' }),
   getSelfHostId: () => 'test-host',
+  isSelf: (hostId: string) => hostId?.toLowerCase() === 'test-host',
 }))
 
 vi.mock('@/lib/amp-inbox-writer', () => ({
