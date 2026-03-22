@@ -23,6 +23,7 @@ export async function POST(
   let sessionIndex = 0
   let program: string | undefined
   let hostUrl: string | undefined
+  let projectDirectory: string | undefined
   try {
     const body = await request.json()
     console.log(`[Wake] Received body:`, JSON.stringify(body))
@@ -37,6 +38,9 @@ export async function POST(
     }
     if (typeof body.hostUrl === 'string') {
       hostUrl = body.hostUrl
+    }
+    if (typeof body.projectDirectory === 'string') {
+      projectDirectory = body.projectDirectory
     }
   } catch (e) {
     console.log(`[Wake] No body or invalid JSON, using defaults. Error:`, e)
@@ -56,7 +60,7 @@ export async function POST(
       const response = await fetch(`${remoteHostUrl}/api/agents/${id}/wake`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startProgram, sessionIndex, program }),
+        body: JSON.stringify({ startProgram, sessionIndex, program, projectDirectory }),
         signal: controller.signal,
       })
       clearTimeout(timeoutId)
@@ -72,7 +76,7 @@ export async function POST(
     }
   }
 
-  const result = await wakeAgent(id, { startProgram, sessionIndex, program })
+  const result = await wakeAgent(id, { startProgram, sessionIndex, program, projectDirectory })
 
   if (result.error) {
     return NextResponse.json({ error: result.error }, { status: result.status })

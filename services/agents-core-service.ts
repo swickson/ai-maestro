@@ -129,6 +129,7 @@ export interface WakeAgentParams {
   startProgram?: boolean
   sessionIndex?: number
   program?: string
+  projectDirectory?: string  // Runtime: where the agent works (Lane 2)
 }
 
 export interface HibernateAgentParams {
@@ -196,6 +197,36 @@ function resolveStartCommand(program: string): string {
     return 'opencode'
   }
   return 'claude' // Default
+}
+
+/**
+ * Execute a lifecycle hook, interpolating runtime variables.
+ * Supports "prompt:..." (typed into agent stdin) or shell commands.
+ */
+async function executeHook(
+  sessionName: string,
+  hookValue: string,
+  runtime: any,
+  variables: Record<string, string> = {},
+  delayMs = 3000
+): Promise<void> {
+  // Interpolate variables: ${projectDirectory}, ${agentName}, etc.
+  let resolved = hookValue
+  for (const [key, value] of Object.entries(variables)) {
+    resolved = resolved.replaceAll(`\${${key}}`, value)
+  }
+
+  await new Promise(resolve => setTimeout(resolve, delayMs))
+
+  if (resolved.startsWith('prompt:')) {
+    const prompt = resolved.slice('prompt:'.length).trim()
+    await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+  } else {
+    const sanitized = sanitizeArgs(resolved)
+    if (sanitized) {
+      await runtime.sendKeys(sessionName, `"${sanitized}"`, { enter: true })
+    }
+  }
 }
 
 /**
@@ -282,6 +313,9 @@ function createOrphanAgent(
     status: 'active',
     createdAt: session.createdAt,
     lastActive: session.lastActivity,
+    preferences: {
+      defaultWorkingDirectory: session.workingDirectory || process.cwd(),
+    },
     metadata: {
       autoRegistered: true,
       autoRegisteredAt: new Date().toISOString(),
@@ -1253,6 +1287,8 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
   sessionName: string
   sessionIndex: number
   workingDirectory?: string
+  projectDirectory?: string
+  hooksExecuted?: boolean
   woken: boolean
   alreadyRunning?: boolean
   programStarted?: boolean
@@ -1367,6 +1403,17 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
 
     console.log(`[Wake] Agent ${agentName} (${agentId}) session ${sessionIndex} woken up successfully`)
 
+    // Execute on-wake hook AFTER program is running (non-blocking, non-fatal)
+    const { projectDirectory } = params
+    if (agent.hooks?.['on-wake']) {
+      const hookVars: Record<string, string> = {
+        projectDirectory: projectDirectory || workingDirectory,
+        agentName: agentName,
+      }
+      executeHook(sessionName, agent.hooks['on-wake'], runtime, hookVars)
+        .catch(err => console.warn(`[Wake] on-wake hook failed for ${agentName}:`, err))
+    }
+
     return {
       data: {
         success: true,
@@ -1375,6 +1422,8 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
         sessionName,
         sessionIndex,
         workingDirectory,
+        projectDirectory,
+        hooksExecuted: !!agent.hooks?.['on-wake'],
         woken: true,
         programStarted: startProgram,
         message: `Agent "${agentName}" session ${sessionIndex} has been woken up and is ready to use.`,
