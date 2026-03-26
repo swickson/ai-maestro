@@ -1344,8 +1344,9 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
     try {
       await runtime.createSession(sessionName, workingDirectory)
     } catch (error) {
-      console.error(`[Wake] Failed to create tmux session:`, error)
-      return { error: 'Failed to create tmux session', status: 500 }
+      const detail = error instanceof Error ? error.message : String(error)
+      console.error(`[Wake] Failed to create tmux session:`, detail)
+      return { error: `Failed to create tmux session: ${detail}`, status: 500 }
     }
 
     // Persist session metadata

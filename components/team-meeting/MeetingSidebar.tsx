@@ -98,12 +98,13 @@ export default function MeetingSidebar({
     } catch (error) {
       console.error('Failed to wake agent:', error)
       const errMsg = error instanceof Error ? error.message : 'Unknown error'
+      const isNetworkError = errMsg.includes('unreachable') || errMsg.includes('fetch') || errMsg.includes('network') || errMsg.includes('abort')
       addToast({
         type: 'error',
         title: 'Failed to wake agent',
-        message: agent.hostUrl
+        message: isNetworkError && agent.hostUrl
           ? `Host ${agent.hostUrl} may be unreachable: ${errMsg}`
-          : `${errMsg}. Check your network connection and try again.`,
+          : errMsg,
       })
       setWakeDialogAgent(null)
     } finally {

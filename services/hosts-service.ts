@@ -813,6 +813,47 @@ export async function registerPeer(body: PeerRegistrationRequest): Promise<Servi
     for (const identifier of incomingIdentifiers) {
       const existingHost = findHostByAnyIdentifier(identifier)
       if (existingHost && !isSelf(existingHost.id)) {
+        // If the host ID has changed (e.g. hostname migration: milo-dock → shanes-m3-pro-mbp),
+        // update the existing record with the new ID and merge aliases so both old and new
+        // hostnames are recognized. This mirrors the self-host migration in validateHosts().
+        if (existingHost.id !== body.host.id) {
+          const oldId = existingHost.id
+          const mergedAliases = Array.from(new Set([
+            ...(existingHost.aliases || []),
+            ...(body.host.aliases || []),
+            oldId,  // preserve old hostname as alias
+          ]))
+
+          const currentHosts = getHosts()
+          const hostIndex = currentHosts.findIndex(h => h.id === oldId)
+          if (hostIndex !== -1) {
+            currentHosts[hostIndex] = {
+              ...currentHosts[hostIndex],
+              id: body.host.id,
+              name: body.host.name,
+              url: body.host.url,
+              aliases: mergedAliases,
+              syncedAt: new Date().toISOString(),
+              syncSource: body.source?.initiator || 'peer-registration',
+            }
+            saveHosts(currentHosts)
+            clearHostsCache()
+            console.log(`[Host Sync] Migrated peer hostname: ${oldId} → ${body.host.id} (matched by "${identifier}")`)
+
+            return {
+              data: {
+                success: true,
+                registered: true,
+                alreadyKnown: false,
+                host: getLocalHostIdentity(),
+                knownHosts: getKnownHostIdentities(body.host.id),
+                ...getOrgInfo(),
+              },
+              status: 200,
+            }
+          }
+        }
+
         console.log(`[Host Sync] Host with identifier "${identifier}" already exists as ${existingHost.id}`)
         return {
           data: {
@@ -1008,10 +1049,36 @@ export async function exchangePeers(body: PeerExchangeRequest): Promise<ServiceR
         continue
       }
 
-      // Check if URL already exists
+      // Check if URL already exists (possibly under a different hostname)
       const hosts = getHosts()
       const hostWithSameUrl = hosts.find(h => h.url === peerHost.url && !isSelf(h.id))
       if (hostWithSameUrl) {
+        // If the ID has changed (hostname migration), update the existing record
+        if (hostWithSameUrl.id !== peerHost.id) {
+          const oldId = hostWithSameUrl.id
+          const mergedAliases = Array.from(new Set([
+            ...(hostWithSameUrl.aliases || []),
+            ...(peerHost.aliases || []),
+            oldId,
+          ]))
+          const hostIndex = hosts.findIndex(h => h.id === oldId)
+          if (hostIndex !== -1) {
+            hosts[hostIndex] = {
+              ...hosts[hostIndex],
+              id: peerHost.id,
+              name: peerHost.name,
+              url: peerHost.url,
+              aliases: mergedAliases,
+              syncedAt: new Date().toISOString(),
+              syncSource: body.fromHost.id,
+            }
+            saveHosts(hosts)
+            clearHostsCache()
+            console.log(`[Host Sync] Migrated peer hostname in exchange: ${oldId} → ${peerHost.id}`)
+            alreadyKnown.push(peerHost.id)
+            continue
+          }
+        }
         console.log(`[Host Sync] Skipping ${peerHost.name} (${peerHost.id}): URL ${peerHost.url} already exists as ${hostWithSameUrl.id}`)
         alreadyKnown.push(peerHost.id)
         continue
