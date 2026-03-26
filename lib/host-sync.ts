@@ -19,7 +19,7 @@ import {
   PeerExchangeRequest,
   PeerExchangeResponse,
 } from '@/types/host-sync'
-import { getHosts, getSelfHost, addHost, addHostAsync, getHostById, clearHostsCache, getSelfAliases, isSelf, getOrganizationInfo, adoptOrganization } from './hosts-config'
+import { getHosts, getSelfHost, addHost, addHostAsync, getHostById, clearHostsCache, getSelfAliases, isSelf, isSelfHost, getOrganizationInfo, adoptOrganization, saveHosts, findHostByAnyIdentifier } from './hosts-config'
 import os from 'os'
 
 // Track processed propagation IDs to prevent infinite loops
@@ -307,6 +307,7 @@ async function registerWithPeer(
   success: boolean
   alreadyKnown: boolean
   knownHosts: HostIdentity[]
+  peerHost?: HostIdentity
   organizationAdopted?: boolean
   error?: string
 }> {
@@ -386,6 +387,7 @@ async function registerWithPeer(
       success: data.success,
       alreadyKnown: data.alreadyKnown,
       knownHosts: data.knownHosts || [],
+      peerHost: data.host,
       organizationAdopted,
       error: data.error,
     }
@@ -649,6 +651,34 @@ export async function syncWithAllPeers(): Promise<{
       })
 
       if (result.success) {
+        // Check if the peer's hostname has changed (e.g. milo-dock → shanes-m3-pro-mbp)
+        // The peer responds with its current identity — if the ID differs from what we
+        // have stored, migrate the host record (same logic as validateHosts for self).
+        if (result.peerHost && result.peerHost.id !== peer.id) {
+          const oldId = peer.id
+          const currentHosts = getHosts()
+          const hostIndex = currentHosts.findIndex(h => h.id === oldId)
+          if (hostIndex !== -1) {
+            const mergedAliases = Array.from(new Set([
+              ...(currentHosts[hostIndex].aliases || []),
+              ...(result.peerHost.aliases || []),
+              oldId,
+            ]))
+            currentHosts[hostIndex] = {
+              ...currentHosts[hostIndex],
+              id: result.peerHost.id,
+              name: result.peerHost.name,
+              url: result.peerHost.url || currentHosts[hostIndex].url,
+              aliases: mergedAliases,
+              syncedAt: new Date().toISOString(),
+              syncSource: result.peerHost.id,
+            }
+            saveHosts(currentHosts)
+            clearHostsCache()
+            console.log(`[Host Sync] Migrated peer hostname: ${oldId} → ${result.peerHost.id}`)
+          }
+        }
+
         // Exchange peers if we learned about new ones
         if (result.knownHosts.length > 0) {
           await processPeerExchange(peer.url, selfHost, result.knownHosts)
