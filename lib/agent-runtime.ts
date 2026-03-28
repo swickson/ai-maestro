@@ -157,7 +157,10 @@ export class TmuxRuntime implements AgentRuntime {
   // -- Lifecycle -----------------------------------------------------------
 
   async createSession(name: string, cwd: string): Promise<void> {
-    await execAsync(`tmux new-session -d -s "${name}" -c "${cwd}"`)
+    // Unset TMUX so tmux doesn't try to use a stale parent socket
+    // (e.g. when the server process was started inside a tmux session that no longer exists)
+    const env = { ...process.env, TMUX: undefined }
+    await execAsync(`tmux new-session -d -s "${name}" -c "${cwd}"`, { env })
   }
 
   async killSession(name: string): Promise<void> {
