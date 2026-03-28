@@ -4,7 +4,7 @@ import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { Agent, AgentSummary, AgentSession, CreateAgentRequest, UpdateAgentRequest, UpdateAgentMetricsRequest, DeploymentType } from '@/types/agent'
 import { parseSessionName, computeSessionName } from '@/types/agent'
-import { getSelfHost, getSelfHostId } from '@/lib/hosts-config'
+import { getSelfHost, getSelfHostId, isSelf } from '@/lib/hosts-config'
 import { renameInIndex, removeFromIndex } from '@/lib/amp-inbox-writer'
 import { invalidateAgentCache } from '@/lib/messageQueue'
 import { sessionExistsSync, killSessionSync, renameSessionSync } from '@/lib/agent-runtime'
@@ -2129,6 +2129,13 @@ export function normalizeHostId(hostId: string | undefined): string {
     return selfHostId
   }
 
+  // Migrate stale hostnames: if isSelf() recognizes this hostId (via aliases/IPs)
+  // but it doesn't match the current hostname, update it to the canonical self ID.
+  // This handles hostname drift (e.g. milo-dock.internal → shanes-m3-pro-mbp).
+  if (isSelf(hostId) && hostId.toLowerCase().replace(/\.local$/, '') !== selfHostId) {
+    return selfHostId
+  }
+
   // Normalize: lowercase and strip .local suffix
   return hostId.toLowerCase().replace(/\.local$/, '')
 }
@@ -2143,6 +2150,9 @@ export function needsHostIdNormalization(hostId: string | undefined): boolean {
   if (hostId === 'local') return true
   if (hostId !== hostId.toLowerCase()) return true
   if (hostId.endsWith('.local')) return true
+  // Stale self-hostname: isSelf() recognizes it but it doesn't match current hostname
+  const selfHostId = getSelfHostId()
+  if (isSelf(hostId) && hostId.toLowerCase().replace(/\.local$/, '') !== selfHostId) return true
   return false
 }
 
