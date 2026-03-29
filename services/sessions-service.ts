@@ -27,7 +27,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import type { Session } from '@/types/session'
-import { getAgentBySession, getAgentByName, createAgent, deleteAgentBySession, renameAgentSession } from '@/lib/agent-registry'
+import { getAgentBySession, getAgentByName, createAgent, updateAgent, deleteAgentBySession, renameAgentSession } from '@/lib/agent-registry'
 import { loadAgents } from '@/lib/agent-registry'
 import { getHosts, getSelfHost, getSelfHostId, isSelf, getHostById } from '@/lib/hosts-config'
 import { persistSession, loadPersistedSessions, unpersistSession } from '@/lib/session-persistence'
@@ -220,11 +220,13 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
       }
 
       const agent = getAgentBySession(disc.name)
+      // Prefer registry workingDirectory over tmux-derived (tmux reports $HOME if tilde path failed)
+      const agentWorkingDir = agent?.workingDirectory || agent?.sessions?.[0]?.workingDirectory
 
       sessions.push({
         id: disc.name,
         name: disc.name,
-        workingDirectory: disc.workingDirectory,
+        workingDirectory: agentWorkingDir || disc.workingDirectory,
         status,
         createdAt: disc.createdAt,
         lastActivity,
@@ -591,7 +593,12 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     return { error: 'Session already exists', status: 409 }
   }
 
-  const cwd = workingDirectory || process.cwd()
+  // Expand tilde to absolute path — tmux does NOT expand ~ in -c flag.
+  // Handle both / (macOS/Linux) and \ (Windows) separators.
+  const resolvedDir = workingDirectory
+    ? workingDirectory.replace(/^~(?=$|[/\\])/, os.homedir())
+    : ''
+  const cwd = resolvedDir || process.cwd()
   await runtime.createSession(actualSessionName, cwd)
 
   // Register agent
@@ -616,6 +623,14 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
       console.log(`[Sessions] Registered new agent: ${agentName} (${registeredAgent.id})`)
     } catch (createError) {
       console.warn(`[Sessions] Could not register agent ${agentName}:`, createError)
+    }
+  } else if (workingDirectory && workingDirectory !== registeredAgent.workingDirectory) {
+    // Agent already exists by name — update workingDirectory if explicitly provided
+    try {
+      updateAgent(registeredAgent.id, { workingDirectory })
+      console.log(`[Sessions] Updated workingDirectory for existing agent ${agentName}`)
+    } catch (updateError) {
+      console.warn(`[Sessions] Could not update workingDirectory for ${agentName}:`, updateError)
     }
   }
 

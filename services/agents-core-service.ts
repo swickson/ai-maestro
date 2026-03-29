@@ -129,6 +129,7 @@ export interface WakeAgentParams {
   startProgram?: boolean
   sessionIndex?: number
   program?: string
+  projectDirectory?: string  // Runtime: where the agent works (Lane 2)
 }
 
 export interface HibernateAgentParams {
@@ -196,6 +197,80 @@ function resolveStartCommand(program: string): string {
     return 'opencode'
   }
   return 'claude' // Default
+}
+
+/**
+ * Wait until the CLI program in a tmux session is ready to accept input.
+ * Polls capturePane looking for a prompt indicator (>, ❯, $, %).
+ * Returns true if a prompt was detected, false on timeout.
+ */
+async function waitForPrompt(
+  sessionName: string,
+  runtime: any,
+  { timeoutMs = 30000, pollIntervalMs = 500, initialDelayMs = 2000 } = {}
+): Promise<boolean> {
+  // Give the program time to start before polling
+  await new Promise(resolve => setTimeout(resolve, initialDelayMs))
+
+  const deadline = Date.now() + timeoutMs
+  // Prompt indicators for various CLIs:
+  // Claude: ">", Codex: ">", Gemini: "❯", Aider: ">", Shell: "$" or "%"
+  // Also match "? for shortcuts" (Claude) and "shortcuts" (end of TUI init)
+  const promptPattern = /[>❯$%]\s*$/m
+  const tuiReadyPattern = /\?\s*for\s*shortcuts|waiting for input|ready/i
+
+  while (Date.now() < deadline) {
+    try {
+      const paneContent = await runtime.capturePane(sessionName, 50)
+      // Strip non-printable/TUI control characters that CLIs emit
+      // (box-drawing, cursor positioning, etc.)
+      const cleaned = paneContent.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+        .replace(/\u2500[\u2500-\u257F]*/g, '') // box-drawing sequences
+      const lines = cleaned.split('\n').filter((l: string) => l.trim().length > 0)
+      const tail = lines.slice(-5).join('\n')
+      if (promptPattern.test(tail) || tuiReadyPattern.test(tail)) {
+        console.log(`[Hook] Prompt detected in ${sessionName}, tail: ${tail.slice(-80)}`)
+        return true
+      }
+    } catch {
+      // capturePane failed, keep trying
+    }
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+  }
+
+  console.warn(`[Hook] Prompt not detected in ${sessionName} after ${timeoutMs}ms, proceeding anyway`)
+  return false
+}
+
+/**
+ * Execute a lifecycle hook, interpolating runtime variables.
+ * Supports "prompt:..." (typed into agent stdin) or shell commands.
+ * Waits for the CLI prompt to be ready before sending input.
+ */
+async function executeHook(
+  sessionName: string,
+  hookValue: string,
+  runtime: any,
+  variables: Record<string, string> = {},
+): Promise<void> {
+  // Interpolate variables: ${projectDirectory}, ${agentName}, etc.
+  let resolved = hookValue
+  for (const [key, value] of Object.entries(variables)) {
+    resolved = resolved.replaceAll(`\${${key}}`, value)
+  }
+
+  // Wait for the CLI to be ready instead of a fixed delay
+  await waitForPrompt(sessionName, runtime)
+
+  if (resolved.startsWith('prompt:')) {
+    const prompt = resolved.slice('prompt:'.length).trim()
+    await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+  } else {
+    const sanitized = sanitizeArgs(resolved)
+    if (sanitized) {
+      await runtime.sendKeys(sessionName, `"${sanitized}"`, { enter: true })
+    }
+  }
 }
 
 /**
@@ -282,6 +357,9 @@ function createOrphanAgent(
     status: 'active',
     createdAt: session.createdAt,
     lastActive: session.lastActivity,
+    preferences: {
+      defaultWorkingDirectory: session.workingDirectory || process.cwd(),
+    },
     metadata: {
       autoRegistered: true,
       autoRegisteredAt: new Date().toISOString(),
@@ -1253,6 +1331,8 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
   sessionName: string
   sessionIndex: number
   workingDirectory?: string
+  projectDirectory?: string
+  hooksExecuted?: boolean
   woken: boolean
   alreadyRunning?: boolean
   programStarted?: boolean
@@ -1308,8 +1388,9 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
     try {
       await runtime.createSession(sessionName, workingDirectory)
     } catch (error) {
-      console.error(`[Wake] Failed to create tmux session:`, error)
-      return { error: 'Failed to create tmux session', status: 500 }
+      const detail = error instanceof Error ? error.message : String(error)
+      console.error(`[Wake] Failed to create tmux session:`, detail)
+      return { error: `Failed to create tmux session: ${detail}`, status: 500 }
     }
 
     // Persist session metadata
@@ -1367,6 +1448,17 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
 
     console.log(`[Wake] Agent ${agentName} (${agentId}) session ${sessionIndex} woken up successfully`)
 
+    // Execute on-wake hook AFTER program is running (non-blocking, non-fatal)
+    const { projectDirectory } = params
+    if (agent.hooks?.['on-wake']) {
+      const hookVars: Record<string, string> = {
+        projectDirectory: projectDirectory || workingDirectory,
+        agentName: agentName,
+      }
+      executeHook(sessionName, agent.hooks['on-wake'], runtime, hookVars)
+        .catch(err => console.warn(`[Wake] on-wake hook failed for ${agentName}:`, err))
+    }
+
     return {
       data: {
         success: true,
@@ -1375,6 +1467,8 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
         sessionName,
         sessionIndex,
         workingDirectory,
+        projectDirectory,
+        hooksExecuted: !!agent.hooks?.['on-wake'],
         woken: true,
         programStarted: startProgram,
         message: `Agent "${agentName}" session ${sessionIndex} has been woken up and is ready to use.`,

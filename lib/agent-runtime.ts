@@ -161,6 +161,8 @@ export class TmuxRuntime implements AgentRuntime {
     // (e.g. when the server process was started inside a tmux session that no longer exists)
     const env = { ...process.env, TMUX: undefined }
     await execAsync(`tmux new-session -d -s "${name}" -c "${cwd}"`, { env })
+    // Set TMUX_SESSION_NAME so the agent always knows its own session identity
+    await this.setEnvironment(name, 'TMUX_SESSION_NAME', name)
   }
 
   async killSession(name: string): Promise<void> {
@@ -182,17 +184,17 @@ export class TmuxRuntime implements AgentRuntime {
 
     if (literal) {
       const escaped = keys.replace(/'/g, "'\\''")
+      await execAsync(`tmux send-keys -t "${name}" -l '${escaped}'`)
       if (enter) {
-        await execAsync(
-          `tmux send-keys -t "${name}" -l '${escaped}' \\; send-keys -t "${name}" C-m`
-        )
-      } else {
-        await execAsync(`tmux send-keys -t "${name}" -l '${escaped}'`)
+        // Small delay so programs like Codex can process the literal text
+        // before receiving Enter — without this, some terminals swallow the C-m
+        await new Promise(r => setTimeout(r, 100))
+        await execAsync(`tmux send-keys -t "${name}" Enter`)
       }
     } else {
       // Non-literal: keys is a raw key sequence (e.g. "C-c", "exit Enter", quoted command)
       if (enter) {
-        await execAsync(`tmux send-keys -t "${name}" ${keys} C-m`)
+        await execAsync(`tmux send-keys -t "${name}" ${keys} Enter`)
       } else {
         await execAsync(`tmux send-keys -t "${name}" ${keys}`)
       }

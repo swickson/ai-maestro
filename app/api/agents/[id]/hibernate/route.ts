@@ -30,9 +30,11 @@ export async function POST(
   }
 
   // Determine if the agent is remote — check local registry first, then body.hostUrl
+  // IMPORTANT: Check both hostId AND hostUrl to handle hostname changes.
+  // See wake/route.ts for full explanation.
   const agent = getAgent(id)
-  const remoteHostId = agent?.hostId && !isSelf(agent.hostId) ? agent.hostId : null
-  const remoteHostUrl = remoteHostId ? agent?.hostUrl : hostUrl
+  const isLocalAgent = !agent?.hostId || isSelf(agent.hostId) || (agent?.hostUrl ? isSelf(agent.hostUrl) : false)
+  const remoteHostUrl = !isLocalAgent ? agent?.hostUrl : hostUrl
 
   if (remoteHostUrl) {
     console.log(`[Hibernate] Agent ${id} is on remote host (${remoteHostUrl}), proxying...`)

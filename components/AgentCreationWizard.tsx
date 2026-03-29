@@ -696,7 +696,7 @@ function ChatBubble({
                 onChange={onDirChange}
                 onSubmit={onDirectorySubmit}
                 onSkip={onDirectorySkip}
-                placeholder="~/projects/my-app"
+                placeholder="/full/path/to/your/project"
               />
             )}
 

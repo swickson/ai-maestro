@@ -42,7 +42,7 @@ import { deliver } from '@/lib/message-delivery'
 import { initAgentAMPHome } from '@/lib/amp-inbox-writer'
 import { deliverViaWebSocket } from '@/lib/amp-websocket'
 import { resolveAgentIdentifier } from '@/lib/messageQueue'
-import { getSelfHostId, getSelfHost, getHostById, isSelf, getOrganization } from '@/lib/hosts-config-server.mjs'
+import { getSelfHostId, getSelfHost, getHostById, getHosts, isSelf, getOrganization } from '@/lib/hosts-config-server.mjs'
 import { AMP_PROTOCOL_VERSION, getAMPProviderDomain } from '@/lib/types/amp'
 import type {
   AMPHealthResponse,
@@ -367,6 +367,7 @@ async function forwardToHost(
           original_from: envelope.from,
           original_to: envelope.to,
           forwarded_by: selfHostId,
+          forwarded_url: getSelfHost()?.url || '',
           forwarded_at: envelope.timestamp
         }
       })
@@ -639,7 +640,9 @@ export async function registerAgent(
         const existingFingerprint = existingAgent.metadata?.amp?.fingerprint
         if (existingFingerprint && existingFingerprint === fingerprint) {
           agent = existingAgent
-          console.log(`[AMP Register] Re-registering agent '${normalizedName}' (same key fingerprint, re-issuing API key)`)
+          // Revoke all previous keys before issuing a new one to prevent key accumulation
+          revokeAllKeysForAgent(agent.id)
+          console.log(`[AMP Register] Re-registering agent '${normalizedName}' (same key fingerprint, revoked old keys, issuing new)`)
         } else {
           return {
             data: {
@@ -652,7 +655,9 @@ export async function registerAgent(
         }
       } else {
         agent = existingAgent
-        console.log(`[AMP Register] Adopting existing agent '${normalizedName}' (${agent.id.substring(0, 8)}...)`)
+        // Revoke any stale keys from previous registrations
+        revokeAllKeysForAgent(agent.id)
+        console.log(`[AMP Register] Adopting existing agent '${normalizedName}' (${agent.id.substring(0, 8)}...), revoked old keys`)
       }
     } else {
       try {
@@ -777,7 +782,18 @@ export async function routeMessage(
     let auth = authenticateRequest(authHeader)
 
     if (!auth.authenticated && forwardedFrom) {
-      const forwardingHost = getHostById(forwardedFrom)
+      let forwardingHost = getHostById(forwardedFrom)
+      // If hostname lookup fails, try matching by URL from the _forwarded metadata
+      // This handles hostname changes (e.g., dock vs WiFi) where the remote host
+      // knows us by a different hostname but the same Tailscale IP
+      const forwardedUrl = body._forwarded?.forwarded_url
+      if (!forwardingHost && forwardedUrl) {
+        const hosts = getHosts()
+        forwardingHost = hosts.find((h: { url?: string }) => h.url === forwardedUrl) || null
+        if (forwardingHost) {
+          console.log(`[AMP Route] Matched forwarding host by URL ${forwardedUrl} → ${forwardingHost.id}`)
+        }
+      }
       if (forwardingHost) {
         auth = {
           authenticated: true,
@@ -1015,8 +1031,13 @@ export async function routeMessage(
         }
       }
 
-      console.log(`[AMP Route] Forwarding to ${recipientName}@${resolvedHostId} via ${remoteHost.url}`)
-      const fwd = await forwardToHost(remoteHost, recipientName, envelope, body, selfHostIdValue)
+      // Use self host ID for forwarding identity. Prefer the configured host ID
+      // from hosts.json (which may differ from os.hostname() due to dock/WiFi switching)
+      // so that the remote host can recognize us via its hosts.json entries.
+      const selfHost = getSelfHost()
+      const forwardingId = selfHost?.id || selfHostIdValue
+      console.log(`[AMP Route] Forwarding to ${recipientName}@${resolvedHostId} via ${remoteHost.url} (as ${forwardingId})`)
+      const fwd = await forwardToHost(remoteHost, recipientName, envelope, body, forwardingId)
 
       if (fwd.ok) {
         return {

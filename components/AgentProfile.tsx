@@ -200,7 +200,8 @@ export default function AgentProfile({ isOpen, onClose, agentId, sessionStatus, 
           programArgs: agent.programArgs,
           tags: agent.tags,
           documentation: agent.documentation,
-          metadata: agent.metadata
+          metadata: agent.metadata,
+          hooks: agent.hooks
         })
       })
 
@@ -531,6 +532,18 @@ export default function AgentProfile({ isOpen, onClose, agentId, sessionStatus, 
                       onChange={(value) => updateField('programArgs', value)}
                       icon={<Terminal className="w-4 h-4" />}
                     />
+
+                    <EditableField
+                      label="On-Wake Hook"
+                      value={agent.hooks?.['on-wake'] || ''}
+                      onChange={(value) => updateField('hooks', { ...agent.hooks, 'on-wake': value || undefined })}
+                      icon={<Play className="w-4 h-4" />}
+                      placeholder='prompt:cd ${projectDirectory} && Execute startup instructions'
+                    />
+                    <p className="text-xs text-gray-500 -mt-2">
+                      Runs after program starts. Use &quot;prompt:...&quot; to type into the agent CLI.
+                      Supports {'${projectDirectory}'} and {'${agentName}'} variables.
+                    </p>
 
                     {/* Tags - Control sidebar tree position */}
                     <div className="space-y-3">

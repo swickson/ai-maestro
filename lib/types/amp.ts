@@ -351,6 +351,15 @@ export interface AMPRouteRequest {
     /** Request delivery receipt */
     receipt?: boolean
   }
+
+  /** Mesh forwarding metadata (added by forwarding host) */
+  _forwarded?: {
+    original_from: string
+    original_to: string
+    forwarded_by: string
+    forwarded_url?: string
+    forwarded_at: string
+  }
 }
 
 /**
