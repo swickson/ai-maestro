@@ -1,4 +1,4 @@
-164a165,193
+164a165,192
 > # ── Cross-check AMP_DIR against .index.json ──
 > # If AMP_DIR was set via env var (e.g. from amp-init --auto), it may point to
 > # a stale UUID that was later cleaned up or replaced. Validate against the
@@ -26,5 +26,4 @@
 >     fi
 >     unset _amp_check_name _amp_indexed_uuid _amp_current_uuid
 > fi
-> unset _amp_index_file
 > 
