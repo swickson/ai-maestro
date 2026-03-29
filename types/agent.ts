@@ -78,6 +78,29 @@ export interface AMPExternalRegistration {
 }
 
 // ============================================================================
+// Lifecycle Hooks
+// ============================================================================
+
+/**
+ * Lifecycle hooks for agent events.
+ *
+ * Values support variable interpolation:
+ *   ${projectDirectory} — replaced with runtime projectDirectory from wake call
+ *   ${agentName}        — replaced with agent name
+ *
+ * Value prefixes:
+ *   "prompt:..." — typed into agent CLI stdin after launch
+ *   anything else — run as shell command via tmux send-keys
+ *
+ * Example: "prompt:cd ${projectDirectory} && Execute your startup instructions"
+ */
+export interface AgentHooks {
+  'on-wake'?: string      // Fires after program starts in tmux session
+  'on-hibernate'?: string // Fires before session is killed (future)
+  [key: string]: string | undefined
+}
+
+// ============================================================================
 // Session Name Helpers
 // ============================================================================
 
@@ -214,8 +237,8 @@ export interface Agent {
   // Skills (composable capabilities)
   skills?: AgentSkillsConfig
 
-  // Hooks (event-triggered scripts)
-  hooks?: Record<string, string>  // event -> script path
+  // Hooks (lifecycle event automation)
+  hooks?: AgentHooks
 
   // Runtime type (default: 'tmux') — future: 'docker' | 'api' | 'direct'
   runtime?: 'tmux' | 'docker' | 'api' | 'direct'
@@ -455,6 +478,7 @@ export interface CreateAgentRequest {
   team?: string
   documentation?: AgentDocumentation
   metadata?: Record<string, any>
+  hooks?: AgentHooks             // Lifecycle hooks (e.g., on-wake)
   // DEPRECATED: for backward compatibility
   alias?: string
   displayName?: string
@@ -478,6 +502,7 @@ export interface UpdateAgentRequest {
   documentation?: Partial<AgentDocumentation>
   metadata?: Record<string, any>
   preferences?: Partial<AgentPreferences>
+  hooks?: AgentHooks             // Update lifecycle hooks
   // DEPRECATED: for backward compatibility
   alias?: string
   displayName?: string
