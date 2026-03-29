@@ -1,0 +1,51 @@
+156c156
+< # Handle --force re-init: preserve existing UUID if available
+---
+> # Check .index.json for an existing agent with the same name
+158c158,201
+< if is_initialized && [ "$FORCE" = true ]; then
+---
+> INDEX_FILE="${AMP_AGENTS_BASE}/.index.json"
+> if [ -f "$INDEX_FILE" ]; then
+>     INDEXED_UUID=$(jq -r --arg name "$NAME" '.[$name] // empty' "$INDEX_FILE" 2>/dev/null)
+>     # Case-insensitive fallback
+>     if [ -z "$INDEXED_UUID" ]; then
+>         LOWER_NAME=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
+>         INDEXED_UUID=$(jq -r --arg name "$LOWER_NAME" \
+>             'to_entries[] | select(.key | ascii_downcase == $name) | .value' "$INDEX_FILE" 2>/dev/null)
+>     fi
+> 
+>     if [ -n "$INDEXED_UUID" ] && [ -d "${AMP_AGENTS_BASE}/${INDEXED_UUID}" ]; then
+>         AGENT_UUID="$INDEXED_UUID"
+>         echo "  Found existing agent directory for '${NAME}': ${AGENT_UUID}"
+>         echo "  Reusing existing UUID (preserving messages and keys)"
+>     elif [ -n "$INDEXED_UUID" ]; then
+>         echo "  Warning: .index.json references UUID ${INDEXED_UUID} for '${NAME}' but directory missing"
+>         echo "  Creating fresh agent directory"
+>     fi
+> 
+>     # Clean up orphaned directories for this agent name
+>     # (old UUIDs whose config.json names match but aren't in .index.json)
+>     for _orphan_dir in "${AMP_AGENTS_BASE}"/*/; do
+>         [ -d "$_orphan_dir" ] || continue
+>         _orphan_uuid=$(basename "$_orphan_dir")
+>         # Skip the one we're reusing
+>         [ "$_orphan_uuid" = "$AGENT_UUID" ] && continue
+>         # Skip if it's indexed for a different agent
+>         _orphan_indexed=$(jq -r --arg uuid "$_orphan_uuid" \
+>             'to_entries[] | select(.value == $uuid) | .key' "$INDEX_FILE" 2>/dev/null)
+>         [ -n "$_orphan_indexed" ] && continue
+>         # Check if this orphan's config matches our agent name
+>         _orphan_name=$(jq -r '.agent.name // empty' "${_orphan_dir}config.json" 2>/dev/null)
+>         _orphan_name_lower=$(echo "$_orphan_name" | tr '[:upper:]' '[:lower:]')
+>         if [ "$_orphan_name_lower" = "$NAME" ]; then
+>             echo "  Cleaning up orphaned directory: ${_orphan_uuid} (stale '${_orphan_name}')"
+>             rm -rf "$_orphan_dir"
+>         fi
+>     done
+>     unset _orphan_dir _orphan_uuid _orphan_indexed _orphan_name _orphan_name_lower
+> fi
+> unset INDEX_FILE INDEXED_UUID LOWER_NAME
+> 
+> # Handle --force re-init: preserve existing UUID if available
+> if [ -z "$AGENT_UUID" ] && is_initialized && [ "$FORCE" = true ]; then
