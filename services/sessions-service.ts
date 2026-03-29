@@ -27,7 +27,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import type { Session } from '@/types/session'
-import { getAgentBySession, getAgentByName, createAgent, updateAgent, deleteAgentBySession, renameAgentSession } from '@/lib/agent-registry'
+import { getAgent, getAgentBySession, getAgentByName, createAgent, updateAgent, deleteAgentBySession, renameAgentSession } from '@/lib/agent-registry'
 import { loadAgents } from '@/lib/agent-registry'
 import { getHosts, getSelfHost, getSelfHostId, isSelf, getHostById } from '@/lib/hosts-config'
 import { persistSession, loadPersistedSessions, unpersistSession } from '@/lib/session-persistence'
@@ -585,8 +585,8 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
   // Local session creation
   const runtime = getRuntime()
   const normalizedName = name.toLowerCase()
-  const selfHostId = getSelfHostId()
-  const actualSessionName = agentId ? `${agentId}@${selfHostId}` : normalizedName
+  const registeredAgent = agentId ? getAgent(agentId) : null
+  const actualSessionName = registeredAgent?.name || normalizedName
 
   const alreadyExists = await runtime.sessionExists(actualSessionName)
   if (alreadyExists) {
@@ -601,14 +601,14 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
   const cwd = resolvedDir || process.cwd()
   await runtime.createSession(actualSessionName, cwd)
 
-  // Register agent
+  // Register agent (reuse the one we looked up by agentId, or find by name)
   const agentName = normalizedName
-  let registeredAgent = getAgentByName(agentName)
+  let existingAgent = registeredAgent || getAgentByName(agentName)
 
-  if (!registeredAgent) {
+  if (!existingAgent) {
     try {
       const { tags } = parseNameForDisplay(agentName)
-      registeredAgent = createAgent({
+      existingAgent = createAgent({
         name: agentName,
         label,
         avatar,
@@ -620,14 +620,14 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
         workingDirectory: cwd,
         programArgs: programArgs || '',
       })
-      console.log(`[Sessions] Registered new agent: ${agentName} (${registeredAgent.id})`)
+      console.log(`[Sessions] Registered new agent: ${agentName} (${existingAgent.id})`)
     } catch (createError) {
       console.warn(`[Sessions] Could not register agent ${agentName}:`, createError)
     }
-  } else if (workingDirectory && workingDirectory !== registeredAgent.workingDirectory) {
+  } else if (workingDirectory && workingDirectory !== existingAgent.workingDirectory) {
     // Agent already exists by name — update workingDirectory if explicitly provided
     try {
-      updateAgent(registeredAgent.id, { workingDirectory })
+      updateAgent(existingAgent.id, { workingDirectory })
       console.log(`[Sessions] Updated workingDirectory for existing agent ${agentName}`)
     } catch (updateError) {
       console.warn(`[Sessions] Could not update workingDirectory for ${agentName}:`, updateError)
@@ -641,11 +641,11 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     workingDirectory: cwd,
     createdAt: new Date().toISOString(),
     ...(agentId && { agentId }),
-    ...(registeredAgent && { agentId: registeredAgent.id })
+    ...(existingAgent && { agentId: existingAgent.id })
   })
 
   // Initialize AMP
-  const registeredAgentId = registeredAgent?.id
+  const registeredAgentId = existingAgent?.id
   try {
     await initAgentAMPHome(agentName, registeredAgentId)
     const ampDir = getAgentAMPDir(agentName, registeredAgentId)
@@ -677,8 +677,9 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     else if (selectedProgram.includes('openclaw')) startCommand = 'openclaw'
     else startCommand = 'claude'
 
-    if (programArgs && typeof programArgs === 'string') {
-      const sanitized = programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+    const effectiveArgs = programArgs || existingAgent?.programArgs
+    if (effectiveArgs && typeof effectiveArgs === 'string') {
+      const sanitized = effectiveArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
       if (sanitized) startCommand = `${startCommand} ${sanitized}`
     }
 
@@ -692,7 +693,7 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     }
   }
 
-  return { data: { success: true, name: actualSessionName, agentId: registeredAgent?.id }, status: 200 }
+  return { data: { success: true, name: actualSessionName, agentId: existingAgent?.id }, status: 200 }
 }
 
 /**
