@@ -43,6 +43,20 @@ const CLI_OPTIONS = [
     command: 'cursor'
   },
   {
+    id: 'gemini',
+    name: 'Gemini CLI',
+    description: 'Google\'s AI coding assistant',
+    icon: Sparkles,
+    command: 'gemini'
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    description: 'Open-source AI coding tool',
+    icon: Code2,
+    command: 'opencode'
+  },
+  {
     id: 'terminal',
     name: 'Terminal Only',
     description: 'Plain shell without AI assistant',
