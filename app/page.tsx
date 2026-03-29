@@ -441,6 +441,9 @@ export default function DashboardPage() {
         body: JSON.stringify({
           name: sessionName,
           workingDirectory,
+          agentId: agent.id,
+          programArgs: agent.programArgs,
+          program: agent.program,
         }),
       })
 
