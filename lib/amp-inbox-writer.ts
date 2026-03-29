@@ -105,9 +105,17 @@ function getAgentAMPHomeById(agentId: string): string {
  * ALWAYS uses UUID. Never falls back to agent name.
  */
 function resolveAgentAMPHome(agentName: string, agentId?: string): string {
-  // 1. UUID provided directly
+  // 1. UUID provided directly — but only if an initialized AMP directory exists for it
+  //    (has config.json with keys). The agent registry UUID may differ from the AMP UUID
+  //    if amp-init was re-run, so blindly creating a directory for the registry UUID
+  //    would produce zombie directories that intercept messages.
   if (agentId) {
-    return getAgentAMPHomeById(agentId)
+    const candidatePath = getAgentAMPHomeById(agentId)
+    const configPath = path.join(candidatePath, 'config.json')
+    if (fsSync.existsSync(configPath)) {
+      return candidatePath
+    }
+    // Registry UUID doesn't have an initialized AMP dir — fall through to name-based lookup
   }
   // 2. Look up UUID from index
   const indexedId = lookupUUID(agentName)
