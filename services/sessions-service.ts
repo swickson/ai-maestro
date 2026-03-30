@@ -500,7 +500,11 @@ export async function getActivity(): Promise<Record<string, SessionActivityInfo>
     const hookState = workingDir ? getHookState(workingDir) : null
 
     let status: SessionActivityStatus = terminalIdle ? 'idle' : 'active'
-    if (hookState && (hookState.status === 'waiting_for_input' || hookState.status === 'permission_request')) {
+    // Hook state override: only apply 'waiting' when the terminal is idle.
+    // If the terminal is actively producing output, the agent is working regardless
+    // of what the hook state file says — hook files can be stale for seconds after
+    // the agent starts processing a new prompt.
+    if (terminalIdle && hookState && (hookState.status === 'waiting_for_input' || hookState.status === 'permission_request')) {
       status = 'waiting'
     }
 
