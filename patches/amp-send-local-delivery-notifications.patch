@@ -1,56 +1,54 @@
 --- plugin/plugins/ai-maestro/scripts/amp-send.sh	2026-03-29 15:15:44
-+++ /Users/shanewickson/.local/bin/amp-send.sh	2026-03-30 09:10:23
-@@ -31,6 +31,34 @@
++++ /Users/shanewickson/.local/bin/amp-send.sh	2026-03-30 09:19:39
+@@ -31,6 +31,32 @@
  # Source helper functions
  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
  source "${SCRIPT_DIR}/amp-helper.sh"
 +
-+# Send tmux push notification for local filesystem deliveries
-+# This mimics what the AI Maestro server does for routed messages
++# Send push notification for local filesystem deliveries
++# Calls the AI Maestro server's notification endpoint so the server handles
++# tmux notification delivery (same path as routed messages)
 +_notify_local_recipient() {
 +    local recipient_name="$1"
 +    local sender_addr="$2"
 +    local subject="$3"
 +    local priority="${4:-normal}"
++    local msg_type="${5:-notification}"
++    local msg_id="${6:-local-delivery}"
 +
-+    # Find the recipient's tmux session
-+    local session_name=""
-+    # Try exact match first, then prefix match
-+    if tmux has-session -t "$recipient_name" 2>/dev/null; then
-+        session_name="$recipient_name"
-+    fi
-+
-+    if [ -n "$session_name" ]; then
-+        local prefix=""
-+        case "$priority" in
-+            urgent) prefix="🔴 [URGENT] " ;;
-+            high)   prefix="🟠 [HIGH] " ;;
-+            *)      prefix="" ;;
-+        esac
-+        local notif="${prefix}[MESSAGE] From: ${sender_addr} - ${subject} - check your inbox"
-+        # Send as a tmux display-message (non-intrusive, doesn't inject into stdin)
-+        tmux display-message -t "$session_name" "$notif" 2>/dev/null || true
-+    fi
++    # Try to notify via the local AI Maestro server (port 23000)
++    # This uses the same notification pipeline as routed messages
++    curl -s -X POST "http://localhost:23000/api/agents/notify" \
++        -H "Content-Type: application/json" \
++        -d "$(jq -n \
++            --arg name "$recipient_name" \
++            --arg from "$sender_addr" \
++            --arg subject "$subject" \
++            --arg priority "$priority" \
++            --arg type "$msg_type" \
++            --arg mid "$msg_id" \
++            '{agentName: $name, fromName: $from, subject: $subject, priority: $priority, messageType: $type, messageId: $mid}')" \
++        >/dev/null 2>&1 || true
 +}
  
  # Parse arguments
  RECIPIENT=""
-@@ -497,6 +525,9 @@
+@@ -497,6 +523,9 @@
              fi
  
              echo "$DELIVERY_MSG" > "${RECIPIENT_INBOX}/${SENDER_DIR}/${MSG_ID}.json"
 +
 +            # Push notification to recipient's tmux session
-+            _notify_local_recipient "$ADDR_NAME" "$FROM_ADDR" "$SUBJECT" "$PRIORITY"
++            _notify_local_recipient "$ADDR_NAME" "$FROM_ADDR" "$SUBJECT" "$PRIORITY" "$TYPE" "$MSG_ID"
  
              echo "✅ Message sent (local filesystem delivery)"
              echo ""
-@@ -651,6 +682,9 @@
+@@ -651,6 +680,9 @@
  
                  echo "$DELIVERY_MSG" > "${RECIPIENT_INBOX}/${SENDER_DIR}/${MSG_ID}.json"
  
 +                # Push notification to recipient's tmux session
-+                _notify_local_recipient "$ADDR_NAME" "$FROM_ADDR" "$SUBJECT" "$PRIORITY"
++                _notify_local_recipient "$ADDR_NAME" "$FROM_ADDR" "$SUBJECT" "$PRIORITY" "$TYPE" "$MSG_ID"
 +
                  echo "✅ Message sent (local filesystem delivery)"
                  echo ""
