@@ -98,20 +98,37 @@ function isAlreadyWrapped(message: string): boolean {
  * If the sender is unverified and the content is not already wrapped by a
  * gateway, wrap it in <external-content> tags and scan for injection patterns.
  *
+ * Authenticated bridge agents (gateways) can pass trust metadata in
+ * payload.context.security.trust. When senderAuthenticated is true and the
+ * payload declares trust (e.g. "operator"), the backstop honors that trust
+ * instead of wrapping the content.
+ *
  * @param content - The message content object
- * @param fromVerified - Whether the sender is a verified AI Maestro agent
+ * @param fromVerified - Whether the sender has a verified public key
  * @param fromAlias - Sender alias for tagging
  * @param fromHost - Sender host for tagging
+ * @param senderAuthenticated - Whether the sender authenticated via API key
  * @returns The content object (possibly modified) and any injection flags
  */
 export function applyContentSecurity(
   content: { type: string; message: string; [key: string]: any },
   fromVerified: boolean,
   fromAlias?: string,
-  fromHost?: string
+  fromHost?: string,
+  senderAuthenticated?: boolean
 ): { content: typeof content; flags: InjectionFlag[] } {
-  // Verified senders pass through
+  // Verified senders (public key confirmed) pass through
   if (fromVerified) {
+    return { content, flags: [] }
+  }
+
+  // Authenticated senders (valid API key) pass through — they are registered
+  // agents in the mesh. This covers both directions:
+  //   - Inbound: gateway forwarding operator messages with context trust metadata
+  //   - Outbound: internal agents replying through a gateway (e.g. to Discord)
+  // Without this, outbound messages get wrapped in <external-content> tags
+  // that render as ugly XML in external systems like Discord.
+  if (senderAuthenticated) {
     return { content, flags: [] }
   }
 

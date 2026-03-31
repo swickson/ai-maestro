@@ -227,7 +227,8 @@ export async function sendFromUI(options: SendFromUIOptions): Promise<{ message:
     message.content,
     isFromVerified,
     message.fromAlias || from,
-    fromHostId
+    fromHostId,
+    isFromVerified  // Web UI path: verified = authenticated
   )
   if (securityFlags.length > 0) {
     console.log(`[SECURITY] Message from ${message.fromAlias || from}: ${securityFlags.length} injection pattern(s) flagged`)
