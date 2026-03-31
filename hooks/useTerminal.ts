@@ -212,6 +212,24 @@ export function useTerminal(options: UseTerminalOptions = {}) {
 
     resizeObserver.observe(container)
 
+    // Intercept mouse wheel events to scroll xterm.js buffer instead of tmux
+    // tmux has "set mouse on" which consumes wheel events sent via PTY,
+    // making browser scrolling useless. We capture wheel at the DOM level,
+    // scroll xterm.js directly, and prevent the event from reaching tmux.
+    // Shift+wheel is forwarded to tmux for copy-mode scrolling.
+    const wheelHandler = (event: WheelEvent) => {
+      if (event.shiftKey) {
+        // Shift+wheel: let it pass through to tmux for copy-mode
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      // Scroll 3 lines per wheel tick (matches typical terminal feel)
+      const lines = event.deltaY > 0 ? 3 : -3
+      terminal.scrollLines(lines)
+    }
+    container.addEventListener('wheel', wheelHandler, { passive: false })
+
     // Add keyboard shortcuts for scrolling, copy, and paste
     terminal.attachCustomKeyEventHandler((event) => {
       // Calculate scroll amount based on terminal height (scroll by page)
@@ -302,6 +320,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
 
     // Cleanup function
     return () => {
+      container.removeEventListener('wheel', wheelHandler)
       resizeObserver.disconnect()
       // Dispose WebGL addon before terminal to free GPU context cleanly
       if (webglAddonRef.current) {
