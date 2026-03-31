@@ -400,6 +400,7 @@ interface LocalDeliveryOptions {
   senderName: string
   forwardedFrom: string | null
   senderPublicKeyHex: string | undefined
+  senderAuthenticated: boolean
   body: AMPRouteRequest
 }
 
@@ -407,13 +408,14 @@ interface LocalDeliveryOptions {
  * Deliver a message to a local agent via unified deliver() function.
  */
 async function deliverLocally(opts: LocalDeliveryOptions): Promise<void> {
-  const { envelope, payload, recipientAgentName, senderAgent, senderName, forwardedFrom, senderPublicKeyHex, body } = opts
+  const { envelope, payload, recipientAgentName, senderAgent, senderName, forwardedFrom, senderPublicKeyHex, senderAuthenticated, body } = opts
 
   await deliver({
     envelope,
     payload,
     recipientAgentName,
     senderPublicKeyHex,
+    senderAuthenticated,
     senderName,
     senderHost: senderAgent?.hostId || forwardedFrom || 'unknown',
     recipientAgentId: opts.localAgent.id,
@@ -1090,7 +1092,8 @@ export async function routeMessage(
     try {
       await deliverLocally({
         envelope, payload: body.payload, localAgent, recipientAgentName,
-        senderAgent, senderName, forwardedFrom, senderPublicKeyHex: senderKeyPair?.publicHex, body
+        senderAgent, senderName, forwardedFrom, senderPublicKeyHex: senderKeyPair?.publicHex,
+        senderAuthenticated: auth.authenticated, body
       })
 
       return {
@@ -1845,6 +1848,7 @@ export async function deliverFederated(
       payload,
       recipientAgentName: localAgent.name || recipientName,
       senderPublicKeyHex: signatureVerified ? sender_public_key : undefined,
+      senderAuthenticated: signatureVerified,
       senderName: envelope.from.split('@')[0],
       senderHost: providerName,
       recipientAgentId: localAgent.id,
