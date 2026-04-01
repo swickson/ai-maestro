@@ -35,7 +35,7 @@ import {
 import type { MessageSummary } from '@/lib/messageQueue'
 import { sendFromUI } from '@/lib/message-send'
 import { forwardFromUI } from '@/lib/message-send'
-import { searchAgents } from '@/lib/agent-registry'
+import { getAgent, searchAgents } from '@/lib/agent-registry'
 import { getSelfHostId, getSelfHost } from '@/lib/hosts-config'
 import {
   loadMeetings,
@@ -44,6 +44,8 @@ import {
   updateMeeting,
   deleteMeeting,
 } from '@/lib/meeting-registry'
+import { routeMessage } from '@/lib/meeting-router'
+import { getRuntime } from '@/lib/agent-runtime'
 import type { SidebarMode } from '@/types/team'
 
 // ---------------------------------------------------------------------------
@@ -231,6 +233,20 @@ export async function sendMessage(params: SendMessageParams): Promise<ServiceRes
       fromVerified: params.fromVerified,
     })
 
+    // After message is stored, check if this is a meeting message and trigger agents
+    const meetingContext = content.context?.meeting
+    if (meetingContext?.meetingId) {
+      // Fire-and-forget: don't block the response on agent injection
+      triggerMeetingAgents({
+        meetingId: meetingContext.meetingId,
+        senderId: from,
+        senderName: params.fromAlias || from,
+        isHuman: from === 'maestro',
+        messageText: content.message,
+        subject,
+      }).catch(err => console.warn('[MeetingRouter] Agent triggering failed:', err))
+    }
+
     return {
       data: {
         message: result.message,
@@ -376,6 +392,78 @@ export interface GetMeetingMessagesParams {
   participants: string | null
   since: string | null
 }
+
+// ---------------------------------------------------------------------------
+// Meeting Agent Triggering
+// ---------------------------------------------------------------------------
+
+/**
+ * After a meeting message is stored, route it and trigger target agents.
+ * Uses the meeting router for @mention resolution and loop guard,
+ * then injects a contextual prompt into each target agent's tmux session.
+ */
+async function triggerMeetingAgents(params: {
+  meetingId: string
+  senderId: string
+  senderName: string
+  isHuman: boolean
+  messageText: string
+  subject: string
+}): Promise<void> {
+  const { meetingId, senderId, senderName, isHuman, messageText, subject } = params
+
+  const result = routeMessage({
+    meetingId,
+    senderId,
+    senderName,
+    isHuman,
+    messageText,
+  })
+
+  if (result.blocked) {
+    console.log(`[MeetingRouter] Message blocked: ${result.reason}`)
+    return
+  }
+
+  if (result.targetAgentIds.length === 0) {
+    return // No agents to trigger (no @mentions or unaddressed message)
+  }
+
+  const runtime = getRuntime()
+  const teamName = subject.replace(/^\[MEETING:[^\]]+\]\s*/, '')
+
+  for (const agentId of result.targetAgentIds) {
+    const agent = getAgent(agentId)
+    if (!agent) continue
+
+    // Check if agent has an active tmux session
+    const sessionName = agent.name
+    const sessionExists = await runtime.sessionExists(sessionName)
+    if (!sessionExists) {
+      console.log(`[MeetingRouter] Skipping ${agent.name} — no active session`)
+      continue
+    }
+
+    // Build injection prompt with context
+    const prompt = [
+      `[Meeting: ${teamName}]`,
+      `${senderName} says: ${messageText}`,
+      '',
+      `Reply by running: amp-send.sh ${senderName} "[MEETING:${meetingId}] ${teamName}" "your reply" --context '{"meeting":{"meetingId":"${meetingId}","teamName":"${teamName}"}}'`,
+    ].join('\n')
+
+    try {
+      await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+      console.log(`[MeetingRouter] Injected prompt into ${agent.name}`)
+    } catch (err) {
+      console.warn(`[MeetingRouter] Failed to inject into ${agent.name}:`, err)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Meeting Messages
+// ---------------------------------------------------------------------------
 
 export async function getMeetingMessages(
   params: GetMeetingMessagesParams,

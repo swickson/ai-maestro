@@ -39,6 +39,20 @@ export interface TeamsFile {
 /** Meeting status for persistent rooms */
 export type MeetingStatus = 'active' | 'ended'
 
+/** Loop guard configuration for meeting chat */
+export interface LoopGuardConfig {
+  maxHops: number               // Max agent-to-agent hops before pausing (default: 6)
+  enabled: boolean              // Whether loop guard is active
+}
+
+/** Loop guard runtime state */
+export interface LoopGuardState {
+  hopCount: number              // Current hop count in the chain
+  paused: boolean               // Whether the guard has paused the conversation
+  lastResetAt: string           // ISO — when the counter was last reset (by human message)
+  lastHopAt?: string            // ISO — when the last agent hop occurred
+}
+
 /** Persistent meeting record */
 export interface Meeting {
   id: string                    // UUID
@@ -51,6 +65,8 @@ export interface Meeting {
   startedAt: string             // ISO
   lastActiveAt: string          // ISO
   endedAt?: string              // ISO (when ended)
+  loopGuardConfig?: LoopGuardConfig   // Chat loop guard settings
+  loopGuardState?: LoopGuardState     // Chat loop guard runtime state
 }
 
 export interface MeetingsFile {
