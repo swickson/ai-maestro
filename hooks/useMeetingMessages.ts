@@ -1,11 +1,32 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import type { MessageSummary } from '@/lib/messageQueue'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
-interface MeetingMessage extends MessageSummary {
-  isMine: boolean       // Sent by the human operator
-  displayFrom: string   // Resolved display name
+/**
+ * Chat message from the shared meeting timeline.
+ * Matches the ChatMessage shape from lib/meeting-chat-service.ts.
+ */
+export interface MeetingMessage {
+  id: string
+  from: string
+  fromAlias: string
+  fromType: 'human' | 'agent'
+  message: string
+  timestamp: string
+  mentions: string[]
+  mentionAll: boolean
+  // Computed by the hook
+  isMine: boolean
+  displayFrom: string
+  // Legacy compat fields for MeetingChatPanel
+  preview: string
+  to: string
+  toAlias?: string
+  subject: string
+  status: string
+  priority: string
+  type: string
+  fromLabel?: string
 }
 
 interface UseMeetingMessagesOptions {
@@ -13,8 +34,8 @@ interface UseMeetingMessagesOptions {
   participantIds: string[]
   teamName: string
   isActive: boolean
-  operatorId?: string   // Human operator identifier (e.g. 'shane')
-  operatorName?: string // Human operator display name (e.g. 'Shane')
+  operatorId?: string
+  operatorName?: string
 }
 
 interface UseMeetingMessagesResult {
@@ -22,6 +43,7 @@ interface UseMeetingMessagesResult {
   unreadCount: number
   sendToAgent: (agentId: string, message: string) => Promise<void>
   broadcastToAll: (message: string) => Promise<void>
+  continueMeeting: () => Promise<void>
   markAsRead: () => void
   loading: boolean
 }
@@ -34,191 +56,199 @@ export function useMeetingMessages({
   operatorId,
   operatorName,
 }: UseMeetingMessagesOptions): UseMeetingMessagesResult {
-  // Resolve operator identity with backward-compatible fallback
   const opId = operatorId || 'maestro'
   const opName = operatorName || 'Maestro'
 
   const [messages, setMessages] = useState<MeetingMessage[]>([])
   const [loading, setLoading] = useState(false)
-  const lastFetchRef = useRef<string | null>(null)
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
   const seenCountRef = useRef(0)
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Stabilize participantIds — only change when the sorted list actually changes
-  const participantKey = useMemo(() => [...participantIds].sort().join(','), [participantIds])
-  const stableParticipantIds = useRef(participantIds)
-  useEffect(() => {
-    stableParticipantIds.current = participantIds
-  }, [participantKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Convert a raw chat message from the API into a MeetingMessage
+  const toMeetingMessage = useCallback((msg: any): MeetingMessage => ({
+    id: msg.id,
+    from: msg.from,
+    fromAlias: msg.fromAlias || msg.from,
+    fromType: msg.fromType || 'agent',
+    message: msg.message,
+    timestamp: msg.timestamp,
+    mentions: msg.mentions || [],
+    mentionAll: msg.mentionAll || false,
+    isMine: msg.from === opId || msg.fromAlias === opName,
+    displayFrom: msg.fromAlias || msg.from,
+    // Legacy compat
+    preview: msg.message,
+    to: 'all',
+    subject: `[MEETING:${meetingId}]`,
+    status: 'read',
+    priority: 'normal',
+    type: 'notification',
+    fromLabel: msg.fromAlias,
+  }), [meetingId, opId, opName])
 
-  const fetchMessages = useCallback(async () => {
-    const pIds = stableParticipantIds.current
-    if (!meetingId || !isActive || pIds.length === 0) return
+  // Fetch full history from the shared timeline API
+  const fetchHistory = useCallback(async () => {
+    if (!meetingId || !isActive) return
 
     try {
-      const params = new URLSearchParams({
-        meetingId,
-        participants: pIds.join(','),
-      })
-      if (lastFetchRef.current) {
-        params.set('since', lastFetchRef.current)
-      }
-
-      const res = await fetch(`/api/messages/meeting?${params}`)
+      const res = await fetch(`/api/meetings/${meetingId}/chat`)
       if (!res.ok) return
 
       const data = await res.json()
-      const newMessages: MeetingMessage[] = (data.messages || []).map((msg: MessageSummary) => ({
-        ...msg,
-        isMine: msg.from === opId || msg.fromAlias === opName || msg.from === 'maestro' || msg.fromAlias === 'Maestro',
-        displayFrom: msg.fromLabel || msg.fromAlias || msg.from,
-      }))
+      const msgs = (data.messages || []).map(toMeetingMessage)
+      setMessages(msgs)
+      seenCountRef.current = msgs.length
+    } catch {
+      // Silently fail
+    }
+  }, [meetingId, isActive, toMeetingMessage])
 
-      if (lastFetchRef.current && newMessages.length > 0) {
-        // Incremental: append new messages, replace optimistic ones
-        setMessages(prev => {
-          const existingIds = new Set(prev.filter(m => !m.id.startsWith('optimistic-')).map(m => m.id))
-          const toAdd = newMessages.filter(m => !existingIds.has(m.id))
-          if (toAdd.length === 0) return prev
-          // Remove optimistic messages that now have real counterparts
-          const withoutOptimistic = prev.filter(m => !m.id.startsWith('optimistic-'))
-          return [...withoutOptimistic, ...toAdd]
-        })
-      } else if (!lastFetchRef.current) {
-        // Initial fetch: replace all (including any optimistic)
-        setMessages(newMessages)
-        seenCountRef.current = newMessages.length
+  // Connect WebSocket for real-time updates
+  useEffect(() => {
+    if (!meetingId || !isActive) return
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/meeting-chat?meetingId=${meetingId}`
+
+    try {
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        // Subscribe to this meeting's chat
+        ws.send(JSON.stringify({ type: 'subscribe', meetingId }))
       }
 
-      if (newMessages.length > 0) {
-        const latest = newMessages[newMessages.length - 1]
-        lastFetchRef.current = latest.timestamp
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+
+          if (data.type === 'message' && data.data) {
+            const msg = toMeetingMessage(data.data)
+            setMessages(prev => {
+              // Dedupe by ID (in case we get both WS + poll)
+              if (prev.some(m => m.id === msg.id)) return prev
+              // Replace optimistic message if it exists
+              const withoutOptimistic = prev.filter(m => !m.id.startsWith('optimistic-'))
+              return [...withoutOptimistic, msg]
+            })
+          }
+          // loopGuard events handled by MeetingChatPanel via its own polling
+        } catch {
+          // Ignore malformed messages
+        }
+      }
+
+      ws.onclose = () => {
+        wsRef.current = null
+        // Fall back to polling if WS disconnects
+        if (isActive && meetingId) {
+          pollIntervalRef.current = setInterval(fetchHistory, 5000)
+        }
+      }
+
+      ws.onerror = () => {
+        // Will trigger onclose
       }
     } catch {
-      // Silently fail on poll errors
+      // WebSocket not available — fall back to polling
+      pollIntervalRef.current = setInterval(fetchHistory, 5000)
     }
-  }, [meetingId, isActive, participantKey])
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
+    }
+  }, [meetingId, isActive, toMeetingMessage, fetchHistory])
 
   // Initial fetch
   useEffect(() => {
     if (!meetingId || !isActive) {
       setMessages([])
-      lastFetchRef.current = null
       seenCountRef.current = 0
       return
     }
     setLoading(true)
-    fetchMessages().finally(() => setLoading(false))
-  }, [meetingId, isActive, fetchMessages])
+    fetchHistory().finally(() => setLoading(false))
+  }, [meetingId, isActive, fetchHistory])
 
-  // Poll every 7s
-  useEffect(() => {
-    if (!meetingId || !isActive) return
-    intervalRef.current = setInterval(fetchMessages, 7000)
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
-    }
-  }, [meetingId, isActive, fetchMessages])
-
-  // Show a message optimistically before server confirms
-  const addOptimistic = useCallback((text: string, toAgent?: string) => {
+  // Optimistic message helper
+  const addOptimistic = useCallback((text: string) => {
     const optimistic: MeetingMessage = {
       id: `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       from: opId,
       fromAlias: opName,
-      to: toAgent || 'all',
-      toAlias: toAgent ? undefined : 'All',
+      fromType: 'human',
+      message: text,
       timestamp: new Date().toISOString(),
-      subject: `[MEETING:${meetingId}]`,
+      mentions: [],
+      mentionAll: false,
+      isMine: true,
+      displayFrom: opName,
       preview: text,
+      to: 'all',
+      subject: `[MEETING:${meetingId}]`,
       status: 'unread',
       priority: 'normal',
       type: 'notification',
-      isMine: true,
-      displayFrom: opName,
+      fromLabel: opName,
     }
     setMessages(prev => [...prev, optimistic])
-  }, [meetingId])
+  }, [meetingId, opId, opName])
 
-  const sendToAgent = useCallback(async (agentId: string, message: string) => {
+  // Post to the shared timeline (not AMP)
+  const postToTimeline = useCallback(async (message: string) => {
     if (!meetingId) return
-    const pIds = stableParticipantIds.current
-    addOptimistic(message, agentId)
+
+    await fetch(`/api/meetings/${meetingId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: opId,
+        fromAlias: opName,
+        fromType: 'human',
+        message,
+      }),
+    })
+  }, [meetingId, opId, opName])
+
+  const sendToAgent = useCallback(async (_agentId: string, message: string) => {
+    // With the shared timeline, all messages go to the same log.
+    // The @mention in the message text handles targeting.
+    addOptimistic(message)
     try {
-      await fetch('/api/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: opId,
-          fromAlias: opName,
-          fromLabel: opName,
-          fromVerified: true,
-          to: agentId,
-          subject: `[MEETING:${meetingId}] ${teamName}`,
-          content: {
-            type: 'notification',
-            message,
-            context: {
-              meeting: {
-                meetingId,
-                teamName,
-                participantIds: pIds,
-                isBroadcast: false,
-                fromType: 'human',
-                operatorId: opId,
-                operatorName: opName,
-              },
-            },
-          },
-        }),
-      })
+      await postToTimeline(message)
     } catch (err) {
       console.error('Failed to send message:', err)
     }
-    // Refresh after a short delay to let file I/O settle
-    setTimeout(() => fetchMessages(), 300)
-  }, [meetingId, teamName, participantKey, fetchMessages, addOptimistic, opId, opName])
+  }, [addOptimistic, postToTimeline])
 
   const broadcastToAll = useCallback(async (message: string) => {
-    if (!meetingId) return
-    const pIds = stableParticipantIds.current
-    // Show one optimistic message for the broadcast (not N copies)
     addOptimistic(message)
-    // Send individual messages to each participant
-    await Promise.all(
-      pIds.map(agentId =>
-        fetch('/api/messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            from: opId,
-            fromAlias: opName,
-            fromLabel: opName,
-            fromVerified: true,
-            to: agentId,
-            subject: `[MEETING:${meetingId}] ${teamName}`,
-            content: {
-              type: 'notification',
-              message,
-              context: {
-                meeting: {
-                  meetingId,
-                  teamName,
-                  participantIds: pIds,
-                  isBroadcast: true,
-                  fromType: 'human',
-                  operatorId: opId,
-                  operatorName: opName,
-                },
-              },
-            },
-          }),
-        }).catch(err => console.error(`Failed to send to ${agentId}:`, err))
-      )
-    )
-    // Refresh after a short delay to let file I/O settle
-    setTimeout(() => fetchMessages(), 300)
-  }, [meetingId, teamName, participantKey, fetchMessages, addOptimistic, opId, opName])
+    try {
+      await postToTimeline(message)
+    } catch (err) {
+      console.error('Failed to broadcast:', err)
+    }
+  }, [addOptimistic, postToTimeline])
+
+  const continueMeeting = useCallback(async () => {
+    if (!meetingId) return
+    try {
+      await fetch(`/api/meetings/${meetingId}/loop-guard`, { method: 'POST' })
+      // Post a system message so everyone sees the continue
+      await postToTimeline('/continue')
+    } catch (err) {
+      console.error('Failed to continue meeting:', err)
+    }
+  }, [meetingId, postToTimeline])
 
   const markAsRead = useCallback(() => {
     seenCountRef.current = messages.length
@@ -231,6 +261,7 @@ export function useMeetingMessages({
     unreadCount,
     sendToAgent,
     broadcastToAll,
+    continueMeeting,
     markAsRead,
     loading,
   }
