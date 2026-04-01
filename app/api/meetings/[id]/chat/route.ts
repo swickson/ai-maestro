@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isSelf, getHostById } from '@/lib/hosts-config'
 import { getMeeting } from '@/lib/meeting-registry'
+import { routeMessage } from '@/lib/meeting-router'
+import { getRuntime } from '@/lib/agent-runtime'
+import { getAgent } from '@/lib/agent-registry'
 
 /**
  * POST /api/meetings/[id]/chat
@@ -46,6 +49,42 @@ export async function POST(
       const g = globalThis as Record<string, unknown>
       if (typeof g.__meetingChatBroadcast === 'function') {
         (g.__meetingChatBroadcast as (id: string, msg: unknown) => void)(meetingId, chatMessage)
+      }
+
+      // Trigger @mentioned agents via Phase 1 router (fire-and-forget)
+      const fromStr = body.from as string
+      const isHuman = (body.fromType as string) === 'human'
+      const routing = routeMessage({
+        meetingId,
+        senderId: fromStr,
+        senderName: (body.fromAlias as string) || fromStr,
+        isHuman,
+        messageText: body.message as string,
+      })
+
+      if (!routing.blocked && routing.targetAgentIds.length > 0) {
+        const runtime = getRuntime()
+        for (const agentId of routing.targetAgentIds) {
+          const agent = getAgent(agentId)
+          if (!agent) continue
+          const sessionName = agent.name
+          runtime.sessionExists(sessionName).then(async (exists) => {
+            if (!exists) return
+            const senderName = (body.fromAlias as string) || fromStr
+            const prompt = [
+              `[Meeting: ${meeting.name}]`,
+              `${senderName} says: ${body.message}`,
+              '',
+              `Reply by running: curl -s -X POST http://localhost:23000/api/meetings/${meetingId}/chat -H 'Content-Type: application/json' -d '{"from":"${agentId}","fromAlias":"${agent.label || agent.name}","fromType":"agent","message":"YOUR_REPLY"}'`,
+            ].join('\n')
+            try {
+              await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+              console.log(`[MeetingChat] Injected prompt into ${agent.name}`)
+            } catch (err) {
+              console.warn(`[MeetingChat] Failed to inject into ${agent.name}:`, err)
+            }
+          }).catch(() => {})
+        }
       }
 
       return NextResponse.json({ success: true, message: chatMessage })
