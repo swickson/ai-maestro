@@ -217,14 +217,15 @@ export function routeMessage(ctx: RouterContext): RoutingResult {
     resetLoopGuard(ctx.meetingId)
 
     // Resolve targets from @mentions
+    // Human messages without @mentions default to @all — the operator
+    // almost always wants everyone to see and respond to their message.
     let targetIds: string[] = []
-    if (parsed.isAll) {
+    if (parsed.isAll || parsed.mentionedNames.length === 0) {
+      // @all or no mentions: trigger all agents except sender
       targetIds = meeting.agentIds.filter(id => id !== ctx.senderId)
-    } else if (parsed.mentionedNames.length > 0) {
+    } else {
       targetIds = resolveAgentIds(parsed.mentionedNames, meeting.agentIds)
     }
-    // No @mentions from human = visible to all, triggers nobody
-    // (but human messages without @mentions are still useful context)
 
     return {
       targetAgentIds: targetIds,

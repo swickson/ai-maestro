@@ -64,26 +64,85 @@ export async function POST(
 
       if (!routing.blocked && routing.targetAgentIds.length > 0) {
         const runtime = getRuntime()
+        const { isSelf: isSelfHost, getHostById, getSelfHost } = await import('@/lib/hosts-config')
+        const selfHost = getSelfHost()
+        const meetingHostUrl = selfHost?.url || `http://localhost:23000`
+
+        // Fetch sessions list to resolve remote agents not in local registry
+        let remoteSessions: Array<{ name: string; agentId?: string; hostId?: string }> = []
+        try {
+          const sessRes = await fetch(`http://localhost:23000/api/sessions`)
+          if (sessRes.ok) {
+            const sessData = await sessRes.json()
+            remoteSessions = sessData.sessions || []
+          }
+        } catch { /* ignore */ }
+
         for (const agentId of routing.targetAgentIds) {
-          const agent = getAgent(agentId)
-          if (!agent) continue
-          const sessionName = agent.name
-          runtime.sessionExists(sessionName).then(async (exists) => {
-            if (!exists) return
-            const senderName = (body.fromAlias as string) || fromStr
-            const prompt = [
-              `[Meeting: ${meeting.name}]`,
-              `${senderName} says: ${body.message}`,
-              '',
-              `Reply by running: curl -s -X POST http://localhost:23000/api/meetings/${meetingId}/chat -H 'Content-Type: application/json' -d '{"from":"${agentId}","fromAlias":"${agent.label || agent.name}","fromType":"agent","message":"YOUR_REPLY"}'`,
-            ].join('\n')
-            try {
-              await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
-              console.log(`[MeetingChat] Injected prompt into ${agent.name}`)
-            } catch (err) {
-              console.warn(`[MeetingChat] Failed to inject into ${agent.name}:`, err)
+          // Try local registry first, fall back to sessions API for remote agents
+          let agent = getAgent(agentId)
+          let agentName = agent?.name
+          let agentLabel = agent?.label || agent?.name
+          let agentHostId = agent?.hostId
+          let agentHostUrl = agent?.hostUrl
+
+          if (!agent) {
+            // Look up in sessions (remote agents)
+            const session = remoteSessions.find(s => s.agentId === agentId)
+            if (session) {
+              agentName = session.name
+              agentLabel = session.name
+              agentHostId = session.hostId
+              // Resolve hostUrl from hosts config
+              if (agentHostId) {
+                const hostRecord = getHostById(agentHostId)
+                agentHostUrl = hostRecord?.url
+              }
             }
-          }).catch(() => {})
+          }
+
+          if (!agentName) continue
+
+          const senderName = (body.fromAlias as string) || fromStr
+          const prompt = [
+            `[Meeting: ${meeting.name}]`,
+            `${senderName} says: ${body.message}`,
+            '',
+            `Reply by running: curl -s -X POST ${meetingHostUrl}/api/meetings/${meetingId}/chat -H 'Content-Type: application/json' -d '{"from":"${agentId}","fromAlias":"${agentLabel}","fromType":"agent","message":"YOUR_REPLY"}'`,
+          ].join('\n')
+
+          // Check if agent is local or remote
+          const isLocal = !agentHostId || isSelfHost(agentHostId)
+
+          if (isLocal) {
+            // Local agent: inject directly via tmux
+            const sessionName = agentName
+            runtime.sessionExists(sessionName).then(async (exists) => {
+              if (!exists) return
+              try {
+                await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+                console.log(`[MeetingChat] Injected prompt into ${agentName} (local)`)
+              } catch (err) {
+                console.warn(`[MeetingChat] Failed to inject into ${agentName}:`, err)
+              }
+            }).catch(() => {})
+          } else if (agentHostUrl) {
+            // Remote agent: proxy injection via the agent's host
+            fetch(`${agentHostUrl}/api/agents/notify`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                agentName: agentName,
+                fromName: senderName,
+                subject: `[Meeting: ${meeting.name}] ${senderName} mentioned you`,
+                messageType: 'notification',
+              }),
+            }).then(() => {
+              console.log(`[MeetingChat] Notified remote agent ${agentName} at ${agentHostUrl}`)
+            }).catch(err => {
+              console.warn(`[MeetingChat] Failed to notify remote ${agentName}:`, err)
+            })
+          }
         }
       }
 
