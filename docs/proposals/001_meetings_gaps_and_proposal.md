@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-01
 **Authors:** dev-aimaestro-admin (Kai), dev-aimaestro-bananajr (CelestIA), dev-aimaestro-holmes (Watson)
-**Status:** Draft v2 — incorporating CelestIA + Watson review feedback
+**Status:** Approved — ready for implementation
 **Reference:** [agentchattr](https://github.com/bcurts/agentchattr)
 
 ---
@@ -212,10 +212,11 @@ Graduate from meeting-scoped to persistent team channels. This changes the data 
 6. **Cross-host: meeting host is authoritative.** No replication. Remote agents proxy through mesh. (CelestIA raised)
 7. **Token/cost awareness from Phase 3.** Cap injection context size. (CelestIA raised)
 
-## Open Questions
+## Decisions (continued — from final review)
 
-1. **MCP integration priority?** MCP tools give agents cleaner chat access but add implementation complexity. Is Phase 3 sufficient, or should we fast-track MCP?
-2. **Agent triggering model:** Should agents be triggered only by @mention, or should `@all` be the default when no mention is specified? (Affects whether passive agents miss messages they should see.)
+8. **MCP timing: after routing + injection context.** @mention routing defines the message flow, injection context defines what agents see. MCP tools become clean wrappers around a working pipeline. Building MCP first would mean designing the agent interface before the server orchestration exists. (CelestIA, Watson agreed)
+9. **Default @all for visibility, @mention for triggering.** All messages are visible to all participants in the shared timeline (no addressing required). However, only @mentioned agents get tmux injection and are prompted to respond. Unaddressed messages from the operator are seen by everyone but don't trigger agent responses. This avoids token waste while making the chat feel like a real group conversation. `@all` explicitly triggers all agents. (Watson proposed the visibility/trigger split, CelestIA agreed)
+10. **MCP is a priority but phase-flexible.** This team (Kai, CelestIA, Watson) will be the only testers until rollout. MCP will be in before other agents see it regardless of which phase it ships in. (Shane's directive)
 
 ---
 
