@@ -38,6 +38,7 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
   const [loopGuard, setLoopGuard] = useState<LoopGuardStatus | null>(null)
+  const [presence, setPresence] = useState<Record<string, { status: string; lastActivity?: string }>>({})
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
   const [mentionIndex, setMentionIndex] = useState(0)
@@ -49,14 +50,19 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length])
 
-  // Poll loop guard status
+  // Poll loop guard status and agent presence
   useEffect(() => {
     if (!meetingId) return
     const poll = async () => {
       try {
-        const res = await fetch(`/api/meetings/${meetingId}/loop-guard`)
-        if (res.ok) {
-          setLoopGuard(await res.json())
+        const [guardRes, presenceRes] = await Promise.all([
+          fetch(`/api/meetings/${meetingId}/loop-guard`),
+          fetch(`/api/meetings/${meetingId}/presence`),
+        ])
+        if (guardRes.ok) setLoopGuard(await guardRes.json())
+        if (presenceRes.ok) {
+          const data = await presenceRes.json()
+          setPresence(data.agents || {})
         }
       } catch { /* ignore */ }
     }
@@ -229,17 +235,25 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
         </button>
         {agents.map(agent => {
           const name = agent.label || agent.name || agent.alias || agent.id.slice(0, 8)
+          const agentPresence = presence[agent.id]
+          const statusColor = agentPresence?.status === 'working' ? 'bg-yellow-400'
+            : agentPresence?.status === 'active' ? 'bg-green-400'
+            : agentPresence?.status === 'idle' ? 'bg-blue-400'
+            : agentPresence?.status === 'online' ? 'bg-green-400'
+            : 'bg-gray-600'
+          const statusTitle = agentPresence?.status || 'unknown'
           return (
             <button
               key={agent.id}
               onClick={() => setRecipient(agent.id)}
+              title={statusTitle}
               className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-full whitespace-nowrap transition-colors ${
                 recipient === agent.id
                   ? 'bg-blue-600/30 text-blue-300'
                   : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
               }`}
             >
-              <User className="w-3 h-3" />
+              <span className={`w-1.5 h-1.5 rounded-full ${statusColor} flex-shrink-0`} />
               {name.length > 15 ? name.slice(0, 15) + '...' : name}
             </button>
           )
@@ -270,28 +284,42 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
             No messages yet. Use @agent-name to mention specific agents, or @all for everyone.
           </p>
         )}
-        {filteredMessages.map(msg => (
-          <div
-            key={msg.id}
-            className={`flex flex-col ${msg.isMine ? 'items-end' : 'items-start'}`}
-          >
-            <span className="text-[9px] text-gray-600 mb-0.5">
-              {msg.displayFrom}{msg.isMine ? <span className="ml-1 text-emerald-500/70">(you)</span> : ''} {msg.toAlias ? `→ ${msg.toAlias}` : ''}
-            </span>
+        {filteredMessages.map(msg => {
+          // System messages (join/leave) get distinct styling
+          const isSystem = msg.from === 'system' || msg.displayFrom === 'System'
+          if (isSystem) {
+            return (
+              <div key={msg.id} className="flex justify-center py-1">
+                <span className="text-[10px] text-gray-500 italic">
+                  {msg.preview}
+                </span>
+              </div>
+            )
+          }
+
+          return (
             <div
-              className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed ${
-                msg.isMine
-                  ? 'bg-emerald-600/30 text-emerald-100'
-                  : 'bg-gray-800 text-gray-300'
-              }`}
+              key={msg.id}
+              className={`flex flex-col ${msg.isMine ? 'items-end' : 'items-start'}`}
             >
-              {msg.preview}
+              <span className="text-[9px] text-gray-600 mb-0.5">
+                {msg.displayFrom}{msg.isMine ? <span className="ml-1 text-emerald-500/70">(you)</span> : ''} {msg.toAlias ? `→ ${msg.toAlias}` : ''}
+              </span>
+              <div
+                className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed ${
+                  msg.isMine
+                    ? 'bg-emerald-600/30 text-emerald-100'
+                    : 'bg-gray-800 text-gray-300'
+                }`}
+              >
+                {msg.preview}
+              </div>
+              <span className="text-[9px] text-gray-700 mt-0.5">
+                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
             </div>
-            <span className="text-[9px] text-gray-700 mt-0.5">
-              {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-        ))}
+          )
+        })}
         <div ref={messagesEndRef} />
       </div>
 
