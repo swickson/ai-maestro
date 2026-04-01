@@ -468,12 +468,14 @@ export interface CreateMeetingParams {
   agentIds: string[]
   teamId?: string | null
   sidebarMode?: SidebarMode
+  operatorId?: string
+  operatorName?: string
 }
 
 export function createNewMeeting(
   params: CreateMeetingParams,
 ): ServiceResult<{ meeting: any }> {
-  const { name, agentIds, teamId, sidebarMode } = params
+  const { name, agentIds, teamId, sidebarMode, operatorId, operatorName } = params
 
   if (!name || typeof name !== 'string') {
     return { error: 'Meeting name is required', status: 400 }
@@ -489,6 +491,8 @@ export function createNewMeeting(
       agentIds,
       teamId: teamId || null,
       sidebarMode,
+      operatorId,
+      operatorName,
     })
     return { data: { meeting }, status: 201 }
   } catch (error) {

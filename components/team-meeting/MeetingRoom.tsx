@@ -203,6 +203,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
   const [notFound, setNotFound] = useState(false)
   const persistedMeetingIdRef = useRef<string | null>(null)
   const creatingMeetingRef = useRef(false)
+  const [operatorId, setOperatorId] = useState<string | undefined>(undefined)
+  const [operatorName, setOperatorName] = useState<string | undefined>(undefined)
 
   // Restore meeting from disk on mount (skip for new meetings)
   useEffect(() => {
@@ -226,6 +228,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
 
         persistedMeetingIdRef.current = meeting.id
         setTeamId(meeting.teamId)
+        setOperatorId(meeting.operatorId)
+        setOperatorName(meeting.operatorName)
         dispatch({ type: 'RESTORE_MEETING', meeting, teamId: meeting.teamId })
       } catch {
         if (!cancelled) setNotFound(true)
@@ -308,6 +312,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
         const data = await res.json()
         if (data.meeting) {
           persistedMeetingIdRef.current = data.meeting.id
+          setOperatorId(data.meeting.operatorId)
+          setOperatorName(data.meeting.operatorName)
           // Update URL without full navigation
           window.history.replaceState(null, '', `/team-meeting?meeting=${data.meeting.id}`)
         }
@@ -408,6 +414,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
     participantIds: state.selectedAgentIds,
     teamName: state.teamName || 'Meeting',
     isActive: state.phase === 'active',
+    operatorId,
+    operatorName,
   })
 
   // Poll unread message counts per agent (every 10s)
