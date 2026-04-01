@@ -97,7 +97,7 @@ export function createMeeting(data: {
 
 export function updateMeeting(
   id: string,
-  updates: Partial<Pick<Meeting, 'name' | 'agentIds' | 'status' | 'activeAgentId' | 'sidebarMode' | 'lastActiveAt' | 'endedAt' | 'teamId'>>
+  updates: Partial<Pick<Meeting, 'name' | 'agentIds' | 'status' | 'activeAgentId' | 'sidebarMode' | 'lastActiveAt' | 'endedAt' | 'teamId' | 'loopGuardConfig' | 'loopGuardState'>>
 ): Meeting | null {
   const meetings = loadMeetings()
   const index = meetings.findIndex(m => m.id === id)
