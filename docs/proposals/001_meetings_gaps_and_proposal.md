@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-01
 **Authors:** dev-aimaestro-admin (Kai), dev-aimaestro-bananajr (CelestIA), dev-aimaestro-holmes (Watson)
-**Status:** Draft — pending review
+**Status:** Draft v2 — incorporating CelestIA + Watson review feedback
 **Reference:** [agentchattr](https://github.com/bcurts/agentchattr)
 
 ---
@@ -130,7 +130,7 @@ Build a shared-timeline chat service inside AI Maestro inspired by agentchattr. 
 All three agents independently recommended Option 3. The reasoning:
 
 1. **agentchattr proved the pattern works.** Shared timeline + @mention routing + loop guards = real collaboration.
-2. **We already have the infrastructure.** WebSocket in `server.mjs`, tmux `send-keys`, agent registry, meeting JSONL storage, idle-aware injection with retry queues.
+2. **We already have the infrastructure.** WebSocket in `server.mjs`, tmux `send-keys`, agent registry, meeting JSONL storage (`meeting-chat.ts`), WebSocket broadcast (`meeting-websocket.ts`), idle-aware injection with retry queues (`meeting-agent-injector.ts`). We are not building from scratch — the bones of Option 3 already exist in the codebase.
 3. **AMP is wrong for group chat.** It's excellent for async point-to-point messaging across the mesh. Forcing group semantics onto it creates the telephone problem. Use each tool for what it's good at.
 4. **The gap analysis is already done.** `docs/meeting-chat-gap-analysis.md` maps every gap. The implementation plan exists at `docs/meeting-chat-implementation-prompt.md`.
 
@@ -138,75 +138,84 @@ All three agents independently recommended Option 3. The reasoning:
 
 ## Implementation Plan
 
-### Phase 1: Agent-to-Agent Chaining + Loop Guard (Quick Win)
+> **Design principle:** All phases should be designed host-agnostic from the start. Injection paths, chat API URLs, and storage references should use the agent's `hostUrl` rather than assuming `localhost`, even if cross-host execution is deferred to Phase 5. This avoids ripping out assumptions later.
 
-Remove the human-only gate so agent replies trigger other participants. Add hop counter to prevent runaway loops.
+### Phase 1: Agent-to-Agent Chaining + @Mention Routing
+
+Ship these together. Enabling agent-to-agent chaining without @mention routing would trigger ALL agents on every reply — a token bomb. These two changes are tightly coupled.
 
 **Changes:**
-- `app/api/meetings/[id]/chat/route.ts` — Remove `if (fromType === 'human')` gate, add hop counter
-- `lib/meeting-agent-injector.ts` — Exclude sender from injection targets
+- `app/api/meetings/[id]/chat/route.ts` — Remove `if (fromType === 'human')` gate, wire in router
+- `lib/meeting-router.ts` — [NEW] Router class with @mention parsing, hop counting, loop guard
+- `lib/meeting-agent-injector.ts` — Exclude sender from injection targets, accept target list from router
 - `lib/meeting-chat.ts` — Add hop tracking metadata
-- Chat UI — Add `/continue` command support
+- Chat UI — Add `/continue` command support, @mention autocomplete
 
 **Acceptance criteria:**
-- Agent replies trigger other agents in the meeting
-- Loop guard caps agent-to-agent exchanges (max 4 hops, configurable)
+- Agent replies trigger other agents in the meeting when @mentioned
+- Messages without @mentions are visible in chat but don't trigger injections
+- `@all` triggers all meeting participants except the sender
+- Loop guard caps agent-to-agent exchanges (default 6 hops, configurable per meeting)
 - Human messages always pass through and reset the hop counter
 - Sender is excluded from injection targets
+- `/continue` command resumes a paused conversation
 
-### Phase 2: @Mention Routing
+### Phase 2: Human Operator Identity
 
-Add targeted routing so agents are only triggered when @mentioned.
-
-**Changes:**
-- `lib/meeting-router.ts` — [NEW] Router class with @mention parsing, hop counting
-- `app/api/meetings/[id]/chat/route.ts` — Wire router into message flow
-- `lib/meeting-agent-injector.ts` — Accept target list instead of injecting to all
-- Chat UI — Add @mention autocomplete
-
-### Phase 3: Human Operator Identity
-
-Give the human operator a proper identity in the chat system.
+Give the human operator a proper, distinct identity in the chat system. This is the operator's most visible pain point — messages showing as "Maestro@Milo" with no sent folder.
 
 **Changes:**
-- Meeting chat API — Accept operator identity (name, display name)
-- Chat storage — Store human messages with proper attribution
-- Chat UI — Display human messages distinctly from agent messages
-- Sent messages visible to the sender in the chat window
+- Meeting chat API — Accept operator identity (name, display name, role: "operator")
+- Chat storage — Store human messages with proper attribution and a distinct `fromType`
+- Chat UI — Display human messages with distinct styling from agent messages
+- Sent messages visible to the sender in the chat window immediately
 
-### Phase 4: Contextual Agent Injection
+### Phase 3: Contextual Agent Injection
 
-Replace raw curl templates with contextual prompts that include conversation history.
+Replace raw curl templates with contextual prompts that include conversation history. Cap injection context to prevent token waste.
 
 **Changes:**
-- `lib/meeting-agent-injector.ts` — Include last N messages as context in injection
+- `lib/meeting-agent-injector.ts` — Include last N messages as context (default 10, max 20)
+- Cap context to 2000 characters to control token spend
 - Consider MCP tools (`meeting_read`, `meeting_send`) for cleaner agent interaction
 - Agents respond with awareness of what others have said
 
-### Phase 5: Cross-Host Support
+### Phase 4: Cross-Host Support
 
-Route injections through host proxy for remote agents.
+Route injections through host proxy for remote agents. The meeting host (whoever starts the meeting) is the authoritative chat server. No storage replication needed — remote agents connect to the meeting host's chat API via the existing mesh proxy.
 
 **Changes:**
 - Use agent's `hostUrl` instead of `localhost` in injection commands
-- Consider WebSocket relay for real-time cross-host chat
-- Shared storage replication or centralized chat server
+- Remote agents post to meeting host's chat API through mesh proxy
+- WebSocket relay for real-time cross-host chat updates
+- JSONL log lives on the meeting host only
 
-### Phase 6: Presence and UX Polish
+### Phase 5: Presence and UX Polish
 
 - Agent join/leave notifications in chat
 - Idle/active/working status per agent
 - Typing indicators
-- Always-on team channels (not just meeting-scoped)
+
+### Phase 6: Always-On Team Channels
+
+Graduate from meeting-scoped to persistent team channels. This changes the data model (persistence, cleanup, membership management) and should only be attempted after the meeting-scoped pattern is validated.
 
 ---
 
+## Decisions (from review feedback)
+
+1. **Meeting-scoped first.** Always-on channels deferred to Phase 6 after pattern is validated. (CelestIA, Watson agreed)
+2. **Replace, not coexist.** The current AMP-based meeting chat transport is fundamentally broken for group conversations. Swap it out entirely once Phase 1-2 land. (CelestIA, Watson agreed)
+3. **Phase 1 ships chaining + @mentions together.** Chaining without @mentions is a token bomb. (CelestIA raised, Watson agreed)
+4. **Human identity before @mentions in priority, but after chaining in implementation.** Swap original Phase 2/3 order — operator identity is simpler and higher impact. (Watson raised, CelestIA agreed)
+5. **Loop guard default: 6 hops, configurable per meeting.** 4 is too low for 5+ agent teams. (Watson raised)
+6. **Cross-host: meeting host is authoritative.** No replication. Remote agents proxy through mesh. (CelestIA raised)
+7. **Token/cost awareness from Phase 3.** Cap injection context size. (CelestIA raised)
+
 ## Open Questions
 
-1. **Meeting-scoped or always-on?** agentchattr has persistent channels. Our meetings are time-bound. Should we support both?
-2. **MCP integration priority?** MCP tools give agents cleaner chat access but add implementation complexity. Is Phase 4 sufficient, or should we fast-track MCP?
-3. **Replace or coexist?** Should the new chat system replace the current meeting chat entirely, or run alongside it during transition?
-4. **Cross-host timeline:** Phase 5 requires architectural decisions about where the shared log lives. Centralized server? Replicated? This affects the mesh architecture.
+1. **MCP integration priority?** MCP tools give agents cleaner chat access but add implementation complexity. Is Phase 3 sufficient, or should we fast-track MCP?
+2. **Agent triggering model:** Should agents be triggered only by @mention, or should `@all` be the default when no mention is specified? (Affects whether passive agents miss messages they should see.)
 
 ---
 
