@@ -152,6 +152,7 @@ export function useMeetingMessages({
           from: opId,
           fromAlias: opName,
           fromLabel: opName,
+          fromVerified: true,
           to: agentId,
           subject: `[MEETING:${meetingId}] ${teamName}`,
           content: {
@@ -193,6 +194,7 @@ export function useMeetingMessages({
             from: opId,
             fromAlias: opName,
             fromLabel: opName,
+            fromVerified: true,
             to: agentId,
             subject: `[MEETING:${meetingId}] ${teamName}`,
             content: {
