@@ -11,6 +11,10 @@ import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { Meeting, MeetingsFile, SidebarMode } from '@/types/team'
 
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 const AIMAESTRO_DIR = path.join(os.homedir(), '.aimaestro')
 const TEAMS_DIR = path.join(AIMAESTRO_DIR, 'teams')
 const MEETINGS_FILE = path.join(TEAMS_DIR, 'meetings.json')
@@ -74,6 +78,8 @@ export function createMeeting(data: {
   agentIds: string[]
   teamId: string | null
   sidebarMode?: SidebarMode
+  operatorId?: string
+  operatorName?: string
 }): Meeting {
   const meetings = loadMeetings()
   const now = new Date().toISOString()
@@ -88,6 +94,8 @@ export function createMeeting(data: {
     sidebarMode: data.sidebarMode || 'grid',
     startedAt: now,
     lastActiveAt: now,
+    operatorId: data.operatorId || os.userInfo().username,
+    operatorName: data.operatorName || capitalize(os.userInfo().username),
   }
 
   meetings.push(meeting)

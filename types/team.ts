@@ -67,6 +67,8 @@ export interface Meeting {
   endedAt?: string              // ISO (when ended)
   loopGuardConfig?: LoopGuardConfig   // Chat loop guard settings
   loopGuardState?: LoopGuardState     // Chat loop guard runtime state
+  operatorId?: string           // Human operator identifier (e.g. 'shane')
+  operatorName?: string         // Human operator display name (e.g. 'Shane')
 }
 
 export interface MeetingsFile {

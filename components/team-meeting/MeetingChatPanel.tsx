@@ -276,7 +276,7 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
             className={`flex flex-col ${msg.isMine ? 'items-end' : 'items-start'}`}
           >
             <span className="text-[9px] text-gray-600 mb-0.5">
-              {msg.displayFrom} {msg.toAlias ? `→ ${msg.toAlias}` : ''}
+              {msg.displayFrom}{msg.isMine ? <span className="ml-1 text-emerald-500/70">(you)</span> : ''} {msg.toAlias ? `→ ${msg.toAlias}` : ''}
             </span>
             <div
               className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed ${
