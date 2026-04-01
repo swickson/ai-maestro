@@ -158,10 +158,11 @@ describe('routeMessage — human messages', () => {
     expect(result.targetAgentIds).toContain('agent-3')
   })
 
-  it('human message without @mention triggers nobody', () => {
+  it('human message without @mention defaults to @all', () => {
     const result = routeMessage(humanCtx('just thinking out loud'))
     expect(result.blocked).toBe(false)
-    expect(result.targetAgentIds).toHaveLength(0)
+    // Human messages without @mentions default to @all (triggers all participants except sender)
+    expect(result.targetAgentIds.length).toBeGreaterThan(0)
   })
 
   it('human message resets loop guard', () => {
