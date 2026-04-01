@@ -616,6 +616,111 @@ async function startServer(handleRequest) {
     })
   })
 
+  // ─── Meeting Chat WebSocket (/meeting-chat?meetingId=X) ──────────────────
+  // Shared-timeline broadcast: clients subscribe to a meetingId and receive
+  // all messages + loop guard updates in real time.
+
+  const meetingChatWss = new WebSocketServer({ noServer: true })
+
+  // Map<meetingId, Set<WebSocket>>
+  const meetingChatSubscribers = new Map()
+
+  meetingChatWss.on('connection', (ws, query) => {
+    let subscribedMeetingId = null
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString())
+
+        if (msg.type === 'subscribe' && msg.meetingId) {
+          // Unsubscribe from previous meeting if any
+          if (subscribedMeetingId) {
+            const prev = meetingChatSubscribers.get(subscribedMeetingId)
+            if (prev) {
+              prev.delete(ws)
+              if (prev.size === 0) meetingChatSubscribers.delete(subscribedMeetingId)
+            }
+          }
+
+          subscribedMeetingId = msg.meetingId
+          if (!meetingChatSubscribers.has(subscribedMeetingId)) {
+            meetingChatSubscribers.set(subscribedMeetingId, new Set())
+          }
+          meetingChatSubscribers.get(subscribedMeetingId).add(ws)
+          console.log(`[MEETING-CHAT-WS] Client subscribed to meeting ${subscribedMeetingId} (${meetingChatSubscribers.get(subscribedMeetingId).size} clients)`)
+
+          // Send ack
+          ws.send(JSON.stringify({ type: 'subscribed', meetingId: subscribedMeetingId }))
+        }
+      } catch {
+        // Ignore malformed messages
+      }
+    })
+
+    ws.on('close', () => {
+      if (subscribedMeetingId) {
+        const subs = meetingChatSubscribers.get(subscribedMeetingId)
+        if (subs) {
+          subs.delete(ws)
+          if (subs.size === 0) meetingChatSubscribers.delete(subscribedMeetingId)
+        }
+        console.log(`[MEETING-CHAT-WS] Client disconnected from meeting ${subscribedMeetingId}`)
+      }
+    })
+
+    ws.on('error', () => {
+      if (subscribedMeetingId) {
+        const subs = meetingChatSubscribers.get(subscribedMeetingId)
+        if (subs) {
+          subs.delete(ws)
+          if (subs.size === 0) meetingChatSubscribers.delete(subscribedMeetingId)
+        }
+      }
+    })
+  })
+
+  /**
+   * Broadcast a meeting chat message to all subscribed WebSocket clients.
+   * Called by the chat API when a new message is posted.
+   */
+  function broadcastMeetingChatMessage(meetingId, message) {
+    const subs = meetingChatSubscribers.get(meetingId)
+    if (!subs || subs.size === 0) return
+
+    const payload = JSON.stringify({ type: 'message', data: message })
+    let sent = 0
+    for (const ws of subs) {
+      if (ws.readyState === 1) {
+        try {
+          ws.send(payload)
+          sent++
+        } catch { /* ignore */ }
+      }
+    }
+    if (sent > 0) {
+      console.log(`[MEETING-CHAT-WS] Broadcast message to ${sent} client(s) in meeting ${meetingId}`)
+    }
+  }
+
+  /**
+   * Broadcast loop guard status update to all subscribed WebSocket clients.
+   */
+  function broadcastMeetingLoopGuard(meetingId, loopGuardData) {
+    const subs = meetingChatSubscribers.get(meetingId)
+    if (!subs || subs.size === 0) return
+
+    const payload = JSON.stringify({ type: 'loopGuard', data: loopGuardData })
+    for (const ws of subs) {
+      if (ws.readyState === 1) {
+        try { ws.send(payload) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // Expose broadcast functions so API routes can call them
+  globalThis.__meetingChatBroadcast = broadcastMeetingChatMessage
+  globalThis.__meetingLoopGuardBroadcast = broadcastMeetingLoopGuard
+
   // WebSocket server for companion speech events (/companion-ws)
   const companionWss = new WebSocketServer({ noServer: true })
 
@@ -769,6 +874,10 @@ async function startServer(handleRequest) {
     } else if (pathname === '/v1/ws') {
       ampWss.handleUpgrade(request, socket, head, (ws) => {
         ampWss.emit('connection', ws)
+      })
+    } else if (pathname === '/meeting-chat') {
+      meetingChatWss.handleUpgrade(request, socket, head, (ws) => {
+        meetingChatWss.emit('connection', ws, query)
       })
     } else if (pathname === '/companion-ws') {
       companionWss.handleUpgrade(request, socket, head, (ws) => {
