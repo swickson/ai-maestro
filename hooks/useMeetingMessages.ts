@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import type { MessageSummary } from '@/lib/messageQueue'
 
 interface MeetingMessage extends MessageSummary {
-  isMine: boolean       // Sent by Maestro
+  isMine: boolean       // Sent by the human operator
   displayFrom: string   // Resolved display name
 }
 
@@ -13,6 +13,8 @@ interface UseMeetingMessagesOptions {
   participantIds: string[]
   teamName: string
   isActive: boolean
+  operatorId?: string   // Human operator identifier (e.g. 'shane')
+  operatorName?: string // Human operator display name (e.g. 'Shane')
 }
 
 interface UseMeetingMessagesResult {
@@ -29,7 +31,13 @@ export function useMeetingMessages({
   participantIds,
   teamName,
   isActive,
+  operatorId,
+  operatorName,
 }: UseMeetingMessagesOptions): UseMeetingMessagesResult {
+  // Resolve operator identity with backward-compatible fallback
+  const opId = operatorId || 'maestro'
+  const opName = operatorName || 'Maestro'
+
   const [messages, setMessages] = useState<MeetingMessage[]>([])
   const [loading, setLoading] = useState(false)
   const lastFetchRef = useRef<string | null>(null)
@@ -62,7 +70,7 @@ export function useMeetingMessages({
       const data = await res.json()
       const newMessages: MeetingMessage[] = (data.messages || []).map((msg: MessageSummary) => ({
         ...msg,
-        isMine: msg.from === 'maestro' || msg.fromAlias === 'Maestro',
+        isMine: msg.from === opId || msg.fromAlias === opName || msg.from === 'maestro' || msg.fromAlias === 'Maestro',
         displayFrom: msg.fromLabel || msg.fromAlias || msg.from,
       }))
 
@@ -116,8 +124,8 @@ export function useMeetingMessages({
   const addOptimistic = useCallback((text: string, toAgent?: string) => {
     const optimistic: MeetingMessage = {
       id: `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      from: 'maestro',
-      fromAlias: 'Maestro',
+      from: opId,
+      fromAlias: opName,
       to: toAgent || 'all',
       toAlias: toAgent ? undefined : 'All',
       timestamp: new Date().toISOString(),
@@ -127,7 +135,7 @@ export function useMeetingMessages({
       priority: 'normal',
       type: 'notification',
       isMine: true,
-      displayFrom: 'Maestro',
+      displayFrom: opName,
     }
     setMessages(prev => [...prev, optimistic])
   }, [meetingId])
@@ -141,8 +149,9 @@ export function useMeetingMessages({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: 'maestro',
-          fromAlias: 'Maestro',
+          from: opId,
+          fromAlias: opName,
+          fromLabel: opName,
           to: agentId,
           subject: `[MEETING:${meetingId}] ${teamName}`,
           content: {
@@ -154,6 +163,9 @@ export function useMeetingMessages({
                 teamName,
                 participantIds: pIds,
                 isBroadcast: false,
+                fromType: 'human',
+                operatorId: opId,
+                operatorName: opName,
               },
             },
           },
@@ -164,7 +176,7 @@ export function useMeetingMessages({
     }
     // Refresh after a short delay to let file I/O settle
     setTimeout(() => fetchMessages(), 300)
-  }, [meetingId, teamName, participantKey, fetchMessages, addOptimistic])
+  }, [meetingId, teamName, participantKey, fetchMessages, addOptimistic, opId, opName])
 
   const broadcastToAll = useCallback(async (message: string) => {
     if (!meetingId) return
@@ -178,8 +190,9 @@ export function useMeetingMessages({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            from: 'maestro',
-            fromAlias: 'Maestro',
+            from: opId,
+            fromAlias: opName,
+            fromLabel: opName,
             to: agentId,
             subject: `[MEETING:${meetingId}] ${teamName}`,
             content: {
@@ -191,6 +204,9 @@ export function useMeetingMessages({
                   teamName,
                   participantIds: pIds,
                   isBroadcast: true,
+                  fromType: 'human',
+                  operatorId: opId,
+                  operatorName: opName,
                 },
               },
             },
@@ -200,7 +216,7 @@ export function useMeetingMessages({
     )
     // Refresh after a short delay to let file I/O settle
     setTimeout(() => fetchMessages(), 300)
-  }, [meetingId, teamName, participantKey, fetchMessages, addOptimistic])
+  }, [meetingId, teamName, participantKey, fetchMessages, addOptimistic, opId, opName])
 
   const markAsRead = useCallback(() => {
     seenCountRef.current = messages.length

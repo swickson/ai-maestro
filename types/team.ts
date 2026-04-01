@@ -51,6 +51,8 @@ export interface Meeting {
   startedAt: string             // ISO
   lastActiveAt: string          // ISO
   endedAt?: string              // ISO (when ended)
+  operatorId?: string           // Human operator identifier (e.g. 'shane')
+  operatorName?: string         // Human operator display name (e.g. 'Shane')
 }
 
 export interface MeetingsFile {
