@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isSelf, getHostById } from '@/lib/hosts-config'
 import { getMeeting } from '@/lib/meeting-registry'
+import { getChatMessages } from '@/lib/meeting-chat-service'
 import { routeMessage } from '@/lib/meeting-router'
 import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
@@ -104,11 +105,35 @@ export async function POST(
           if (!agentName) continue
 
           const senderName = (body.fromAlias as string) || fromStr
+
+          // Phase 3: Build contextual injection with recent conversation history
+          const recentMessages = getChatMessages({ meetingId, limit: 10 }).messages
+          // Exclude the message we just posted (it's the triggering message)
+          const contextMessages = recentMessages
+            .filter(m => m.id !== chatMessage.id)
+            .slice(-8) // Keep last 8 for context, cap total size
+
+          let contextBlock = ''
+          if (contextMessages.length > 0) {
+            const lines = contextMessages.map(m => {
+              const role = m.fromType === 'human' ? '👤' : '🤖'
+              return `  ${role} ${m.fromAlias}: ${m.message.slice(0, 200)}`
+            })
+            // Cap context to ~2000 chars per proposal spec
+            let contextText = lines.join('\n')
+            if (contextText.length > 2000) {
+              contextText = contextText.slice(-2000)
+              contextText = '  ...\n' + contextText.slice(contextText.indexOf('\n') + 1)
+            }
+            contextBlock = `\nRecent conversation:\n${contextText}\n`
+          }
+
           const prompt = [
             `[Meeting: ${meeting.name}]`,
+            contextBlock,
             `${senderName} says: ${body.message}`,
             '',
-            `Reply by running: curl -s -X POST ${meetingHostUrl}/api/meetings/${meetingId}/chat -H 'Content-Type: application/json' -d '{"from":"${agentId}","fromAlias":"${agentLabel}","fromType":"agent","message":"YOUR_REPLY"}'`,
+            `Reply by running: meeting-send.sh ${meetingId} "YOUR_REPLY" --from "${agentId}" --alias "${agentLabel}" --host ${meetingHostUrl}`,
           ].join('\n')
 
           // Check if agent is local or remote
