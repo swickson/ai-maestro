@@ -15,11 +15,43 @@ async function injectMeetingPrompt(
   agentId: string,
   prompt: string,
 ): Promise<void> {
-  const agent = getAgent(agentId)
-  if (!agent) return
+  // Try local registry first, fall back to sessions API for remote agents
+  let agent = getAgent(agentId)
+  let agentName: string | undefined = agent?.name
+  let agentHostId: string | undefined = agent?.hostId
+  let agentHostUrl: string | undefined = agent?.hostUrl
 
-  const sessionName = agent.name
-  const agentHostId = agent.hostId
+  if (!agent) {
+    // Remote agent: look up in sessions API
+    console.log(`[MeetingChat] Agent ${agentId.slice(0,8)} not in local registry, checking sessions API...`)
+    try {
+      const sessRes = await fetch('http://localhost:23000/api/sessions')
+      if (sessRes.ok) {
+        const sessData = await sessRes.json()
+        const session = (sessData.sessions || []).find((s: any) => s.agentId === agentId)
+        if (session) {
+          agentName = session.name
+          agentHostId = session.hostId
+          if (agentHostId) {
+            const hostRecord = getHostById(agentHostId)
+            agentHostUrl = hostRecord?.url
+            console.log(`[MeetingChat] Resolved remote agent: ${agentName} at ${agentHostUrl || 'no URL'} (host: ${agentHostId})`)
+          }
+        } else {
+          console.warn(`[MeetingChat] Agent ${agentId.slice(0,8)} not found in sessions API either`)
+        }
+      }
+    } catch (err) {
+      console.warn(`[MeetingChat] Sessions API lookup failed:`, err)
+    }
+  }
+
+  if (!agentName) {
+    console.warn(`[MeetingChat] Cannot inject: agent ${agentId} not found in registry or sessions`)
+    return
+  }
+
+  const sessionName = agentName
 
   // Local agent: inject directly via tmux
   if (!agentHostId || isSelf(agentHostId)) {
@@ -27,14 +59,14 @@ async function injectMeetingPrompt(
     const exists = await runtime.sessionExists(sessionName)
     if (!exists) return
     await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
-    console.log(`[MeetingChat] Injected prompt into local agent ${agent.name}`)
+    console.log(`[MeetingChat] Injected prompt into local agent ${agentName}`)
     return
   }
 
   // Remote agent: POST injection to the agent's host
-  const remoteHost = getHostById(agentHostId) || (agent.hostUrl ? { url: agent.hostUrl } : null)
+  const remoteHost = agentHostUrl ? { url: agentHostUrl } : getHostById(agentHostId)
   if (!remoteHost) {
-    console.warn(`[MeetingChat] Cannot inject into ${agent.name}: host ${agentHostId} not found`)
+    console.warn(`[MeetingChat] Cannot inject into ${agentName}: host ${agentHostId} not found`)
     return
   }
 
@@ -52,9 +84,9 @@ async function injectMeetingPrompt(
       signal: controller.signal,
     })
     clearTimeout(timeoutId)
-    console.log(`[MeetingChat] Injected prompt into remote agent ${agent.name} via ${remoteHost.url}`)
+    console.log(`[MeetingChat] Injected prompt into remote agent ${agentName} via ${remoteHost.url}`)
   } catch (err) {
-    console.warn(`[MeetingChat] Failed to inject into remote agent ${agent.name}:`, err)
+    console.warn(`[MeetingChat] Failed to inject into remote agent ${agentName}:`, err)
   }
 }
 
@@ -115,6 +147,7 @@ export async function POST(
         messageText: body.message as string,
       })
 
+      console.log(`[MeetingChat] Routing result: targets=${JSON.stringify(routing.targetAgentIds)} blocked=${routing.blocked}`)
       if (!routing.blocked && routing.targetAgentIds.length > 0) {
         // Use the meeting host's public URL so remote agents can reply back
         const selfHost = getSelfHost()
@@ -142,10 +175,26 @@ export async function POST(
 
         const senderName = (body.fromAlias as string) || fromStr
 
+        // Fetch sessions for resolving remote agent names
+        let remoteSessions: Array<{ name: string; agentId: string; hostId?: string }> = []
+        try {
+          const sessRes = await fetch('http://localhost:23000/api/sessions')
+          if (sessRes.ok) {
+            const sessData = await sessRes.json()
+            remoteSessions = sessData.sessions || []
+          }
+        } catch { /* ignore */ }
+
         for (const agentId of routing.targetAgentIds) {
+          // Resolve agent name from local registry or remote sessions
           const agent = getAgent(agentId)
-          if (!agent) continue
-          const agentLabel = agent.label || agent.name
+          let agentLabel: string
+          if (agent) {
+            agentLabel = agent.label || agent.name
+          } else {
+            const session = remoteSessions.find(s => s.agentId === agentId)
+            agentLabel = session?.name || agentId.slice(0, 8)
+          }
           const prompt = [
             `[Meeting: ${meeting.name}]`,
             contextBlock,
@@ -154,7 +203,9 @@ export async function POST(
             `Reply by running: meeting-send.sh ${meetingId} "YOUR_REPLY" --from "${agentId}" --alias "${agentLabel}" --host ${meetingHostUrl}`,
           ].join('\n')
           // Phase 4: Fire-and-forget — handles local + remote injection
-          injectMeetingPrompt(agentId, prompt).catch(() => {})
+          injectMeetingPrompt(agentId, prompt).catch(err => {
+            console.error(`[MeetingChat] injectMeetingPrompt failed for ${agentId.slice(0,8)}:`, err)
+          })
         }
       }
 
