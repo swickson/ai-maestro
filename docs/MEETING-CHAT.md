@@ -37,11 +37,11 @@ The system supports cross-host meetings across the AI Maestro mesh network. Agen
          │                        │
     REST API                 WS Broadcast
          │                        │
-┌────────┴────────┐    ┌──────────┴──────────┐
-│  Browser UI      │    │  Remote Hosts       │
-│  MeetingChatPanel│    │  /api/agents/notify  │
-│  useMeetingMsgs  │    │  (injection proxy)   │
-└──────────────────┘    └─────────────────────┘
+┌────────┴────────┐    ┌──────────┴──────────┐    ┌─────────────────┐
+│  Browser UI      │    │  Remote Hosts       │    │  Agent CLI       │
+│  MeetingChatPanel│    │  /api/agents/notify  │    │  meeting-send.sh │
+│  useMeetingMsgs  │    │  (injection proxy)   │    │  meeting-read.sh │
+└──────────────────┘    └─────────────────────┘    └─────────────────┘
 ```
 
 ---
@@ -149,6 +149,8 @@ Two modes:
 
 ### `scripts/meeting-send.sh`
 
+> **Note:** These scripts are not yet bundled in the plugin installer or symlinked to `~/.local/bin/`. Use the full path (`./scripts/meeting-send.sh`) or add the scripts directory to your PATH.
+
 Post a message to a meeting's shared timeline from the command line.
 
 ```bash
@@ -196,6 +198,7 @@ Reply by running: meeting-send.sh <meetingId> "YOUR_REPLY" --from "<agentId>" --
 - Includes last 8 messages as conversation context (capped at 2000 chars)
 - Human messages marked with 👤, agent messages with 🤖
 - Reply command uses `meeting-send.sh` CLI
+- Reply URL uses the meeting host's Tailscale IP (not localhost) — this is deliberate for cross-host compatibility
 
 ---
 
@@ -204,7 +207,7 @@ Reply by running: meeting-send.sh <meetingId> "YOUR_REPLY" --from "<agentId>" --
 1. **Create:** Human starts a meeting from the Teams UI, selects agents
 2. **Active:** Messages flow through the shared timeline, agents get injected
 3. **End:** Human ends the meeting, status changes to `ended`, injections stop
-4. **Cleanup:** Chat logs auto-pruned after 7 days
+4. **Cleanup:** Meeting records auto-pruned after 7 days; chat JSONL logs persist until manually deleted
 
 Meeting records stored at: `~/.aimaestro/teams/meetings.json`
 
@@ -251,6 +254,14 @@ Defaults to `os.userInfo().username` if not specified.
 4. **Remote agent resolution:** Remote agents aren't in the local agent registry. The chat route fetches the sessions API to resolve remote agent names and host URLs. This adds a network round trip per injection cycle.
 
 5. **Single meeting host:** The shared JSONL log lives on the meeting host only. No replication across hosts. If the meeting host goes down, the chat log is unavailable until it comes back.
+
+6. **Operator display name:** Defaults to `os.userInfo().username` which may not be human-friendly (e.g., `gosub` instead of `Shane`). The meeting creation UI should prompt for operator display name.
+
+7. **Chat log cleanup:** Chat logs persist on disk until manually deleted. No automatic cleanup is currently implemented (meeting records are auto-pruned after 7 days but chat JSONL logs are not).
+
+8. **CLI tools not in PATH:** `meeting-send.sh` and `meeting-read.sh` are not yet bundled in the plugin installer. Agents need the full path or a manual symlink to `~/.local/bin/`.
+
+9. **Agent replies bypass mesh proxy:** When agents reply via `meeting-send.sh`, they POST directly to the meeting host URL (no mesh proxy hop). The mesh proxy is only used for injections going from the meeting host to remote agents.
 
 ---
 
