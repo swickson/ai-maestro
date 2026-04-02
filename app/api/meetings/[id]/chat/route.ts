@@ -58,7 +58,11 @@ async function injectMeetingPrompt(
     const runtime = getRuntime()
     const exists = await runtime.sessionExists(sessionName)
     if (!exists) return
-    await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+    // Split text and Enter with 500ms delay — long injections need time
+    // to finish writing before Enter fires (same fix as remote notify endpoint)
+    await runtime.sendKeys(sessionName, prompt, { literal: true, enter: false })
+    await new Promise(r => setTimeout(r, 500))
+    await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
     console.log(`[MeetingChat] Injected prompt into local agent ${agentName}`)
     return
   }
