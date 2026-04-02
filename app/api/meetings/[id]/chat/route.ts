@@ -147,7 +147,6 @@ export async function POST(
         messageText: body.message as string,
       })
 
-      console.log(`[MeetingChat] Routing result: targets=${JSON.stringify(routing.targetAgentIds)} blocked=${routing.blocked}`)
       if (!routing.blocked && routing.targetAgentIds.length > 0) {
         // Use the meeting host's public URL so remote agents can reply back
         const selfHost = getSelfHost()
