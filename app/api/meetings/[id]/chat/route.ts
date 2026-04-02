@@ -1,10 +1,62 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isSelf, getHostById } from '@/lib/hosts-config'
+import { isSelf, getHostById, getSelfHost } from '@/lib/hosts-config'
 import { getMeeting } from '@/lib/meeting-registry'
 import { getChatMessages } from '@/lib/meeting-chat-service'
 import { routeMessage } from '@/lib/meeting-router'
 import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
+
+/**
+ * Inject a meeting chat prompt into an agent's tmux session.
+ * For local agents: uses the local runtime directly.
+ * For remote agents: POSTs to the agent's host notify endpoint.
+ */
+async function injectMeetingPrompt(
+  agentId: string,
+  prompt: string,
+): Promise<void> {
+  const agent = getAgent(agentId)
+  if (!agent) return
+
+  const sessionName = agent.name
+  const agentHostId = agent.hostId
+
+  // Local agent: inject directly via tmux
+  if (!agentHostId || isSelf(agentHostId)) {
+    const runtime = getRuntime()
+    const exists = await runtime.sessionExists(sessionName)
+    if (!exists) return
+    await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+    console.log(`[MeetingChat] Injected prompt into local agent ${agent.name}`)
+    return
+  }
+
+  // Remote agent: POST injection to the agent's host
+  const remoteHost = getHostById(agentHostId) || (agent.hostUrl ? { url: agent.hostUrl } : null)
+  if (!remoteHost) {
+    console.warn(`[MeetingChat] Cannot inject into ${agent.name}: host ${agentHostId} not found`)
+    return
+  }
+
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 8000)
+
+    await fetch(`${remoteHost.url}/api/agents/notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentName: sessionName,
+        injection: prompt,
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    console.log(`[MeetingChat] Injected prompt into remote agent ${agent.name} via ${remoteHost.url}`)
+  } catch (err) {
+    console.warn(`[MeetingChat] Failed to inject into remote agent ${agent.name}:`, err)
+  }
+}
 
 /**
  * POST /api/meetings/[id]/chat
@@ -64,70 +116,36 @@ export async function POST(
       })
 
       if (!routing.blocked && routing.targetAgentIds.length > 0) {
-        const runtime = getRuntime()
-        const { isSelf: isSelfHost, getHostById, getSelfHost } = await import('@/lib/hosts-config')
+        // Use the meeting host's public URL so remote agents can reply back
         const selfHost = getSelfHost()
         const meetingHostUrl = selfHost?.url || `http://localhost:23000`
 
-        // Fetch sessions list to resolve remote agents not in local registry
-        let remoteSessions: Array<{ name: string; agentId?: string; hostId?: string }> = []
-        try {
-          const sessRes = await fetch(`http://localhost:23000/api/sessions`)
-          if (sessRes.ok) {
-            const sessData = await sessRes.json()
-            remoteSessions = sessData.sessions || []
+        // Phase 3: Build conversation context for injection
+        const recentMessages = getChatMessages({ meetingId, limit: 10 }).messages
+        const contextMessages = recentMessages
+          .filter(m => m.id !== chatMessage.id)
+          .slice(-8)
+
+        let contextBlock = ''
+        if (contextMessages.length > 0) {
+          const lines = contextMessages.map(m => {
+            const role = m.fromType === 'human' ? '👤' : '🤖'
+            return `  ${role} ${m.fromAlias}: ${m.message.slice(0, 200)}`
+          })
+          let contextText = lines.join('\n')
+          if (contextText.length > 2000) {
+            contextText = contextText.slice(-2000)
+            contextText = '  ...\n' + contextText.slice(contextText.indexOf('\n') + 1)
           }
-        } catch { /* ignore */ }
+          contextBlock = `\nRecent conversation:\n${contextText}\n`
+        }
+
+        const senderName = (body.fromAlias as string) || fromStr
 
         for (const agentId of routing.targetAgentIds) {
-          // Try local registry first, fall back to sessions API for remote agents
-          let agent = getAgent(agentId)
-          let agentName = agent?.name
-          let agentLabel = agent?.label || agent?.name
-          let agentHostId = agent?.hostId
-          let agentHostUrl = agent?.hostUrl
-
-          if (!agent) {
-            // Look up in sessions (remote agents)
-            const session = remoteSessions.find(s => s.agentId === agentId)
-            if (session) {
-              agentName = session.name
-              agentLabel = session.name
-              agentHostId = session.hostId
-              // Resolve hostUrl from hosts config
-              if (agentHostId) {
-                const hostRecord = getHostById(agentHostId)
-                agentHostUrl = hostRecord?.url
-              }
-            }
-          }
-
-          if (!agentName) continue
-
-          const senderName = (body.fromAlias as string) || fromStr
-
-          // Phase 3: Build contextual injection with recent conversation history
-          const recentMessages = getChatMessages({ meetingId, limit: 10 }).messages
-          // Exclude the message we just posted (it's the triggering message)
-          const contextMessages = recentMessages
-            .filter(m => m.id !== chatMessage.id)
-            .slice(-8) // Keep last 8 for context, cap total size
-
-          let contextBlock = ''
-          if (contextMessages.length > 0) {
-            const lines = contextMessages.map(m => {
-              const role = m.fromType === 'human' ? '👤' : '🤖'
-              return `  ${role} ${m.fromAlias}: ${m.message.slice(0, 200)}`
-            })
-            // Cap context to ~2000 chars per proposal spec
-            let contextText = lines.join('\n')
-            if (contextText.length > 2000) {
-              contextText = contextText.slice(-2000)
-              contextText = '  ...\n' + contextText.slice(contextText.indexOf('\n') + 1)
-            }
-            contextBlock = `\nRecent conversation:\n${contextText}\n`
-          }
-
+          const agent = getAgent(agentId)
+          if (!agent) continue
+          const agentLabel = agent.label || agent.name
           const prompt = [
             `[Meeting: ${meeting.name}]`,
             contextBlock,
@@ -135,39 +153,8 @@ export async function POST(
             '',
             `Reply by running: meeting-send.sh ${meetingId} "YOUR_REPLY" --from "${agentId}" --alias "${agentLabel}" --host ${meetingHostUrl}`,
           ].join('\n')
-
-          // Check if agent is local or remote
-          const isLocal = !agentHostId || isSelfHost(agentHostId)
-
-          if (isLocal) {
-            // Local agent: inject directly via tmux
-            const sessionName = agentName
-            runtime.sessionExists(sessionName).then(async (exists) => {
-              if (!exists) return
-              try {
-                await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
-                console.log(`[MeetingChat] Injected prompt into ${agentName} (local)`)
-              } catch (err) {
-                console.warn(`[MeetingChat] Failed to inject into ${agentName}:`, err)
-              }
-            }).catch(() => {})
-          } else if (agentHostUrl) {
-            // Remote agent: proxy injection via the agent's host
-            fetch(`${agentHostUrl}/api/agents/notify`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                agentName: agentName,
-                fromName: senderName,
-                subject: `[Meeting: ${meeting.name}] ${senderName} mentioned you`,
-                messageType: 'notification',
-              }),
-            }).then(() => {
-              console.log(`[MeetingChat] Notified remote agent ${agentName} at ${agentHostUrl}`)
-            }).catch(err => {
-              console.warn(`[MeetingChat] Failed to notify remote ${agentName}:`, err)
-            })
-          }
+          // Phase 4: Fire-and-forget — handles local + remote injection
+          injectMeetingPrompt(agentId, prompt).catch(() => {})
         }
       }
 
