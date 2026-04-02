@@ -45,6 +45,7 @@ const nextConfig = {
         'cozo-node': 'commonjs cozo-node',
         // Don't externalize @huggingface/transformers - it's ESM-only and needs webpack bundling
         'onnxruntime-node': 'commonjs onnxruntime-node',
+        '@anthropic-ai/sdk': 'commonjs @anthropic-ai/sdk',
         'sharp': 'commonjs sharp',
         'pg': 'commonjs pg',
         'pg-native': 'commonjs pg-native',
