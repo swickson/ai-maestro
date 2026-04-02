@@ -397,6 +397,35 @@ const getCategoryColor = (category: string) => {
 
 **State machine pattern:** Team meetings use a `useReducer` with a `TeamMeetingState` that tracks meeting phase (`idle` → `selecting` → `ringing` → `active`), selected agents, and UI state (sidebar mode, right panel, kanban open).
 
+**Meeting Chat (v0.27.0+ — Shared Timeline):**
+
+Meeting chat uses a **shared JSONL log per meeting** instead of AMP fan-out. All participants (human + agents) read and write to the same log. See `docs/MEETING-CHAT.md` for full documentation.
+
+Key components:
+- `lib/meeting-chat-service.ts` — JSONL append/read/delete service
+- `lib/meeting-router.ts` — @mention parsing, agent targeting, loop guard
+- `lib/meeting-presence.ts` — Agent presence tracking (join/leave, status dots)
+- `app/api/meetings/[id]/chat/route.ts` — REST API (POST to send, GET to read with cursor)
+- `server.mjs` — WebSocket broadcast server at `/meeting-chat`
+- `hooks/useMeetingMessages.ts` — WebSocket + REST polling frontend hook
+- `scripts/meeting-send.sh` / `meeting-read.sh` — CLI tools for agents
+
+**Message flow:**
+1. Human types in chat → POST to `/api/meetings/{id}/chat` with `fromType: "human"`
+2. Message appended to `~/.aimaestro/teams/meetings/{id}/chat.jsonl`
+3. WebSocket broadcasts to all browser clients
+4. Router triggers agents: human messages default to @all, agents need explicit @mentions
+5. Injection: local agents get `sendKeys` (text + 500ms + Enter), remote agents get HTTP POST to `/api/agents/notify`
+6. Agents receive last 8 messages as context (capped 2000 chars) + reply command via `meeting-send.sh`
+
+**Critical: Injection must use split text+delay+Enter pattern.** A single `sendKeys` with literal+enter causes tmux [Pasted text] stacking. Send text first, wait 500ms, then send Enter separately.
+
+**Routing rules:**
+1. Human messages always pass through and reset the loop guard
+2. Human messages with no @mentions default to @all
+3. Agent messages require explicit @mentions to trigger others (prevents loops)
+4. Loop guard trips at 6 hops (configurable), human `/continue` resets it
+
 **Task system:**
 - Tasks stored per-team in `~/.aimaestro/teams/tasks-{teamId}.json`
 - 5 statuses: `backlog` → `pending` → `in_progress` → `review` → `completed`
@@ -457,7 +486,7 @@ components/
     MeetingSidebar.tsx        - Agent list sidebar during meetings
     MeetingTerminalArea.tsx   - Terminal grid for active meeting agents
     MeetingRightPanel.tsx     - Right panel wrapper (tasks + chat tabs)
-    MeetingChatPanel.tsx      - Meeting chat using AMP messages
+    MeetingChatPanel.tsx      - Meeting chat with @mention autocomplete, loop guard UI
     TaskPanel.tsx             - Task list panel with filtering and quick-add
     TaskCard.tsx              - Task card with status, assignee, dependencies
     TaskCreateForm.tsx        - Full task creation form with all fields
@@ -472,13 +501,18 @@ hooks/
   useTerminal.ts        - xterm.js lifecycle (init, fit, dispose)
   useSessions.ts        - Session list fetching + auto-refresh
   useTasks.ts           - Task CRUD with tasksByStatus, optimistic updates, 5s polling
-  useMeetingMessages.ts - Meeting chat messages via AMP with 7s polling
+  useMeetingMessages.ts - Meeting chat via shared timeline WebSocket + REST (replaces AMP)
 
 lib/
   api.ts                - Fetch wrappers for /api/sessions
   websocket.ts          - WebSocket message creators
   terminal.ts           - Terminal utility functions
   utils.ts              - Shared utilities (date formatting, etc.)
+  meeting-chat-service.ts - Shared JSONL log for meeting chat (append/read/delete)
+  meeting-router.ts     - @mention routing, loop guard, agent targeting
+  meeting-registry.ts   - File-based meeting CRUD with operator identity
+  meeting-presence.ts   - Agent presence tracking for meetings
+  content-security.ts   - Backstop for untrusted message content
 
 types/
   session.ts            - Session metadata, status enums, hierarchical structure
@@ -489,8 +523,10 @@ docs/
   images/               - Screenshots for README documentation
   REQUIREMENTS.md       - Installation prerequisites
   OPERATIONS-GUIDE.md   - Session management, troubleshooting
+  MEETING-CHAT.md       - Shared-timeline meeting chat system documentation
+  proposals/            - Architecture proposals (001 = meeting chat)
 
-plugin/                 - Plugin submodule (git submodule from 23blocks-OS/ai-maestro-plugins)
+plugin/                 - Plugin submodule (git submodule from swickson/ai-maestro-plugins)
   .claude-plugin/       - Marketplace manifest
   plugins/ai-maestro/   - The AI Maestro plugin
     scripts/            - All CLI scripts (AMP, graph, docs, memory, agent management)
@@ -502,6 +538,9 @@ scripts/
   generate-social-logos.js        - Generate social media logos from SVG
   init-all-agents.mjs             - Initialize memory for all agents
   register-agent-from-session.mjs - Register agent(s) from tmux session(s)
+  meeting-send.sh                 - CLI: post message to meeting shared timeline
+  meeting-read.sh                 - CLI: read meeting chat history
+  cron-wake-hardin.sh             - 6am cron: wake Hardin + send distill prompt
   setup-tmux.sh                   - Setup tmux configuration
 
 install-plugin.sh    - Plugin installer (skills, scripts, CLI tools)
@@ -912,6 +951,8 @@ Two test scripts exist for validating the Agent Messaging Protocol:
 - **[docs/REQUIREMENTS.md](./docs/REQUIREMENTS.md)** - Installation prerequisites
 - **[docs/OPERATIONS-GUIDE.md](./docs/OPERATIONS-GUIDE.md)** - Agent management, troubleshooting
 - **[docs/CEREBELLUM.md](./docs/CEREBELLUM.md)** - Cerebellum subsystem architecture, voice pipeline, TTS providers
+- **[docs/MEETING-CHAT.md](./docs/MEETING-CHAT.md)** - Shared-timeline meeting chat system (architecture, message flow, CLI tools)
+- **[docs/proposals/001_meetings_gaps_and_proposal.md](./docs/proposals/001_meetings_gaps_and_proposal.md)** - Meeting chat architecture proposal
 
 Refer to these when users ask about setup or usage.
 
