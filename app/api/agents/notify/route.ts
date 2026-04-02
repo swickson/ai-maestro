@@ -28,7 +28,12 @@ export async function POST(request: NextRequest) {
       if (!exists) {
         return NextResponse.json({ error: `Session ${sessionName} not found` }, { status: 404 })
       }
-      await runtime.sendKeys(sessionName, body.injection, { literal: true, enter: true })
+      // Send the injection text, then wait before sending Enter.
+      // Long injections (1000+ chars with conversation context) need time
+      // to finish writing to tmux before Enter fires, especially over network hops.
+      await runtime.sendKeys(sessionName, body.injection, { literal: true, enter: false })
+      await new Promise(r => setTimeout(r, 500))
+      await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
       console.log(`[API] /api/agents/notify: injected meeting prompt into ${sessionName}`)
       return NextResponse.json({ success: true, injected: true })
     }
