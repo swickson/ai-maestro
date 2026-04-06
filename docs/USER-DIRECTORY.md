@@ -54,7 +54,7 @@ Discord (and other platform gateways) can't initiate DMs without knowing the use
 
   // Trust and role
   "role": "operator",                       // "operator" | "external"
-  "trustLevel": "full",                     // Future: granular trust tiers
+  "trustLevel": "full",                     // "full" | "none" (external users auto-created with "none")
 
   // Routing preferences
   "preferredPlatform": "discord",           // Default outbound channel
@@ -92,6 +92,7 @@ The in-memory directory supports these lookup patterns:
 | `byId(uuid)` | Canonical reference |
 | `byAlias(string)` | AMP message `@mention` resolution |
 | `byPlatform(type, platformUserId)` | Inbound message → internal user |
+| `byDisplayName(string)` | Lookup by full name (e.g., "notify Shane Wickson") |
 | `byRole(role)` | List all operators, list all externals |
 
 ---
@@ -108,7 +109,13 @@ All under `/api/users/`.
 | `PATCH` | `/api/users/:id` | Update user fields |
 | `DELETE` | `/api/users/:id` | Remove user |
 | `GET` | `/api/users/resolve?alias=gosub` | Resolve alias/handle to user |
+| `GET` | `/api/users/resolve?displayName=Shane+Wickson` | Resolve by full display name |
 | `GET` | `/api/users/resolve?platform=discord&platformUserId=123` | Resolve platform ID to user |
+
+**Resolve endpoint behavior:**
+- Returns the full user record (including role, trust, and platform mappings) on match.
+- Returns **HTTP 404** with `{ "error": "user_not_found" }` for unknown users — never a 500. Gateways handle every inbound message through this endpoint, so it must be fast and predictable for unknown senders.
+- **Gateway-side caching recommended:** Gateways should cache resolved users locally (similar to the existing agent-resolver pattern) to avoid hammering the API on every inbound message.
 
 ---
 
@@ -125,6 +132,8 @@ All under `/api/users/`.
 ### Phase 2 — Gateway Integration
 
 - Gateways call `/api/users/resolve` on inbound messages to map platform IDs to internal users
+- Auto-create external users on first inbound (role='external', trustLevel='none')
+- Gateways cache resolved users locally (mirrors existing agent-resolver pattern)
 - Replace `OPERATOR_*_IDS` env vars with directory lookups in Watson (Discord) and DataIA (Slack/gateway)
 - Watson and DataIA coordinate on the trust-check migration since Watson has context on the current content-security trust model
 
@@ -153,8 +162,8 @@ To retire `OPERATOR_*_IDS` env vars:
 
 ---
 
-## Open Questions
+## Decisions (from team review)
 
-- Should external users (non-operators) be auto-created on first inbound message, or require explicit registration?
-- Notification preference schema — keep it simple now or design for future webhook/push channels?
-- Do we need a "group" concept (e.g., a team alias that routes to multiple users)?
+- **Auto-create external users on first inbound message.** Created with `role: "external"`, `trustLevel: "none"`. Operator can upgrade trust later. Avoids manual registration overhead.
+- **Keep notification preferences simple for v1.** Current schema is sufficient; defer webhook/push channels until needed.
+- **Defer group/team aliases.** Not needed for v1. Can revisit if multi-user routing becomes a requirement.
