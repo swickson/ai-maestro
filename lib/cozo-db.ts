@@ -163,16 +163,17 @@ export class AgentDatabase {
 
   /**
    * Execute a CozoDB query (Datalog or special commands)
-   * @param query - CozoDB query string
+   * @param query - CozoDB query string (use $param_name for parameterized values)
+   * @param params - Optional parameter map (keys without $, values are native JS types)
    * @returns Query result
    */
-  async run(query: string): Promise<any> {
+  async run(query: string, params?: Record<string, any>): Promise<any> {
     if (!this.db) {
       throw new Error('Database not initialized. Call initialize() first.')
     }
 
     try {
-      return this.db.run(query)
+      return this.db.run(query, params || {})
     } catch (error) {
       console.error(`[CozoDB] Query failed:`, error)
       console.error(`[CozoDB] Query was:`, query)

@@ -541,6 +541,9 @@ export async function triggerConsolidation(
     const agent = await agentRegistry.getAgent(agentId)
     const agentDb = await agent.getDatabase()
 
+    // Ensure simple schema exists (projects table required by prepareConversations)
+    await initializeSimpleSchema(agentDb)
+
     const conversations = await prepareConversations(
       async () => agentDb,
       maxConversations
