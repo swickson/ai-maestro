@@ -12,6 +12,7 @@
 
 import { getMeeting, updateMeeting } from './meeting-registry'
 import { getAgent, getAgentByName, loadAgents } from './agent-registry'
+import { getAllDirectoryEntries, lookupAgentById } from './agent-directory'
 import type { Meeting, LoopGuardState } from '@/types/team'
 
 const DEFAULT_MAX_HOPS = 6
@@ -87,6 +88,9 @@ export function parseMentions(text: string): ParsedMentions {
 /**
  * Resolve @mention names to agent UUIDs within a meeting's participant list.
  * Only resolves to agents that are actually in the meeting.
+ *
+ * Searches local registry first, then falls back to the agent directory
+ * (which includes remote agents synced from peer mesh nodes).
  */
 function resolveAgentIds(
   mentionedNames: string[],
@@ -95,16 +99,20 @@ function resolveAgentIds(
   const resolved: string[] = []
   const meetingAgentSet = new Set(meetingAgentIds)
 
+  // Build a combined lookup from local agents + agent directory
+  const allAgents = loadAgents()
+  const directoryEntries = getAllDirectoryEntries()
+
   for (const name of mentionedNames) {
-    // Try exact name match
+    // Try exact name match from local registry
     const agent = getAgentByName(name)
     if (agent && meetingAgentSet.has(agent.id)) {
       resolved.push(agent.id)
       continue
     }
 
-    // Try partial match against meeting participants
-    const allAgents = loadAgents()
+    // Try partial match against local meeting participants (name + label)
+    let found = false
     for (const a of allAgents) {
       if (meetingAgentSet.has(a.id)) {
         const agentName = (a.name || '').toLowerCase()
@@ -112,8 +120,25 @@ function resolveAgentIds(
         if (agentName === name || agentLabel === name ||
             agentName.endsWith(name) || agentLabel.endsWith(name)) {
           resolved.push(a.id)
+          found = true
           break
         }
+      }
+    }
+    if (found) continue
+
+    // Fallback: search the agent directory (includes remote mesh agents)
+    // Build a name/label → agentId map from directory entries for meeting participants
+    for (const agentId of meetingAgentIds) {
+      const dirEntry = lookupAgentById(agentId)
+      if (!dirEntry) continue
+      const entryName = dirEntry.name.toLowerCase()
+      const entryLabel = (dirEntry.label || '').toLowerCase()
+      if (entryName === name || entryLabel === name ||
+          entryName.endsWith(name) || entryLabel.endsWith(name)) {
+        resolved.push(agentId)
+        found = true
+        break
       }
     }
   }

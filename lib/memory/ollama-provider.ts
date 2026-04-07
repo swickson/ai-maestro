@@ -116,7 +116,7 @@ export class OllamaProvider implements LLMProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(120000)  // 2 minute timeout for extraction
+        signal: AbortSignal.timeout(600000)  // 10 minute timeout for CPU inference on long conversations
       })
 
       if (!response.ok) {

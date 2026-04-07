@@ -5,6 +5,7 @@ import { getChatMessages } from '@/lib/meeting-chat-service'
 import { routeMessage } from '@/lib/meeting-router'
 import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
+import { lookupAgentById } from '@/lib/agent-directory'
 
 /**
  * Inject a meeting chat prompt into an agent's tmux session.
@@ -22,27 +23,36 @@ async function injectMeetingPrompt(
   let agentHostUrl: string | undefined = agent?.hostUrl
 
   if (!agent) {
-    // Remote agent: look up in sessions API
-    console.log(`[MeetingChat] Agent ${agentId.slice(0,8)} not in local registry, checking sessions API...`)
-    try {
-      const sessRes = await fetch('http://localhost:23000/api/sessions')
-      if (sessRes.ok) {
-        const sessData = await sessRes.json()
-        const session = (sessData.sessions || []).find((s: any) => s.agentId === agentId)
-        if (session) {
-          agentName = session.name
-          agentHostId = session.hostId
-          if (agentHostId) {
-            const hostRecord = getHostById(agentHostId)
-            agentHostUrl = hostRecord?.url
-            console.log(`[MeetingChat] Resolved remote agent: ${agentName} at ${agentHostUrl || 'no URL'} (host: ${agentHostId})`)
+    // Try agent directory first (fast, includes remote mesh agents)
+    const dirEntry = lookupAgentById(agentId)
+    if (dirEntry) {
+      agentName = dirEntry.name
+      agentHostId = dirEntry.hostId
+      agentHostUrl = dirEntry.hostUrl
+      console.log(`[MeetingChat] Resolved remote agent from directory: ${agentName} at ${agentHostUrl || 'no URL'} (host: ${agentHostId})`)
+    } else {
+      // Fallback: sessions API for agents not yet in directory
+      console.log(`[MeetingChat] Agent ${agentId.slice(0,8)} not in local registry or directory, checking sessions API...`)
+      try {
+        const sessRes = await fetch('http://localhost:23000/api/sessions')
+        if (sessRes.ok) {
+          const sessData = await sessRes.json()
+          const session = (sessData.sessions || []).find((s: any) => s.agentId === agentId)
+          if (session) {
+            agentName = session.name
+            agentHostId = session.hostId
+            if (agentHostId) {
+              const hostRecord = getHostById(agentHostId)
+              agentHostUrl = hostRecord?.url
+              console.log(`[MeetingChat] Resolved remote agent: ${agentName} at ${agentHostUrl || 'no URL'} (host: ${agentHostId})`)
+            }
+          } else {
+            console.warn(`[MeetingChat] Agent ${agentId.slice(0,8)} not found in sessions API either`)
           }
-        } else {
-          console.warn(`[MeetingChat] Agent ${agentId.slice(0,8)} not found in sessions API either`)
         }
+      } catch (err) {
+        console.warn(`[MeetingChat] Sessions API lookup failed:`, err)
       }
-    } catch (err) {
-      console.warn(`[MeetingChat] Sessions API lookup failed:`, err)
     }
   }
 
@@ -189,14 +199,22 @@ export async function POST(
         } catch { /* ignore */ }
 
         for (const agentId of routing.targetAgentIds) {
-          // Resolve agent name from local registry or remote sessions
+          // Resolve agent display label from local registry, agent directory, or remote sessions
           const agent = getAgent(agentId)
           let agentLabel: string
           if (agent) {
             agentLabel = agent.label || agent.name
           } else {
-            const session = remoteSessions.find(s => s.agentId === agentId)
-            agentLabel = session?.name || agentId.slice(0, 8)
+            // Try agent directory (includes labels synced from remote mesh nodes)
+            const dirEntry = lookupAgentById(agentId)
+            if (dirEntry?.label) {
+              agentLabel = dirEntry.label
+            } else if (dirEntry) {
+              agentLabel = dirEntry.name
+            } else {
+              const session = remoteSessions.find(s => s.agentId === agentId)
+              agentLabel = session?.name || agentId.slice(0, 8)
+            }
           }
           const prompt = [
             `[Meeting: ${meeting.name}]`,
