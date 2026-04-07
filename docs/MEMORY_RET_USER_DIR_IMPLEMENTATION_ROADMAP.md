@@ -288,6 +288,41 @@ Tests                        Tests                           Tests
 
 ---
 
+## Gateway Implementation Notes (from DataIA review, 2026-04-07)
+
+These clarifications address gateway-specific details raised during review.
+
+### User Resolver Architecture
+The gateway's user-resolver will be an HTTP-backed cache (not a trivial string builder like the existing agent-resolver). It calls `GET /api/users/resolve` with local TTL caching. CelestIA: ensure the resolve endpoint is fast (sub-50ms for cache-miss reads from disk).
+
+### Trust Migration — Dual Touch Points
+Replacing `OPERATOR_DISCORD_IDS` touches two functions in `discord-gateway/src/content-security.ts`:
+- `loadSecurityConfig()` (line 33) — reads env var
+- `resolveTrust()` (line 45) — checks `operatorDiscordIds.includes()`
+
+Migration: `resolveTrust()` accepts an optional resolved user record. If present, use `role`/`trustLevel` from directory. If absent, fall back to env var. Clean deprecation path.
+
+### AMP Envelope — Backward Compatibility
+Existing AMP context has `context.channel` (sender, sender_id, thread_id), `context.discord`, and `context.security`. New fields (`context.sender`, `context.thread`, `context.topicHints`) sit alongside existing ones. During transition, both `context.channel.sender_id` and `context.sender.platformUserId` will be populated.
+
+**Precedence rule:** Maestro-side AMP handler prefers new `context.sender.*` fields when present, falls back to `context.channel.*` for backward compatibility with older gateway versions.
+
+### DM Endpoint Auth & Client Access
+The `POST /api/gateway/dm` endpoint:
+- Authenticates via Bearer token (`ADMIN_TOKEN`), consistent with other management endpoints
+- Accesses the Discord client instance via the Express app context pattern (same as health/stats endpoints)
+- DM capability = `client.users.fetch(platformUserId)` + confirm bot can open DM channel (mutual guild required)
+
+### Topic Hints — Lightweight Extraction
+Gateway-side `context.topicHints` extraction is intentionally lightweight: split on whitespace, filter stop words, top nouns by frequency. No NLP dependency. The Maestro-side entity extractor does proper extraction — gateway hints are a head start, not authoritative.
+
+### isNewConversation Heuristic
+- **Discord DMs:** New conversation = no recent messages from this user in the last 30 minutes (configurable)
+- **Guild channels:** Every @mention is a new conversation unless it's a thread reply
+- This aligns with the retrieval trigger heuristic: `isNewConversation: true` always triggers a memory search
+
+---
+
 ## Open Questions (from design specs)
 
 - Should agents provide feedback on memory relevance (thumbs up/down)?
