@@ -42,7 +42,7 @@ export default function TeamDashboardPage() {
   }
 
   const handleStartMeeting = () => {
-    router.push(`/team-meeting?team=${teamId}`)
+    router.push(`/team-meeting?meeting=new&team=${teamId}`)
   }
 
   return (
