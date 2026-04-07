@@ -86,7 +86,7 @@ Mirrors `lib/agent-directory.ts` structure:
    - If team ID doesn't exist locally → add with `source: 'remote'`
    - If team ID exists locally with `source: 'remote'` and remote `updatedAt` is newer → update
    - If team ID exists locally with `source: 'local'` → skip (local owner wins)
-4. Remove stale remote teams: if a previously-seen remote team is no longer reported by any peer, mark it stale (remove after 5 minutes of absence)
+4. **Stale handling (host-health-aware):** If a host stops reporting, don't immediately remove its teams. Instead, track `lastSeenAt` per host. Remote teams from an unreachable host remain visible but flagged as `hostOffline: true`. Only remove remote teams if the host has been unreachable for 24+ hours AND the operator hasn't manually intervened. This handles VM restarts, hardware shuffling, and temporary network issues gracefully.
 
 ### New API Endpoint
 
@@ -166,8 +166,13 @@ For existing installations with teams already in `teams.json`:
 
 ---
 
+## Decisions (from team review)
+
+- **Meetings are ephemeral per-node.** No sync needed — meetings are transient by nature.
+- **Manual "claim team" for orphaned teams.** If the owning host goes down permanently, an operator can manually claim the team from another node (e.g., `POST /api/teams/:id/claim`). No automatic adoption — keeps it simple and predictable.
+- **Host last-seen tracking.** Track `lastSeenAt` per host in `hosts.json`. Stale remote teams stay visible (flagged as host-offline) rather than being removed on a short timer. This handles the reality of VM shuffling and hardware instability.
+
 ## Open Questions
 
-- Should team meetings also sync, or are they ephemeral per-node?
-- If the owning node goes offline permanently, should another node be able to "adopt" orphaned teams?
 - Should we notify other team members when a team syncs for the first time (e.g., "Team X from Milo is now visible")?
+- What's the right threshold for "host gone permanently" before suggesting a claim? 24 hours? Configurable?
