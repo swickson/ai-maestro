@@ -52,6 +52,7 @@ import {
 } from '@/lib/cozo-schema'
 import { consolidateMemories, promoteMemories, pruneShortTermMemory } from '@/lib/memory/consolidate'
 import type { PreparedConversation, ConversationMessage } from '@/lib/memory/types'
+import { DEFAULT_MEMORY_SETTINGS } from '@/lib/memory/types'
 import {
   searchMemories,
   getMemoriesByType,
@@ -535,7 +536,7 @@ export async function triggerConsolidation(
 ): Promise<ServiceResult<any>> {
   try {
     const dryRun = options.dryRun || false
-    const provider = (options.provider || 'auto') as 'ollama' | 'claude' | 'auto'
+    const provider = (options.provider || DEFAULT_MEMORY_SETTINGS.consolidation.llmProvider) as 'ollama' | 'claude' | 'auto'
     const maxConversations = options.maxConversations || 50
 
     const agent = await agentRegistry.getAgent(agentId)

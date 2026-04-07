@@ -318,11 +318,16 @@ class AgentSubconscious {
     console.log(`[Agent ${this.agentId.substring(0, 8)}] 📚 Running memory consolidation...`)
 
     try {
-      // Call the consolidation API endpoint
+      // Call the consolidation API endpoint with a 10-minute timeout
+      // (large consolidation runs can take 2-3 minutes with Claude)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 600000)
       const response = await fetch(`${getSelfApiBase()}/api/agents/${this.agentId}/memory/consolidate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
       })
+      clearTimeout(timeoutId)
 
       if (!response.ok) {
         this.lastConsolidationResult = { success: false, error: `HTTP ${response.status}` }
