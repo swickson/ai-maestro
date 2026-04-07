@@ -159,7 +159,7 @@ export const DEFAULT_MEMORY_SETTINGS: MemorySettings = {
     enabled: true,
     schedule: 'nightly',
     nightlyTime: '02:00',
-    llmProvider: 'auto',
+    llmProvider: 'claude',
     ollamaModel: 'llama3.2',
     ollamaEndpoint: 'http://localhost:11434',
     claudeModel: 'claude-3-haiku-20240307',
