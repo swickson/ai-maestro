@@ -24,6 +24,7 @@
  */
 
 import { loadTeams, createTeam, getTeam, updateTeam, deleteTeam } from '@/lib/team-registry'
+import { getAllTeams, getTeamFromDirectory } from '@/lib/team-directory'
 import { loadTasks, resolveTaskDeps, createTask, getTask, updateTask, deleteTask, wouldCreateCycle } from '@/lib/task-registry'
 import { loadDocuments, createDocument, getDocument, updateDocument, deleteDocument } from '@/lib/document-registry'
 import type { TaskStatus } from '@/types/task'
@@ -102,10 +103,10 @@ const VALID_TASK_STATUSES = ['backlog', 'pending', 'in_progress', 'review', 'com
 // ---------------------------------------------------------------------------
 
 /**
- * List all teams.
+ * List all teams (local + remote from mesh sync).
  */
 export function listAllTeams(): ServiceResult<{ teams: any[] }> {
-  const teams = loadTeams()
+  const teams = getAllTeams()
   return { data: { teams }, status: 200 }
 }
 
@@ -133,10 +134,10 @@ export function createNewTeam(params: CreateTeamParams): ServiceResult<{ team: a
 }
 
 /**
- * Get a single team by ID.
+ * Get a single team by ID (checks local + remote).
  */
 export function getTeamById(id: string): ServiceResult<{ team: any }> {
-  const team = getTeam(id)
+  const team = getTeamFromDirectory(id)
   if (!team) {
     return { error: 'Team not found', status: 404 }
   }

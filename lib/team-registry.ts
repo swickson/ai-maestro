@@ -10,6 +10,7 @@ import path from 'path'
 import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { Team, TeamsFile } from '@/types/team'
+import { getSelfHostId } from './hosts-config'
 
 const AIMAESTRO_DIR = path.join(os.homedir(), '.aimaestro')
 const TEAMS_DIR = path.join(AIMAESTRO_DIR, 'teams')
@@ -29,7 +30,27 @@ export function loadTeams(): Team[] {
     }
     const data = fs.readFileSync(TEAMS_FILE, 'utf-8')
     const parsed: TeamsFile = JSON.parse(data)
-    return Array.isArray(parsed.teams) ? parsed.teams : []
+    let teams = Array.isArray(parsed.teams) ? parsed.teams : []
+
+    // v1 → v2 migration: add hostId to existing teams
+    if (!parsed.version || parsed.version < 2) {
+      const selfHostId = getSelfHostId()
+      let migrated = false
+      teams = teams.map(t => {
+        if (!t.hostId) {
+          migrated = true
+          return { ...t, hostId: selfHostId }
+        }
+        return t
+      })
+      if (migrated) {
+        console.log(`[Teams] Migrated ${teams.length} teams to v2 (added hostId=${selfHostId})`)
+        const file: TeamsFile = { version: 2, teams }
+        fs.writeFileSync(TEAMS_FILE, JSON.stringify(file, null, 2), 'utf-8')
+      }
+    }
+
+    return teams
   } catch (error) {
     console.error('Failed to load teams:', error)
     return []
@@ -39,7 +60,11 @@ export function loadTeams(): Team[] {
 export function saveTeams(teams: Team[]): boolean {
   try {
     ensureTeamsDir()
-    const file: TeamsFile = { version: 1, teams }
+    // Only persist local teams — remote teams come from sync
+    const localTeams = teams.filter(t => t.source !== 'remote')
+    // Strip runtime-only source field before writing
+    const cleaned = localTeams.map(({ source, ...rest }) => rest)
+    const file: TeamsFile = { version: 2, teams: cleaned }
     fs.writeFileSync(TEAMS_FILE, JSON.stringify(file, null, 2), 'utf-8')
     return true
   } catch (error) {
@@ -62,6 +87,7 @@ export function createTeam(data: { name: string; description?: string; agentIds:
     name: data.name,
     description: data.description,
     agentIds: data.agentIds,
+    hostId: getSelfHostId(),
     createdAt: now,
     updatedAt: now,
   }
@@ -88,8 +114,20 @@ export function updateTeam(id: string, updates: Partial<Pick<Team, 'name' | 'des
 
 export function deleteTeam(id: string): boolean {
   const teams = loadTeams()
+  const team = teams.find(t => t.id === id)
+  // Don't allow deleting remote teams
+  if (!team || team.source === 'remote') return false
   const filtered = teams.filter(t => t.id !== id)
-  if (filtered.length === teams.length) return false
   saveTeams(filtered)
   return true
+}
+
+/**
+ * Get local teams for sharing with peers during sync.
+ * Returns teams owned by this host (source !== 'remote').
+ */
+export function getLocalTeamsForSync(): Team[] {
+  const teams = loadTeams()
+  const selfHostId = getSelfHostId()
+  return teams.filter(t => t.hostId === selfHostId && t.source !== 'remote')
 }
