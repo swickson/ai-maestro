@@ -1419,13 +1419,16 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
       } else {
         let startCommand = resolveStartCommand(program)
 
-        // Build full command with programArgs
+        // Build full command with programArgs and model
         let fullCommand = startCommand
         if (agent.programArgs) {
           const args = sanitizeArgs(agent.programArgs)
           if (args) {
             fullCommand = `${startCommand} ${args}`
           }
+        }
+        if (agent.model) {
+          fullCommand = `${fullCommand} --model ${agent.model}`
         }
 
         // Small delay to let the session initialize

@@ -1,6 +1,6 @@
 'use client'
 
-import { Menu, HelpCircle, Grid3X3, Users, FolderKanban, UserCircle, Puzzle, Tablet } from 'lucide-react'
+import { Menu, HelpCircle, Grid3X3, Users, FolderKanban, UserCircle, Puzzle, Tablet, Contact } from 'lucide-react'
 
 interface HeaderProps {
   onToggleSidebar?: () => void
@@ -49,6 +49,14 @@ export default function Header({ onToggleSidebar, sidebarCollapsed, activeAgentI
           >
             <FolderKanban className="w-3.5 h-3.5" />
             Teams
+          </a>
+          <a
+            href="/users"
+            className="text-sm px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded transition-colors flex items-center gap-1.5"
+            title="User Directory"
+          >
+            <Contact className="w-3.5 h-3.5" />
+            Users
           </a>
           <a
             href="/team-meeting"
