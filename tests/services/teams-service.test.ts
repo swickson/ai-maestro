@@ -50,6 +50,10 @@ vi.mock('@/lib/task-registry', () => mockTasks)
 vi.mock('@/lib/document-registry', () => mockDocs)
 vi.mock('@/lib/agent-registry', () => mockAgentRegistry)
 vi.mock('@/lib/notification-service', () => mockNotificationService)
+vi.mock('@/lib/team-directory', () => ({
+  getAllTeams: () => mockTeams.loadTeams(),
+  getTeamFromDirectory: (id: string) => mockTeams.getTeam(id),
+}))
 
 // ============================================================================
 // Import module under test (after mocks)

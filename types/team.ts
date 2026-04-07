@@ -25,14 +25,16 @@ export interface Team {
   instructions?: string   // Team-level markdown (like a per-team CLAUDE.md)
   type?: TeamType         // 'open' (default) or 'closed' (isolated messaging)
   chiefOfStaffId?: string // Agent ID of the chief-of-staff (required for closed teams)
+  hostId?: string         // Host that owns this team (set on creation, used for mesh sync)
   createdAt: string       // ISO
   updatedAt: string       // ISO
   lastMeetingAt?: string  // ISO - last time a meeting was started with this team
   lastActivityAt?: string // ISO - updated on any team interaction
+  source?: 'local' | 'remote'  // Runtime only — not persisted, set during sync
 }
 
 export interface TeamsFile {
-  version: 1
+  version: 1 | 2
   teams: Team[]
 }
 
