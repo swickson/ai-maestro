@@ -158,3 +158,48 @@ export function resolveUser(params: ResolveParams): ServiceResult<{ user: any }>
 
   return { error: 'At least one of alias, platform+platformUserId, or displayName is required', status: 400 }
 }
+
+// ─── Auto-Create ───────────────────────────────────────────────────────────
+
+export interface AutoCreateParams {
+  platform: string
+  platformUserId: string
+  handle?: string
+  context?: Record<string, unknown>
+}
+
+/**
+ * Auto-create an external user from a gateway's first-contact event.
+ * If the user already exists (by platform+platformUserId), returns the existing record.
+ */
+export function autoCreateExternalUser(params: AutoCreateParams): ServiceResult<{ user: any; created: boolean }> {
+  if (!params.platform || !params.platformUserId) {
+    return { error: 'platform and platformUserId are required', status: 400 }
+  }
+
+  // Check if user already exists
+  const existing = getUserByPlatform(params.platform, params.platformUserId)
+  if (existing) {
+    return { data: { user: existing, created: false }, status: 200 }
+  }
+
+  try {
+    const handle = params.handle || params.platformUserId
+    const user = createUser({
+      displayName: handle,
+      aliases: [handle.toLowerCase()],
+      platforms: [{
+        type: params.platform,
+        platformUserId: params.platformUserId,
+        handle,
+        context: params.context,
+      }],
+      role: 'external',
+      trustLevel: 'none',
+    })
+    return { data: { user, created: true }, status: 201 }
+  } catch (error) {
+    console.error('[UsersService] Failed to auto-create external user:', error)
+    return { error: error instanceof Error ? error.message : 'Failed to auto-create user', status: 500 }
+  }
+}
