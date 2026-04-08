@@ -249,6 +249,8 @@ import {
   deleteUserById,
   resolveUser,
   autoCreateExternalUser,
+  updateLastSeen,
+  notifyUser,
 } from '@/services/users-service'
 
 import {
@@ -1296,6 +1298,14 @@ const routes: Route[] = [
   { method: 'POST', pattern: /^\/api\/users\/auto-create$/, paramNames: [], handler: async (req, res) => {
     const body = await readJsonBody(req)
     sendServiceResult(res, autoCreateExternalUser(body))
+  }},
+  { method: 'POST', pattern: /^\/api\/users\/([^/]+)\/notify$/, paramNames: ['id'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, await notifyUser(params.id, body.message, { platform: body.platform, subject: body.subject }))
+  }},
+  { method: 'PATCH', pattern: /^\/api\/users\/([^/]+)\/last-seen$/, paramNames: ['id'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, updateLastSeen(params.id, body.platform))
   }},
   { method: 'GET', pattern: /^\/api\/users\/([^/]+)$/, paramNames: ['id'], handler: async (_req, res, params) => {
     sendServiceResult(res, findUserById(params.id))
