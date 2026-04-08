@@ -26,19 +26,22 @@ const DIRECTORY_FILE = path.join(USERS_DIR, 'directory.json')
 
 // ─── Seed Data ──────────────────────────────────────────────────────────────
 
-const OPERATOR_SEED: CreateUserParams = {
-  displayName: 'Shane Wickson',
-  aliases: ['gosub', 'shane', 'swick', 'shanewickson'],
-  platforms: [
-    {
-      type: 'discord',
-      platformUserId: '',  // Filled in by gateway integration (Phase 2)
-      handle: 'gosub',
-    },
-  ],
-  role: 'operator',
-  trustLevel: 'full',
-  preferredPlatform: 'discord',
+function getOperatorSeed(): CreateUserParams {
+  const discordId = process.env.OPERATOR_DISCORD_IDS || ''
+  return {
+    displayName: 'Shane Wickson',
+    aliases: ['gosub', 'shane', 'swick', 'shanewickson'],
+    platforms: discordId ? [
+      {
+        type: 'discord',
+        platformUserId: discordId.split(',')[0].trim(),
+        handle: 'swickson',
+      },
+    ] : [],
+    role: 'operator',
+    trustLevel: 'full',
+    preferredPlatform: 'discord',
+  }
 }
 
 // ─── File I/O ───────────────────────────────────────────────────────────────
@@ -64,7 +67,7 @@ export function loadUsers(): UserRecord[] {
 
     if (!fs.existsSync(DIRECTORY_FILE)) {
       // First load — seed with operator record
-      const operator = createUserRecord(OPERATOR_SEED)
+      const operator = createUserRecord(getOperatorSeed())
       saveUsers([operator])
       console.log('[UserDirectory] Seeded operator record for Shane Wickson')
       return [operator]
