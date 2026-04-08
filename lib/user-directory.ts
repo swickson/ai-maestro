@@ -27,20 +27,15 @@ const DIRECTORY_FILE = path.join(USERS_DIR, 'directory.json')
 // ─── Seed Data ──────────────────────────────────────────────────────────────
 
 function getOperatorSeed(): CreateUserParams {
-  const discordId = process.env.OPERATOR_DISCORD_IDS || '850868623970664468'
+  // Seed a minimal operator record on first run.
+  // Platform mappings should be added via the UI (/users) or API.
+  const name = process.env.OPERATOR_NAME || os.userInfo().username || 'Operator'
   return {
-    displayName: 'Shane Wickson',
-    aliases: ['gosub', 'shane', 'swick', 'shanewickson'],
-    platforms: discordId ? [
-      {
-        type: 'discord',
-        platformUserId: discordId.split(',')[0].trim(),
-        handle: 'swickson',
-      },
-    ] : [],
+    displayName: name,
+    aliases: [],
+    platforms: [],
     role: 'operator',
     trustLevel: 'full',
-    preferredPlatform: 'discord',
   }
 }
 

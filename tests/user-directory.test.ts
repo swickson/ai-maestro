@@ -55,11 +55,9 @@ describe('user-directory', () => {
       const users = loadUsers()
 
       expect(users).toHaveLength(1)
-      expect(users[0].displayName).toBe('Shane Wickson')
+      expect(users[0].displayName).toBeTruthy()
       expect(users[0].role).toBe('operator')
       expect(users[0].trustLevel).toBe('full')
-      expect(users[0].aliases).toContain('gosub')
-      expect(users[0].aliases).toContain('shane')
     })
 
     it('loads existing users from file', async () => {
