@@ -27,7 +27,8 @@ import {
   getUserByDisplayName,
   getUsersByRole,
 } from '@/lib/user-directory'
-import type { CreateUserParams, UpdateUserParams, UserRole } from '@/types/user'
+import type { CreateUserParams, UpdateUserParams, UserRole, UserRecord, UserPlatformMapping } from '@/types/user'
+import { getHostById, getPeerHosts } from '@/lib/hosts-config'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -201,5 +202,116 @@ export function autoCreateExternalUser(params: AutoCreateParams): ServiceResult<
   } catch (error) {
     console.error('[UsersService] Failed to auto-create external user:', error)
     return { error: error instanceof Error ? error.message : 'Failed to auto-create user', status: 500 }
+  }
+}
+
+// ─── Last Seen ─────────────────────────────────────────────────────────────
+
+/**
+ * Update the lastSeenPerPlatform timestamp for a user on a specific platform.
+ */
+export function updateLastSeen(userId: string, platform: string): ServiceResult<{ success: boolean }> {
+  const user = getUser(userId)
+  if (!user) {
+    return { error: 'User not found', status: 404 }
+  }
+
+  const lastSeenPerPlatform = { ...user.lastSeenPerPlatform, [platform]: new Date().toISOString() }
+  const updated = updateUser(userId, { lastSeenPerPlatform })
+  if (!updated) {
+    return { error: 'Failed to update user', status: 500 }
+  }
+  return { data: { success: true }, status: 200 }
+}
+
+// ─── Outbound Notify ───────────────────────────────────────────────────────
+
+/** Gateway DM endpoint mapping by platform type */
+const GATEWAY_DM_ENDPOINTS: Record<string, string> = {
+  discord: '/api/gateway/dm',
+}
+
+/**
+ * Send a notification to a user via their preferred platform.
+ * Resolves user -> finds platform mapping -> routes to gateway DM endpoint.
+ *
+ * Resolution chain: preferred platform -> any available platform.
+ */
+export async function notifyUser(
+  userId: string,
+  message: string,
+  options?: { platform?: string; subject?: string }
+): Promise<ServiceResult<{ success: boolean; platform?: string; method?: string }>> {
+  const user = getUser(userId)
+  if (!user) {
+    return { error: 'User not found', status: 404 }
+  }
+
+  if (!user.platforms || user.platforms.length === 0) {
+    return { error: 'User has no platform mappings', status: 422 }
+  }
+
+  // Pick platform: explicit > preferred > first available
+  let targetMapping: UserPlatformMapping | undefined
+  if (options?.platform) {
+    targetMapping = user.platforms.find(p => p.type === options.platform)
+  }
+  if (!targetMapping && user.preferredPlatform) {
+    targetMapping = user.platforms.find(p => p.type === user.preferredPlatform)
+  }
+  if (!targetMapping) {
+    targetMapping = user.platforms[0]
+  }
+
+  const dmPath = GATEWAY_DM_ENDPOINTS[targetMapping.type]
+  if (!dmPath) {
+    return { error: `No gateway DM endpoint configured for platform: ${targetMapping.type}`, status: 422 }
+  }
+
+  // Gateway runs on same host as Maestro (port 3023 for discord-gateway)
+  const gatewayUrl = `http://localhost:${process.env.GATEWAY_PORT || '3023'}${dmPath}`
+
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000)
+
+    const response = await fetch(gatewayUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.ADMIN_TOKEN || ''}`,
+      },
+      body: JSON.stringify({
+        platformUserId: targetMapping.platformUserId,
+        message,
+        subject: options?.subject,
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}))
+      return {
+        error: (errBody as any).error || `Gateway returned ${response.status}`,
+        status: 502,
+      }
+    }
+
+    const result = await response.json()
+    return {
+      data: {
+        success: true,
+        platform: targetMapping.type,
+        method: 'gateway-dm',
+        ...(result as any),
+      },
+      status: 200,
+    }
+  } catch (err) {
+    return {
+      error: `Gateway DM delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+      status: 502,
+    }
   }
 }
