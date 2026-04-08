@@ -27,7 +27,7 @@ const DIRECTORY_FILE = path.join(USERS_DIR, 'directory.json')
 // ─── Seed Data ──────────────────────────────────────────────────────────────
 
 function getOperatorSeed(): CreateUserParams {
-  const discordId = process.env.OPERATOR_DISCORD_IDS || ''
+  const discordId = process.env.OPERATOR_DISCORD_IDS || '850868623970664468'
   return {
     displayName: 'Shane Wickson',
     aliases: ['gosub', 'shane', 'swick', 'shanewickson'],
