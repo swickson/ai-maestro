@@ -265,7 +265,7 @@ async function waitForPrompt(
  */
 export const MESH_PRIMER = [
   'You are running as part of an AI Maestro agent mesh. Other agents in the mesh can send you messages and you can send messages to them.',
-  'To send a message: use your agent-messaging skill if available, otherwise invoke amp-send <recipient> <subject> <body> [--priority low|normal|high|urgent] [--type request|response|notification|task|status].',
+  'To send a message: use your agent-messaging skill if available, otherwise invoke amp-send <recipient> "<subject>" "<body>" [--priority low|normal|high|urgent] [--type request|response|notification|task|status]. Quote multi-word subjects and bodies so the shell does not split them into separate positional args.',
   'For the full mesh protocol, command reference, and peer list, run: amp-primer (available in your PATH alongside the other amp-* commands).',
 ].join(' ')
 
