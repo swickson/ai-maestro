@@ -691,6 +691,18 @@ describe('MESH_PRIMER content', () => {
     expect(MESH_PRIMER).not.toMatch(/"<body>"\s+<priority>/)
   })
 
+  it('keeps shell quotes around multi-word placeholders to prevent word-splitting', () => {
+    // Regression guard: the v2 pass briefly dropped the quotes around
+    // <subject> and <body> when restructuring to the flag form. Without
+    // the quotes, an agent running
+    //   amp-send mason Touch target sizing "body here" --priority high
+    // gets "Touch", "target", "sizing" as three separate positional args
+    // and amp-send errors out. The quotes are the cheapest prevention
+    // against the most likely first-use failure.
+    expect(MESH_PRIMER).toMatch(/"<subject>"/)
+    expect(MESH_PRIMER).toMatch(/"<body>"/)
+  })
+
   it('enumerates the real priority values (low, normal, high, urgent)', () => {
     expect(MESH_PRIMER).toMatch(/low\|normal\|high\|urgent/)
   })
