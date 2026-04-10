@@ -133,6 +133,8 @@ import {
   initializeStartup,
   getStartupInfo,
   proxyHealthCheck,
+  MESH_PRIMER,
+  loadMeshPrimer,
 } from '@/services/agents-core-service'
 
 // ============================================================================
@@ -645,6 +647,68 @@ describe('wakeAgent', () => {
     const result = await wakeAgent('agent-1', { startProgram: false })
 
     expect(result.status).toBe(500)
+  })
+})
+
+// ============================================================================
+// Mesh-awareness primer (loadMeshPrimer + MESH_PRIMER)
+// ============================================================================
+
+describe('loadMeshPrimer', () => {
+  it('returns the primer when meshAware is undefined (default enabled)', () => {
+    const agent = makeAgent({ id: 'a1', name: 'alpha' })
+    // meshAware intentionally not set
+    expect(loadMeshPrimer(agent)).toBe(MESH_PRIMER)
+  })
+
+  it('returns the primer when meshAware is explicitly true', () => {
+    const agent = makeAgent({ id: 'a2', name: 'beta', meshAware: true })
+    expect(loadMeshPrimer(agent)).toBe(MESH_PRIMER)
+  })
+
+  it('returns empty string when meshAware is explicitly false (opt-out)', () => {
+    const agent = makeAgent({ id: 'a3', name: 'gamma', meshAware: false })
+    expect(loadMeshPrimer(agent)).toBe('')
+  })
+})
+
+describe('MESH_PRIMER content', () => {
+  it('names the amp-send command so agents know the entry point', () => {
+    expect(MESH_PRIMER).toMatch(/amp-send/)
+  })
+
+  it('points at amp-primer as the full-docs escape hatch', () => {
+    expect(MESH_PRIMER).toMatch(/amp-primer/)
+  })
+
+  it('uses the real --priority flag syntax, not the fictional positional form', () => {
+    // Regression guard: an earlier draft documented
+    //   amp-send <recipient> "<subject>" "<body>" <priority> <type>
+    // which doesn't match the actual CLI. Agents following the positional
+    // form fail on first amp-send with an argument-count error.
+    expect(MESH_PRIMER).toMatch(/--priority/)
+    expect(MESH_PRIMER).toMatch(/--type/)
+    expect(MESH_PRIMER).not.toMatch(/"<body>"\s+<priority>/)
+  })
+
+  it('enumerates the real priority values (low, normal, high, urgent)', () => {
+    expect(MESH_PRIMER).toMatch(/low\|normal\|high\|urgent/)
+  })
+
+  it('enumerates the real message type values, including task and status', () => {
+    expect(MESH_PRIMER).toMatch(/request\|response\|notification\|task\|status/)
+  })
+
+  it('does not hardcode a specific install directory like ~/.local/bin', () => {
+    // Hardcoding the path lies on hosts that install amp-* elsewhere.
+    // The primer says "in your PATH" instead.
+    expect(MESH_PRIMER).not.toMatch(/~\/\.local\/bin/)
+  })
+
+  it('is short enough to stay well under any plausible sendKeys size limit', () => {
+    // Empirical safe bound for a single tmux sendKeys is multi-kilobyte;
+    // MESH_PRIMER should be < 1KB so primer + user prompt stays comfortable.
+    expect(MESH_PRIMER.length).toBeLessThan(1024)
   })
 })
 
