@@ -251,20 +251,32 @@ async function waitForPrompt(
  * as the escape hatch for full protocol detail.
  *
  * Opt-out per-agent via Agent.meshAware === false.
+ *
+ * NOTE: No ${variable} interpolation is applied to MESH_PRIMER. The hook
+ * variables (${projectDirectory}, ${agentName}) are interpolated only on
+ * the user's hook string in executeHook. If you need dynamic values in
+ * the primer in the future, run the interpolation loop over finalPrompt
+ * instead of resolved.
+ *
+ * Command syntax here MUST match the real amp-* CLI surface in
+ * plugins/ai-maestro/scripts/amp-*.sh — if you edit this string, re-run
+ * `amp-send --help` (or equivalent) to verify the flags and values stay
+ * in sync. The test suite contains a regex smoke check as a safety net.
  */
-const MESH_PRIMER = [
+export const MESH_PRIMER = [
   'You are running as part of an AI Maestro agent mesh. Other agents in the mesh can send you messages and you can send messages to them.',
-  'To send a message: use your agent-messaging skill if available, otherwise invoke amp-send from shell (amp-send <recipient> "<subject>" "<body>" <priority> <type>).',
-  'For the full mesh protocol, command reference, and peer list, run: amp-primer (available in ~/.local/bin once installed alongside the other amp-* commands).',
-  'For meeting replies, use meeting-send.sh with the meeting ID you were given.',
+  'To send a message: use your agent-messaging skill if available, otherwise invoke amp-send <recipient> <subject> <body> [--priority low|normal|high|urgent] [--type request|response|notification|task|status].',
+  'For the full mesh protocol, command reference, and peer list, run: amp-primer (available in your PATH alongside the other amp-* commands).',
 ].join(' ')
 
 /**
  * Load mesh-awareness primer content for an agent.
  * Returns empty string if the agent has opted out via meshAware === false.
  * Defaults to enabled (returns the primer) when meshAware is unset.
+ *
+ * Exported for direct unit testing; the wake flow calls it internally.
  */
-function loadMeshPrimer(agent: Agent): string {
+export function loadMeshPrimer(agent: Agent): string {
   if (agent.meshAware === false) return ''
   return MESH_PRIMER
 }
