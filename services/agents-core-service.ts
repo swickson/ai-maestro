@@ -243,15 +243,46 @@ async function waitForPrompt(
 }
 
 /**
+ * Short mesh-awareness primer prepended to prompt-type on-wake hooks.
+ *
+ * Universal (provider-agnostic): works for Claude (with or without the
+ * agent-messaging skill installed), Gemini, and Codex. Uses a self-
+ * dereferencing design — the primer is short, and points at amp-primer
+ * as the escape hatch for full protocol detail.
+ *
+ * Opt-out per-agent via Agent.meshAware === false.
+ */
+const MESH_PRIMER = [
+  'You are running as part of an AI Maestro agent mesh. Other agents in the mesh can send you messages and you can send messages to them.',
+  'To send a message: use your agent-messaging skill if available, otherwise invoke amp-send from shell (amp-send <recipient> "<subject>" "<body>" <priority> <type>).',
+  'For the full mesh protocol, command reference, and peer list, run: amp-primer (available in ~/.local/bin once installed alongside the other amp-* commands).',
+  'For meeting replies, use meeting-send.sh with the meeting ID you were given.',
+].join(' ')
+
+/**
+ * Load mesh-awareness primer content for an agent.
+ * Returns empty string if the agent has opted out via meshAware === false.
+ * Defaults to enabled (returns the primer) when meshAware is unset.
+ */
+function loadMeshPrimer(agent: Agent): string {
+  if (agent.meshAware === false) return ''
+  return MESH_PRIMER
+}
+
+/**
  * Execute a lifecycle hook, interpolating runtime variables.
  * Supports "prompt:..." (typed into agent stdin) or shell commands.
  * Waits for the CLI prompt to be ready before sending input.
+ *
+ * If meshPrimer is provided, it is prepended to prompt-type hooks so the
+ * agent gains mesh awareness on wake. Shell-command hooks are unaffected.
  */
 async function executeHook(
   sessionName: string,
   hookValue: string,
   runtime: any,
   variables: Record<string, string> = {},
+  meshPrimer: string = '',
 ): Promise<void> {
   // Interpolate variables: ${projectDirectory}, ${agentName}, etc.
   let resolved = hookValue
@@ -263,8 +294,9 @@ async function executeHook(
   await waitForPrompt(sessionName, runtime)
 
   if (resolved.startsWith('prompt:')) {
-    const prompt = resolved.slice('prompt:'.length).trim()
-    await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+    const userPrompt = resolved.slice('prompt:'.length).trim()
+    const finalPrompt = meshPrimer ? `${meshPrimer}\n\n${userPrompt}` : userPrompt
+    await runtime.sendKeys(sessionName, finalPrompt, { literal: true, enter: true })
   } else {
     const sanitized = sanitizeArgs(resolved)
     if (sanitized) {
@@ -1458,7 +1490,8 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
         projectDirectory: projectDirectory || workingDirectory,
         agentName: agentName,
       }
-      executeHook(sessionName, agent.hooks['on-wake'], runtime, hookVars)
+      const meshPrimer = loadMeshPrimer(agent)
+      executeHook(sessionName, agent.hooks['on-wake'], runtime, hookVars, meshPrimer)
         .catch(err => console.warn(`[Wake] on-wake hook failed for ${agentName}:`, err))
     }
 

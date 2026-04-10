@@ -240,6 +240,13 @@ export interface Agent {
   // Hooks (lifecycle event automation)
   hooks?: AgentHooks
 
+  // Mesh awareness: when true (default), a short mesh-protocol primer is
+  // prepended to the agent's on-wake prompt hook, giving the agent enough
+  // context to know it's in an AI Maestro mesh and how to message peers.
+  // Set to false to opt out (sandboxed/test agents, agents that should not
+  // know about the mesh, etc.).
+  meshAware?: boolean
+
   // Runtime type (default: 'tmux') — future: 'docker' | 'api' | 'direct'
   runtime?: 'tmux' | 'docker' | 'api' | 'direct'
 
