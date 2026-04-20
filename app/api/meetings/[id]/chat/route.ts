@@ -6,7 +6,7 @@ import { routeMessage } from '@/lib/meeting-router'
 import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
 import { lookupAgentById } from '@/lib/agent-directory'
-import { enqueueForSession, shouldUseAdditionalContext } from '@/lib/meeting-inject-queue'
+import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject } from '@/lib/meeting-inject-queue'
 import { stripAvatarPaths } from '@/lib/meeting-inject-utils'
 
 /**
@@ -88,8 +88,11 @@ async function injectMeetingPrompt(
 
     // Legacy path: send full text via tmux send-keys.
     // Split text and Enter with 500ms delay — long injections need time
-    // to finish writing before Enter fires (same fix as remote notify endpoint)
-    await runtime.sendKeys(sessionName, prompt, { literal: true, enter: false })
+    // to finish writing before Enter fires (same fix as remote notify endpoint).
+    // Sanitize line-start `!` so Gemini/Claude/IPython shell-escape mode doesn't
+    // swallow the injection mid-stream.
+    const safePrompt = sanitizeForRawInject(prompt)
+    await runtime.sendKeys(sessionName, safePrompt, { literal: true, enter: false })
     await new Promise(r => setTimeout(r, 500))
     await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
     console.log(`[MeetingChat] Injected prompt into local agent ${agentName}`)

@@ -6,6 +6,7 @@ import {
   clearAll,
   inferKindFromProgram,
   shouldUseAdditionalContext,
+  sanitizeForRawInject,
 } from '@/lib/meeting-inject-queue'
 
 describe('meeting-inject-queue', () => {
@@ -117,6 +118,31 @@ describe('meeting-inject-queue', () => {
       process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'all'
       expect(shouldUseAdditionalContext('Aider')).toBe(false)
       expect(shouldUseAdditionalContext(undefined)).toBe(false)
+    })
+  })
+
+  describe('sanitizeForRawInject', () => {
+    it('prefixes a leading `!` at string start with a space', () => {
+      expect(sanitizeForRawInject('!cmd')).toBe(' !cmd')
+    })
+
+    it('prefixes `!` at line-start after a newline', () => {
+      expect(sanitizeForRawInject('line one\n!trigger')).toBe('line one\n !trigger')
+    })
+
+    it('handles multiple line-start triggers', () => {
+      const input = '!one\nsafe\n!two\nalso safe\n!three'
+      const expected = ' !one\nsafe\n !two\nalso safe\n !three'
+      expect(sanitizeForRawInject(input)).toBe(expected)
+    })
+
+    it('leaves mid-line `!` alone', () => {
+      expect(sanitizeForRawInject('what is this!?')).toBe('what is this!?')
+      expect(sanitizeForRawInject('no change here')).toBe('no change here')
+    })
+
+    it('is a no-op on empty input', () => {
+      expect(sanitizeForRawInject('')).toBe('')
     })
   })
 })
