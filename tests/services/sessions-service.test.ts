@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { resetFixtureCounter } from '../test-utils/fixtures'
+import { type ServiceError } from '@/services/service-errors'
 
 // ============================================================================
 // Mocks — vi.hoisted() ensures availability before vi.mock() runs
@@ -61,6 +62,7 @@ const {
     },
     mockSharedState: {
       sessionActivity: new Map<string, number>(),
+      agentActivity: new Map<string, number>(),
       broadcastStatusUpdate: vi.fn(),
     },
     mockFs: {
@@ -119,6 +121,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   resetFixtureCounter()
   mockSharedState.sessionActivity.clear()
+  mockSharedState.agentActivity.clear()
   // Reset runtime mock defaults
   mockRuntime.listSessions.mockResolvedValue([])
   mockRuntime.sessionExists.mockResolvedValue(false)
@@ -243,8 +246,8 @@ describe('createSession', () => {
     const result = await createSession({ name: 'my-agent' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
-    expect(result.data?.name).toBe('my-agent')
+    expect((result.data as any)?.success).toBe(true)
+    expect((result.data as any)?.name).toBe('my-agent')
     expect(mockRuntime.createSession).toHaveBeenCalled()
   })
 
@@ -252,14 +255,14 @@ describe('createSession', () => {
     const result = await createSession({ name: '' })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/name/i)
+    expect((result.data as ServiceError).message).toMatch(/name/i)
   })
 
   it('returns 400 when name contains invalid characters', async () => {
     const result = await createSession({ name: 'my agent!!' })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/letters.*numbers.*dashes.*underscores/i)
+    expect((result.data as ServiceError).message).toMatch(/letters.*numbers.*dashes.*underscores/i)
   })
 
   it('returns 409 when session already exists', async () => {
@@ -268,7 +271,7 @@ describe('createSession', () => {
     const result = await createSession({ name: 'existing' })
 
     expect(result.status).toBe(409)
-    expect(result.error).toMatch(/already exists/i)
+    expect((result.data as ServiceError).message).toMatch(/already exists/i)
   })
 
   it('normalizes name to lowercase', async () => {
@@ -357,7 +360,7 @@ describe('deleteSession', () => {
     const result = await deleteSession('my-agent')
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
+    expect((result.data as any)?.success).toBe(true)
     expect(mockRuntime.killSession).toHaveBeenCalledWith('my-agent')
   })
 
@@ -379,7 +382,7 @@ describe('deleteSession', () => {
     const result = await deleteSession('cloud-agent')
 
     expect(result.status).toBe(200)
-    expect(result.data?.type).toBe('cloud')
+    expect((result.data as any)?.type).toBe('cloud')
     expect(mockRuntime.killSession).not.toHaveBeenCalled()
     expect(mockAgentRegistry.deleteAgentBySession).toHaveBeenCalledWith('cloud-agent', true)
   })
@@ -409,8 +412,8 @@ describe('renameSession', () => {
     const result = await renameSession('old-name', 'new-name')
 
     expect(result.status).toBe(200)
-    expect(result.data?.oldName).toBe('old-name')
-    expect(result.data?.newName).toBe('new-name')
+    expect((result.data as any)?.oldName).toBe('old-name')
+    expect((result.data as any)?.newName).toBe('new-name')
     expect(mockRuntime.renameSession).toHaveBeenCalledWith('old-name', 'new-name')
   })
 
@@ -424,7 +427,7 @@ describe('renameSession', () => {
     const result = await renameSession('old', 'new name!!')
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/letters.*numbers.*dashes.*underscores/i)
+    expect((result.data as ServiceError).message).toMatch(/letters.*numbers.*dashes.*underscores/i)
   })
 
   it('returns 404 when old session not found', async () => {
@@ -471,8 +474,8 @@ describe('sendCommand', () => {
     const result = await sendCommand('my-agent', 'ls -la')
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
-    expect(result.data?.commandSent).toBe('ls -la')
+    expect((result.data as any)?.success).toBe(true)
+    expect((result.data as any)?.commandSent).toBe('ls -la')
     expect(mockRuntime.sendKeys).toHaveBeenCalledWith('my-agent', 'ls -la', { literal: true, enter: true })
   })
 
@@ -488,7 +491,7 @@ describe('sendCommand', () => {
     const result = await sendCommand('my-agent', '')
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/command/i)
+    expect((result.data as ServiceError).message).toMatch(/command/i)
   })
 
   it('returns 404 when session does not exist', async () => {
@@ -506,7 +509,7 @@ describe('sendCommand', () => {
     const result = await sendCommand('busy-agent', 'ls')
 
     expect(result.status).toBe(409)
-    expect(result.error).toMatch(/not idle/i)
+    expect((result.data as ServiceError).message).toMatch(/not idle/i)
   })
 
   it('sends command even when busy if requireIdle is false', async () => {
@@ -516,7 +519,7 @@ describe('sendCommand', () => {
     const result = await sendCommand('busy-agent', 'ls', { requireIdle: false })
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
+    expect((result.data as any)?.success).toBe(true)
   })
 
   it('respects addNewline option', async () => {
@@ -653,8 +656,8 @@ describe('restoreSessions', () => {
     const result = await restoreSessions({ sessionId: 's1' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.results[0]).toEqual({ sessionId: 's1', status: 'restored' })
-    expect(result.data?.summary.restored).toBe(1)
+    expect((result.data as any)?.results[0]).toEqual({ sessionId: 's1', status: 'restored' })
+    expect((result.data as any)?.summary.restored).toBe(1)
   })
 
   it('restores all sessions when all=true', async () => {
@@ -667,8 +670,8 @@ describe('restoreSessions', () => {
     const result = await restoreSessions({ all: true })
 
     expect(result.status).toBe(200)
-    expect(result.data?.summary.restored).toBe(2)
-    expect(result.data?.summary.total).toBe(2)
+    expect((result.data as any)?.summary.restored).toBe(2)
+    expect((result.data as any)?.summary.total).toBe(2)
   })
 
   it('skips sessions that already exist', async () => {
@@ -679,8 +682,8 @@ describe('restoreSessions', () => {
 
     const result = await restoreSessions({ sessionId: 's1' })
 
-    expect(result.data?.results[0].status).toBe('already_exists')
-    expect(result.data?.summary.alreadyExisted).toBe(1)
+    expect((result.data as any)?.results[0].status).toBe('already_exists')
+    expect((result.data as any)?.summary.alreadyExisted).toBe(1)
     expect(mockRuntime.createSession).not.toHaveBeenCalled()
   })
 
@@ -700,9 +703,9 @@ describe('restoreSessions', () => {
 
     const result = await restoreSessions({ all: true })
 
-    expect(result.data?.summary.restored).toBe(1)
-    expect(result.data?.summary.alreadyExisted).toBe(1)
-    expect(result.data?.summary.failed).toBe(1)
+    expect((result.data as any)?.summary.restored).toBe(1)
+    expect((result.data as any)?.summary.alreadyExisted).toBe(1)
+    expect((result.data as any)?.summary.failed).toBe(1)
   })
 
   it('returns 404 when no sessions to restore', async () => {
@@ -723,23 +726,36 @@ describe('broadcastActivityUpdate', () => {
     const result = broadcastActivityUpdate('my-agent', 'active')
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
-    expect(mockSharedState.broadcastStatusUpdate).toHaveBeenCalledWith('my-agent', 'active', undefined, undefined)
+    expect((result.data as any)?.success).toBe(true)
+    expect(mockSharedState.broadcastStatusUpdate).toHaveBeenCalledWith('my-agent', 'active', undefined, undefined, undefined)
   })
 
   it('passes hookStatus and notificationType', () => {
     broadcastActivityUpdate('my-agent', 'waiting', 'waiting_for_input', 'permission')
 
     expect(mockSharedState.broadcastStatusUpdate).toHaveBeenCalledWith(
-      'my-agent', 'waiting', 'waiting_for_input', 'permission'
+      'my-agent', 'waiting', 'waiting_for_input', 'permission', undefined
     )
   })
 
-  it('returns 400 when sessionName is missing', () => {
+  it('passes agentId when provided', () => {
+    broadcastActivityUpdate('my-agent', 'active', undefined, undefined, 'agent-123')
+
+    expect(mockSharedState.broadcastStatusUpdate).toHaveBeenCalledWith(
+      'my-agent', 'active', undefined, undefined, 'agent-123'
+    )
+  })
+
+  it('allows empty sessionName when agentId is provided', () => {
+    const result = broadcastActivityUpdate('', 'active', undefined, undefined, 'agent-123')
+    expect(result.status).toBe(200)
+  })
+
+  it('returns 400 when both sessionName and agentId are missing', () => {
     const result = broadcastActivityUpdate('', 'active')
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/sessionName/i)
+    expect((result.data as ServiceError).message).toMatch(/sessionName/i)
   })
 })
 
@@ -754,7 +770,7 @@ describe('deletePersistedSession', () => {
     const result = deletePersistedSession('s1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
+    expect((result.data as any)?.success).toBe(true)
   })
 
   it('returns 400 when session ID is missing', () => {

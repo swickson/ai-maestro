@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /**
- * AI Maestro Claude Code Hook
+ * AI Maestro Agent Hook
  *
- * This hook captures Claude Code events and writes state to files
- * that AI Maestro can read to display in the Chat interface.
+ * Universal hook for AI coding agents (Claude Code, Codex CLI, Gemini CLI).
+ * Captures agent events, writes state for the Chat interface, and injects
+ * AMP inbox notifications via each agent's native context injection.
  *
- * Supported events:
- * - Notification (idle_prompt): When Claude is waiting for user input
- * - Stop: When Claude finishes responding
- * - SessionStart: When a session starts/resumes
+ * Supported agents and their event mappings:
+ *   Claude Code: Stop, Notification(idle_prompt), SessionStart
+ *   Codex CLI:   Stop, SessionStart
+ *   Gemini CLI:  AfterAgent, Notification, SessionStart
  *
  * State is written to: ~/.aimaestro/chat-state/<cwd-hash>.json
  */
@@ -56,7 +57,6 @@ async function broadcastStatusUpdate(cwd, state) {
             if (!agentWd) return false;
             if (agentWd === cwd) return true;
             if (cwd.startsWith(agentWd + '/')) return true;
-            if (agentWd.startsWith(cwd + '/')) return true;
             return false;
         });
 
@@ -71,13 +71,23 @@ async function broadcastStatusUpdate(cwd, state) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionName,
+                agentId: agent.id,
                 status: state.status,
                 hookStatus: state.status,
                 notificationType: state.notificationType
             })
         });
 
-        debugLog({ event: 'status_broadcast', sessionName, status: state.status });
+        // Also send heartbeat so standalone agents appear in dashboard
+        if (agent.id) {
+            await fetch(`http://localhost:23000/api/agents/${encodeURIComponent(agent.id)}/heartbeat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: state.status })
+            }).catch(() => {});
+        }
+
+        debugLog({ event: 'status_broadcast', sessionName, agentId: agent.id, status: state.status });
     } catch (err) {
         debugLog({ event: 'status_broadcast_error', error: err.message });
     }
@@ -121,44 +131,65 @@ function debugLog(data) {
     fs.appendFileSync(debugFile, line);
 }
 
-// Send message notification to agent via tmux
-async function sendMessageNotification(cwd, messagePrompt) {
-    try {
-        const agentsResponse = await fetch('http://localhost:23000/api/agents');
-        if (!agentsResponse.ok) return false;
+// Detect which AI agent is calling this hook
+function detectAgent(input) {
+    // Gemini CLI sets GEMINI_SESSION_ID or has gemini-specific fields
+    if (process.env.GEMINI_SESSION_ID || process.env.GEMINI_PROJECT_DIR) return 'gemini';
+    // Codex CLI sets model field with gpt- prefix or has turn_id
+    if (input.model && input.model.startsWith('gpt-')) return 'codex';
+    if (input.turn_id !== undefined) return 'codex';
+    // Default to Claude Code
+    return 'claude';
+}
 
-        const agentsData = await agentsResponse.json();
-        const agent = (agentsData.agents || []).find(a => {
-            const agentWd = a.workingDirectory || a.session?.workingDirectory;
-            if (!agentWd) return false;
-            if (agentWd === cwd) return true;
-            if (cwd.startsWith(agentWd + '/')) return true;
-            if (agentWd.startsWith(cwd + '/')) return true;
-            return false;
-        });
+// Normalize event names across agents to our internal names
+function normalizeEvent(hookEvent, agent) {
+    // Gemini's AfterAgent = Claude/Codex's Stop
+    if (agent === 'gemini' && hookEvent === 'AfterAgent') return 'Stop';
+    return hookEvent;
+}
 
-        if (agent && agent.session?.tmuxSessionName) {
-            // Send via AI Maestro API
-            const response = await fetch(
-                `http://localhost:23000/api/sessions/${encodeURIComponent(agent.session.tmuxSessionName)}/command`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        command: messagePrompt,
-                        requireIdle: false,  // Hook context ensures appropriate timing
-                        addNewline: true
-                    })
+// Build the context injection response in the correct format for each agent
+function buildContextResponse(agent, hookEvent, message) {
+    if (!message) return {};
+
+    switch (agent) {
+        case 'codex':
+            // Codex CLI uses systemMessage field
+            return { systemMessage: message };
+        case 'gemini':
+            // Gemini CLI uses systemMessage or additionalContext
+            return { systemMessage: message };
+        case 'claude':
+        default:
+            // Claude Code uses hookSpecificOutput.additionalContext
+            return {
+                hookSpecificOutput: {
+                    hookEventName: hookEvent,
+                    additionalContext: message
                 }
-            );
-            const result = await response.json();
-            debugLog({ event: 'message_notification_sent', success: result.success, session: agent.session.tmuxSessionName });
-            return result.success;
-        }
-        return false;
+            };
+    }
+}
+
+// Check for unread messages using AMP CLI (standalone — no AI Maestro needed)
+async function checkUnreadMessagesStandalone() {
+    const { execSync } = require('child_process');
+    try {
+        const output = execSync('amp-inbox.sh --count 2>/dev/null', {
+            encoding: 'utf8',
+            timeout: 3000,
+            env: { ...process.env, PATH: process.env.PATH }
+        }).trim();
+
+        // amp-inbox.sh --count returns a number
+        const count = parseInt(output, 10);
+        if (isNaN(count) || count === 0) return null;
+
+        return `You have ${count} unread message${count === 1 ? '' : 's'} in your AMP inbox. Check them with: amp-inbox.sh`;
     } catch (err) {
-        debugLog({ event: 'message_notification_error', error: err.message });
-        return false;
+        debugLog({ event: 'standalone_inbox_check_failed', error: err.message });
+        return null;
     }
 }
 
@@ -185,7 +216,6 @@ async function checkUnreadMessages(cwd) {
             if (cwd.startsWith(agentWd + '/')) return true;
 
             // Agent's working directory is subdirectory of cwd
-            if (agentWd.startsWith(cwd + '/')) return true;
 
             return false;
         });
@@ -231,7 +261,8 @@ async function checkUnreadMessages(cwd) {
         }
     } catch (err) {
         debugLog({ event: 'message_check_error', error: err.message });
-        return null;
+        // Fall back to standalone AMP check (works without AI Maestro)
+        return checkUnreadMessagesStandalone();
     }
 }
 
@@ -242,10 +273,17 @@ async function main() {
     // Log all input for debugging
     debugLog({ event: 'hook_received', input });
 
-    const hookEvent = input.hook_event_name || process.env.CLAUDE_HOOK_EVENT;
-    const cwd = input.cwd || process.cwd();
+    const agent = detectAgent(input);
+    const rawEvent = input.hook_event_name || process.env.CLAUDE_HOOK_EVENT;
+    const hookEvent = normalizeEvent(rawEvent, agent);
+    const cwd = input.cwd || process.env.GEMINI_CWD || process.cwd();
     const sessionId = input.session_id;
     const transcriptPath = input.transcript_path;
+
+    debugLog({ event: 'agent_detected', agent, rawEvent, hookEvent });
+
+    // Hook response — may be enriched with context injection for inbox notifications
+    let hookResponse = {};
 
     // Handle different hook events
     switch (hookEvent) {
@@ -332,11 +370,11 @@ async function main() {
                     transcriptPath
                 });
 
-                // Check for unread messages and notify the agent
-                const messagePrompt = await checkUnreadMessages(cwd);
-                if (messagePrompt) {
-                    debugLog({ event: 'sending_message_notification', cwd, prompt: messagePrompt, trigger: 'idle_prompt' });
-                    await sendMessageNotification(cwd, messagePrompt);
+                // Check for unread messages and inject as context
+                const idleMessagePrompt = await checkUnreadMessages(cwd);
+                if (idleMessagePrompt) {
+                    debugLog({ event: 'injecting_inbox_context', cwd, agent, trigger: 'idle_prompt' });
+                    hookResponse = buildContextResponse(agent, rawEvent, idleMessagePrompt);
                 }
             } else if (notificationType === 'permission_prompt') {
                 // For permission prompts, preserve existing tool info if we have it
@@ -372,7 +410,8 @@ async function main() {
             break;
 
         case 'Stop':
-            // Claude finished responding - clear the waiting state
+            // Claude finished responding - keep this fast (no API calls)
+            // Inbox check happens on idle_prompt notification which fires shortly after
             writeState(cwd, {
                 status: 'idle',
                 message: null,
@@ -391,15 +430,12 @@ async function main() {
                 source: input.source
             });
 
-            // Check for unread messages after a short delay to let session initialize
-            // The delay ensures Claude Code is ready to receive the notification
-            setTimeout(async () => {
-                const messagePrompt = await checkUnreadMessages(cwd);
-                if (messagePrompt) {
-                    debugLog({ event: 'sending_message_notification', cwd, prompt: messagePrompt, trigger: 'session_start' });
-                    await sendMessageNotification(cwd, messagePrompt);
-                }
-            }, 3000);  // 3 second delay for session initialization
+            // Check for unread messages and inject as context
+            const startMessagePrompt = await checkUnreadMessages(cwd);
+            if (startMessagePrompt) {
+                debugLog({ event: 'injecting_inbox_context', cwd, agent, trigger: 'session_start' });
+                hookResponse = buildContextResponse(agent, rawEvent, startMessagePrompt);
+            }
             break;
 
         default:
@@ -409,8 +445,8 @@ async function main() {
             }
     }
 
-    // Output empty JSON to indicate success
-    console.log('{}');
+    // Output hook response (may include additionalContext for inbox notifications)
+    console.log(JSON.stringify(hookResponse));
 }
 
 main().catch(err => {
