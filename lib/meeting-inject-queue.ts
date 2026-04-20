@@ -72,3 +72,19 @@ export function shouldUseAdditionalContext(program: string | undefined): boolean
   if (list.includes('all')) return true
   return list.includes(kind)
 }
+
+// ─── Legacy-path sanitizer ──────────────────────────────────────────────────
+// When a meeting prompt is delivered via tmux send-keys (legacy path, used for
+// any agent not in MAESTRO_MEETING_CONTEXT_KINDS), the text is typed into the
+// agent's REPL a character at a time. REPLs like Gemini CLI, Claude Code,
+// Python, and IPython treat `!` at the start of a submitted line as a shell
+// escape, dropping into shell-command mode mid-injection. Multi-line meeting
+// prompts contain interior newlines that tmux forwards as Enter keystrokes,
+// so any line that happens to begin with `!` corrupts the session.
+//
+// Narrow fix: prefix a space before any `!` at line-start so it becomes
+// literal text. Follow-up #TBD tracks the proper fix (tmux bracketed paste
+// mode so the whole payload arrives as one atomic input, no interior Enters).
+export function sanitizeForRawInject(text: string): string {
+  return text.replace(/(^|\n)!/g, '$1 !')
+}

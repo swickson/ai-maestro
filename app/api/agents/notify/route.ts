@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { notifyAgent } from '@/lib/notification-service'
 import { getRuntime } from '@/lib/agent-runtime'
-import { enqueueForSession, shouldUseAdditionalContext } from '@/lib/meeting-inject-queue'
+import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject } from '@/lib/meeting-inject-queue'
 import { getAgentBySession } from '@/lib/agent-registry'
 
 /**
@@ -47,7 +47,10 @@ export async function POST(request: NextRequest) {
       // Legacy path: send the injection text, then wait before sending Enter.
       // Long injections (1000+ chars with conversation context) need time
       // to finish writing to tmux before Enter fires, especially over network hops.
-      await runtime.sendKeys(sessionName, body.injection, { literal: true, enter: false })
+      // Sanitize line-start `!` so Gemini/Claude/IPython shell-escape mode doesn't
+      // swallow the injection mid-stream.
+      const safeInjection = sanitizeForRawInject(String(body.injection))
+      await runtime.sendKeys(sessionName, safeInjection, { literal: true, enter: false })
       await new Promise(r => setTimeout(r, 500))
       await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
       console.log(`[API] /api/agents/notify: injected meeting prompt into ${sessionName}`)
