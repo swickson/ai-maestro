@@ -47,16 +47,7 @@ import {
 import { routeMessage } from '@/lib/meeting-router'
 import { getRuntime } from '@/lib/agent-runtime'
 import type { SidebarMode } from '@/types/team'
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface ServiceResult<T> {
-  data?: T
-  error?: string
-  status: number // HTTP-like status code for the route to use
-}
+import { type ServiceResult, missingField, notFound, invalidRequest, operationFailed } from '@/services/service-errors'
 
 // ---------------------------------------------------------------------------
 // Messages: GET /api/messages
@@ -86,7 +77,7 @@ export async function getMessages(params: GetMessagesParams): Promise<ServiceRes
   if (action === 'resolve' && agentIdentifier) {
     const resolved = resolveAgentIdentifier(agentIdentifier)
     if (!resolved) {
-      return { data: { error: 'Agent not found', resolved: null }, error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentIdentifier || undefined)
     }
     return { data: { resolved }, status: 200 }
   }
@@ -121,7 +112,7 @@ export async function getMessages(params: GetMessagesParams): Promise<ServiceRes
   if (agentIdentifier && messageId) {
     const message = await getMessage(agentIdentifier, messageId, box as 'inbox' | 'sent')
     if (!message) {
-      return { error: 'Message not found', status: 404 }
+      return notFound('Message', messageId)
     }
     return { data: message, status: 200 }
   }
@@ -152,7 +143,7 @@ export async function getMessages(params: GetMessagesParams): Promise<ServiceRes
 
   // List messages for an agent
   if (!agentIdentifier) {
-    return { error: 'Agent identifier required (agent ID, alias, or session name)', status: 400 }
+    return missingField('agent')
   }
 
   // Parse limit parameter (default: 25 for performance, 0 = unlimited)
@@ -208,12 +199,12 @@ export async function sendMessage(params: SendMessageParams): Promise<ServiceRes
 
   // Validate required fields
   if (!from || !to || !subject || !content) {
-    return { error: 'Missing required fields: from, to, subject, content', status: 400 }
+    return invalidRequest('Missing required fields: from, to, subject, content')
   }
 
   // Validate content structure
   if (!content.type || !content.message) {
-    return { error: 'Content must have type and message fields', status: 400 }
+    return invalidRequest('Content must have type and message fields')
   }
 
   try {
@@ -256,8 +247,7 @@ export async function sendMessage(params: SendMessageParams): Promise<ServiceRes
     }
   } catch (error) {
     console.error('Error sending message:', error)
-    const errorMessage = error instanceof Error ? error.message : 'Failed to send message'
-    return { error: errorMessage, status: 500 }
+    return operationFailed('send message', (error as Error).message)
   }
 }
 
@@ -271,7 +261,7 @@ export async function updateMessage(
   action: string | null,
 ): Promise<ServiceResult<{ success: boolean }>> {
   if (!agentIdentifier || !messageId) {
-    return { error: 'Agent identifier and message ID required', status: 400 }
+    return invalidRequest('Agent identifier and message ID required')
   }
 
   try {
@@ -285,17 +275,17 @@ export async function updateMessage(
         success = await archiveMessage(agentIdentifier, messageId)
         break
       default:
-        return { error: 'Invalid action', status: 400 }
+        return invalidRequest('Invalid action')
     }
 
     if (!success) {
-      return { error: 'Message not found', status: 404 }
+      return notFound('Message', messageId)
     }
 
     return { data: { success: true }, status: 200 }
   } catch (error) {
     console.error('Error updating message:', error)
-    return { error: 'Failed to update message', status: 500 }
+    return operationFailed('update message', (error as Error).message)
   }
 }
 
@@ -308,20 +298,20 @@ export async function removeMessage(
   messageId: string | null,
 ): Promise<ServiceResult<{ success: boolean }>> {
   if (!agentIdentifier || !messageId) {
-    return { error: 'Agent identifier and message ID required', status: 400 }
+    return invalidRequest('Agent identifier and message ID required')
   }
 
   try {
     const success = await deleteMessage(agentIdentifier, messageId)
 
     if (!success) {
-      return { error: 'Message not found', status: 404 }
+      return notFound('Message', messageId)
     }
 
     return { data: { success: true }, status: 200 }
   } catch (error) {
     console.error('Error deleting message:', error)
-    return { error: 'Failed to delete message', status: 500 }
+    return operationFailed('delete message', (error as Error).message)
   }
 }
 
@@ -342,15 +332,12 @@ export async function forwardMessage(params: ForwardMessageParams): Promise<Serv
 
   // Validate required fields
   if ((!messageId && !originalMessage) || !fromSession || !toSession) {
-    return {
-      error: 'Either messageId or originalMessage, plus fromSession and toSession are required',
-      status: 400,
-    }
+    return invalidRequest('Either messageId or originalMessage, plus fromSession and toSession are required')
   }
 
   // Validate that from and to sessions are different
   if (fromSession === toSession) {
-    return { error: 'Cannot forward message to the same session', status: 400 }
+    return invalidRequest('Cannot forward message to the same session')
   }
 
   try {
@@ -376,10 +363,7 @@ export async function forwardMessage(params: ForwardMessageParams): Promise<Serv
     }
   } catch (error) {
     console.error('Error forwarding message:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Failed to forward message',
-      status: 500,
-    }
+    return operationFailed('forward message', (error as Error).message)
   }
 }
 
@@ -471,10 +455,10 @@ export async function getMeetingMessages(
   const { meetingId, participants: participantsParam, since } = params
 
   if (!meetingId) {
-    return { error: 'meetingId is required', status: 400 }
+    return missingField('meetingId')
   }
   if (!participantsParam) {
-    return { error: 'participants is required', status: 400 }
+    return missingField('participants')
   }
 
   const participantIds = participantsParam.split(',').filter(Boolean)
@@ -566,11 +550,11 @@ export function createNewMeeting(
   const { name, agentIds, teamId, sidebarMode, operatorId, operatorName } = params
 
   if (!name || typeof name !== 'string') {
-    return { error: 'Meeting name is required', status: 400 }
+    return missingField('name')
   }
 
   if (!agentIds || !Array.isArray(agentIds) || agentIds.length === 0) {
-    return { error: 'At least one agent is required', status: 400 }
+    return invalidRequest('At least one agent is required')
   }
 
   try {
@@ -585,10 +569,7 @@ export function createNewMeeting(
     return { data: { meeting }, status: 201 }
   } catch (error) {
     console.error('Failed to create meeting:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Failed to create meeting',
-      status: 500,
-    }
+    return operationFailed('create meeting', (error as Error).message)
   }
 }
 
@@ -599,7 +580,7 @@ export function createNewMeeting(
 export function getMeetingById(id: string): ServiceResult<{ meeting: any }> {
   const meeting = getMeeting(id)
   if (!meeting) {
-    return { error: 'Meeting not found', status: 404 }
+    return notFound('Meeting', id)
   }
   return { data: { meeting }, status: 200 }
 }
@@ -635,16 +616,13 @@ export function updateExistingMeeting(
       teamId: updates.teamId,
     })
     if (!meeting) {
-      return { error: 'Meeting not found', status: 404 }
+      return notFound('Meeting', id)
     }
 
     return { data: { meeting }, status: 200 }
   } catch (error) {
     console.error('Failed to update meeting:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Failed to update meeting',
-      status: 500,
-    }
+    return operationFailed('update meeting', (error as Error).message)
   }
 }
 
@@ -655,7 +633,7 @@ export function updateExistingMeeting(
 export function deleteExistingMeeting(id: string): ServiceResult<{ success: boolean }> {
   const deleted = deleteMeeting(id)
   if (!deleted) {
-    return { error: 'Meeting not found', status: 404 }
+    return notFound('Meeting', id)
   }
   return { data: { success: true }, status: 200 }
 }
