@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { notifyAgent } from '@/lib/notification-service'
 import { getRuntime } from '@/lib/agent-runtime'
+import { enqueueForSession, shouldUseAdditionalContext } from '@/lib/meeting-inject-queue'
+import { getAgentBySession } from '@/lib/agent-registry'
 
 /**
  * POST /api/agents/notify
@@ -28,7 +30,18 @@ export async function POST(request: NextRequest) {
       if (!exists) {
         return NextResponse.json({ error: `Session ${sessionName} not found` }, { status: 404 })
       }
-      // Send the injection text, then wait before sending Enter.
+
+      // Hybrid path (flag-gated per agent kind): enqueue as structured context
+      // and wake-ping with bare Enter. Hook drains on next idle_prompt.
+      const agent = getAgentBySession(sessionName)
+      if (agent && shouldUseAdditionalContext(agent.program)) {
+        enqueueForSession(sessionName, body.injection)
+        await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
+        console.log(`[API] /api/agents/notify: queued + wake-pinged ${sessionName} (${agent.program})`)
+        return NextResponse.json({ success: true, queued: true })
+      }
+
+      // Legacy path: send the injection text, then wait before sending Enter.
       // Long injections (1000+ chars with conversation context) need time
       // to finish writing to tmux before Enter fires, especially over network hops.
       await runtime.sendKeys(sessionName, body.injection, { literal: true, enter: false })

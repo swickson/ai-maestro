@@ -6,6 +6,7 @@ import { routeMessage } from '@/lib/meeting-router'
 import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
 import { lookupAgentById } from '@/lib/agent-directory'
+import { enqueueForSession, shouldUseAdditionalContext } from '@/lib/meeting-inject-queue'
 
 /**
  * Inject a meeting chat prompt into an agent's tmux session.
@@ -68,6 +69,19 @@ async function injectMeetingPrompt(
     const runtime = getRuntime()
     const exists = await runtime.sessionExists(sessionName)
     if (!exists) return
+
+    // Hybrid path (flag-gated per agent kind): enqueue the prompt as structured
+    // context and fire a bare-Enter wake-ping. The agent's hook drains the
+    // queue on the next idle_prompt / SessionStart and delivers the payload as
+    // additionalContext — never through the shell, so '!' and friends survive.
+    if (agent && shouldUseAdditionalContext(agent.program)) {
+      enqueueForSession(sessionName, prompt)
+      await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
+      console.log(`[MeetingChat] Queued prompt + wake-pinged local agent ${agentName} (${agent.program})`)
+      return
+    }
+
+    // Legacy path: send full text via tmux send-keys.
     // Split text and Enter with 500ms delay — long injections need time
     // to finish writing before Enter fires (same fix as remote notify endpoint)
     await runtime.sendKeys(sessionName, prompt, { literal: true, enter: false })
