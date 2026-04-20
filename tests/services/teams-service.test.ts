@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { makeTeam, makeTask, makeDocument, makeAgent, resetFixtureCounter } from '../test-utils/fixtures'
+import { type ServiceError } from '@/services/service-errors'
 
 // ============================================================================
 // Mocks — vi.hoisted() ensures these are available when vi.mock() runs
@@ -97,7 +98,7 @@ describe('listAllTeams', () => {
     const result = listAllTeams()
 
     expect(result.status).toBe(200)
-    expect(result.data?.teams).toEqual([])
+    expect((result.data as any)?.teams).toEqual([])
   })
 
   it('returns populated list of teams', () => {
@@ -107,8 +108,8 @@ describe('listAllTeams', () => {
     const result = listAllTeams()
 
     expect(result.status).toBe(200)
-    expect(result.data?.teams).toHaveLength(2)
-    expect(result.data?.teams[0].name).toBe('Alpha')
+    expect((result.data as any)?.teams).toHaveLength(2)
+    expect((result.data as any)?.teams[0].name).toBe('Alpha')
   })
 })
 
@@ -124,7 +125,7 @@ describe('createNewTeam', () => {
     const result = createNewTeam({ name: 'New Team', agentIds: [] })
 
     expect(result.status).toBe(201)
-    expect(result.data?.team.name).toBe('New Team')
+    expect((result.data as any)?.team.name).toBe('New Team')
     expect(mockTeams.createTeam).toHaveBeenCalledWith({ name: 'New Team', description: undefined, agentIds: [] })
   })
 
@@ -142,7 +143,7 @@ describe('createNewTeam', () => {
     const result = createNewTeam({ name: '', agentIds: [] })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/name/i)
+    expect((result.data as ServiceError).message).toMatch(/name/i)
     expect(mockTeams.createTeam).not.toHaveBeenCalled()
   })
 
@@ -150,14 +151,14 @@ describe('createNewTeam', () => {
     const result = createNewTeam({ name: null as any, agentIds: [] })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/name/i)
+    expect((result.data as ServiceError).message).toMatch(/name/i)
   })
 
   it('returns 400 when agentIds is not an array', () => {
     const result = createNewTeam({ name: 'Team', agentIds: 'not-array' as any })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/agentIds/i)
+    expect((result.data as ServiceError).message).toMatch(/agentIds/i)
   })
 
   it('returns 500 when createTeam throws', () => {
@@ -166,7 +167,7 @@ describe('createNewTeam', () => {
     const result = createNewTeam({ name: 'Fail', agentIds: [] })
 
     expect(result.status).toBe(500)
-    expect(result.error).toBe('disk full')
+    expect((result.data as ServiceError).message).toContain('disk full')
   })
 
   it('defaults agentIds to empty array when not provided', () => {
@@ -191,7 +192,7 @@ describe('getTeamById', () => {
     const result = getTeamById('team-123')
 
     expect(result.status).toBe(200)
-    expect(result.data?.team.name).toBe('Found')
+    expect((result.data as any)?.team.name).toBe('Found')
   })
 
   it('returns 404 when team not found', () => {
@@ -200,7 +201,7 @@ describe('getTeamById', () => {
     const result = getTeamById('nonexistent')
 
     expect(result.status).toBe(404)
-    expect(result.error).toMatch(/not found/i)
+    expect((result.data as ServiceError).message).toMatch(/not found/i)
   })
 })
 
@@ -216,7 +217,7 @@ describe('updateTeamById', () => {
     const result = updateTeamById('team-1', { name: 'Updated' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.team.name).toBe('Updated')
+    expect((result.data as any)?.team.name).toBe('Updated')
   })
 
   it('passes all update fields', () => {
@@ -255,7 +256,7 @@ describe('updateTeamById', () => {
     const result = updateTeamById('team-1', { name: 'X' })
 
     expect(result.status).toBe(500)
-    expect(result.error).toBe('write error')
+    expect((result.data as ServiceError).message).toContain('write error')
   })
 })
 
@@ -270,7 +271,7 @@ describe('deleteTeamById', () => {
     const result = deleteTeamById('team-1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
+    expect((result.data as any)?.success).toBe(true)
   })
 
   it('returns 404 when team not found', () => {
@@ -299,7 +300,7 @@ describe('listTeamTasks', () => {
     const result = listTeamTasks('team-1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.tasks).toHaveLength(1)
+    expect((result.data as any)?.tasks).toHaveLength(1)
     expect(mockTasks.resolveTaskDeps).toHaveBeenCalledWith(tasks)
   })
 
@@ -311,7 +312,7 @@ describe('listTeamTasks', () => {
     const result = listTeamTasks('team-1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.tasks).toEqual([])
+    expect((result.data as any)?.tasks).toEqual([])
   })
 
   it('returns 404 when team not found', () => {
@@ -338,7 +339,7 @@ describe('createTeamTask', () => {
     const result = createTeamTask('team-1', { subject: 'Build API' })
 
     expect(result.status).toBe(201)
-    expect(result.data?.task.subject).toBe('Build API')
+    expect((result.data as any)?.task.subject).toBe('Build API')
   })
 
   it('passes all task fields to createTask', () => {
@@ -388,7 +389,7 @@ describe('createTeamTask', () => {
     const result = createTeamTask('team-1', { subject: '' })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/subject/i)
+    expect((result.data as ServiceError).message).toMatch(/subject/i)
   })
 
   it('returns 400 when subject is whitespace only', () => {
@@ -405,7 +406,7 @@ describe('createTeamTask', () => {
     const result = createTeamTask('team-1', { subject: 'X', blockedBy: [123 as any] })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/blockedBy/i)
+    expect((result.data as ServiceError).message).toMatch(/blockedBy/i)
   })
 
   it('returns 500 when createTask throws', () => {
@@ -431,8 +432,8 @@ describe('updateTeamTask', () => {
     const result = updateTeamTask('team-1', 't1', { status: 'completed' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.task.status).toBe('completed')
-    expect(result.data?.unblocked).toEqual([])
+    expect((result.data as any)?.task.status).toBe('completed')
+    expect((result.data as any)?.unblocked).toEqual([])
   })
 
   it('returns unblocked tasks', () => {
@@ -443,7 +444,7 @@ describe('updateTeamTask', () => {
 
     const result = updateTeamTask('team-1', 't1', { status: 'completed' })
 
-    expect(result.data?.unblocked).toHaveLength(1)
+    expect((result.data as any)?.unblocked).toHaveLength(1)
   })
 
   it('returns 404 when team not found', () => {
@@ -452,7 +453,7 @@ describe('updateTeamTask', () => {
     const result = updateTeamTask('nope', 't1', { subject: 'X' })
 
     expect(result.status).toBe(404)
-    expect(result.error).toMatch(/team/i)
+    expect((result.data as ServiceError).message).toMatch(/team/i)
   })
 
   it('returns 404 when task not found', () => {
@@ -462,7 +463,7 @@ describe('updateTeamTask', () => {
     const result = updateTeamTask('team-1', 'nope', { subject: 'X' })
 
     expect(result.status).toBe(404)
-    expect(result.error).toMatch(/task/i)
+    expect((result.data as ServiceError).message).toMatch(/task/i)
   })
 
   it('returns 400 for self-dependency', () => {
@@ -472,7 +473,7 @@ describe('updateTeamTask', () => {
     const result = updateTeamTask('team-1', 't1', { blockedBy: ['t1'] })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/itself/i)
+    expect((result.data as ServiceError).message).toMatch(/itself/i)
   })
 
   it('returns 400 for circular dependency', () => {
@@ -483,7 +484,7 @@ describe('updateTeamTask', () => {
     const result = updateTeamTask('team-1', 't1', { blockedBy: ['t2'] })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/circular/i)
+    expect((result.data as ServiceError).message).toMatch(/circular/i)
   })
 
   it('returns 400 for invalid status', () => {
@@ -493,7 +494,7 @@ describe('updateTeamTask', () => {
     const result = updateTeamTask('team-1', 't1', { status: 'invalid' as any })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/status/i)
+    expect((result.data as ServiceError).message).toMatch(/status/i)
   })
 
   it('accepts valid status values', () => {
@@ -550,7 +551,7 @@ describe('deleteTeamTask', () => {
     const result = deleteTeamTask('team-1', 't1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
+    expect((result.data as any)?.success).toBe(true)
   })
 
   it('returns 404 when team not found', () => {
@@ -584,7 +585,7 @@ describe('listTeamDocuments', () => {
     const result = listTeamDocuments('team-1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.documents).toHaveLength(2)
+    expect((result.data as any)?.documents).toHaveLength(2)
   })
 
   it('returns empty list when no documents', () => {
@@ -594,7 +595,7 @@ describe('listTeamDocuments', () => {
     const result = listTeamDocuments('team-1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.documents).toEqual([])
+    expect((result.data as any)?.documents).toEqual([])
   })
 
   it('returns 404 when team not found', () => {
@@ -619,7 +620,7 @@ describe('createTeamDocument', () => {
     const result = createTeamDocument('team-1', { title: 'New Doc' })
 
     expect(result.status).toBe(201)
-    expect(result.data?.document.title).toBe('New Doc')
+    expect((result.data as any)?.document.title).toBe('New Doc')
   })
 
   it('passes all fields to createDocument', () => {
@@ -662,7 +663,7 @@ describe('createTeamDocument', () => {
     const result = createTeamDocument('team-1', { title: '' })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/title/i)
+    expect((result.data as ServiceError).message).toMatch(/title/i)
   })
 
   it('returns 500 when createDocument throws', () => {
@@ -688,7 +689,7 @@ describe('getTeamDocument', () => {
     const result = getTeamDocument('team-1', 'doc-1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.document.title).toBe('Found')
+    expect((result.data as any)?.document.title).toBe('Found')
   })
 
   it('returns 404 when team not found', () => {
@@ -697,7 +698,7 @@ describe('getTeamDocument', () => {
     const result = getTeamDocument('nope', 'doc-1')
 
     expect(result.status).toBe(404)
-    expect(result.error).toMatch(/team/i)
+    expect((result.data as ServiceError).message).toMatch(/team/i)
   })
 
   it('returns 404 when document not found', () => {
@@ -707,7 +708,7 @@ describe('getTeamDocument', () => {
     const result = getTeamDocument('team-1', 'nope')
 
     expect(result.status).toBe(404)
-    expect(result.error).toMatch(/document/i)
+    expect((result.data as ServiceError).message).toMatch(/document/i)
   })
 })
 
@@ -723,7 +724,7 @@ describe('updateTeamDocument', () => {
     const result = updateTeamDocument('team-1', 'doc-1', { title: 'Updated' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.document.title).toBe('Updated')
+    expect((result.data as any)?.document.title).toBe('Updated')
   })
 
   it('passes only provided fields', () => {
@@ -770,7 +771,7 @@ describe('deleteTeamDocument', () => {
     const result = deleteTeamDocument('team-1', 'doc-1')
 
     expect(result.status).toBe(200)
-    expect(result.data?.success).toBe(true)
+    expect((result.data as any)?.success).toBe(true)
   })
 
   it('returns 404 when document not found', () => {
@@ -795,7 +796,7 @@ describe('notifyTeamAgents', () => {
     const result = await notifyTeamAgents({ agentIds: ['a1'], teamName: 'Team Alpha' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.results).toHaveLength(1)
+    expect((result.data as any)?.results).toHaveLength(1)
     expect(mockNotificationService.notifyAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'a1',
@@ -811,7 +812,7 @@ describe('notifyTeamAgents', () => {
     const result = await notifyTeamAgents({ agentIds: ['nonexistent'], teamName: 'Team' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.results[0]).toEqual(
+    expect((result.data as any)?.results[0]).toEqual(
       expect.objectContaining({ agentId: 'nonexistent', success: false, reason: 'Agent not found' })
     )
   })
@@ -826,7 +827,7 @@ describe('notifyTeamAgents', () => {
     const result = await notifyTeamAgents({ agentIds: ['a1', 'a2'], teamName: 'Team' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.results).toHaveLength(2)
+    expect((result.data as any)?.results).toHaveLength(2)
   })
 
   it('handles notification failure for an agent', async () => {
@@ -837,7 +838,7 @@ describe('notifyTeamAgents', () => {
     const result = await notifyTeamAgents({ agentIds: ['a1'], teamName: 'Team' })
 
     expect(result.status).toBe(200)
-    expect(result.data?.results[0]).toEqual(
+    expect((result.data as any)?.results[0]).toEqual(
       expect.objectContaining({ success: false })
     )
   })
@@ -846,7 +847,7 @@ describe('notifyTeamAgents', () => {
     const result = await notifyTeamAgents({ agentIds: null as any, teamName: 'Team' })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/agentIds/i)
+    expect((result.data as ServiceError).message).toMatch(/agentIds/i)
   })
 
   it('returns 400 when agentIds is not an array', async () => {
@@ -859,7 +860,7 @@ describe('notifyTeamAgents', () => {
     const result = await notifyTeamAgents({ agentIds: ['a1'], teamName: '' })
 
     expect(result.status).toBe(400)
-    expect(result.error).toMatch(/teamName/i)
+    expect((result.data as ServiceError).message).toMatch(/teamName/i)
   })
 
   it('returns 400 when teamName is not a string', async () => {

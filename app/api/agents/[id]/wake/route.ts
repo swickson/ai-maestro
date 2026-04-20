@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { wakeAgent } from '@/services/agents-core-service'
 import { getAgent } from '@/lib/agent-registry'
 import { isSelf } from '@/lib/hosts-config'
+import { toResponse } from '@/app/api/_helpers'
 
 /**
  * POST /api/agents/[id]/wake
@@ -81,9 +82,5 @@ export async function POST(
   }
 
   const result = await wakeAgent(id, { startProgram, sessionIndex, program, projectDirectory })
-
-  if (result.error) {
-    return NextResponse.json({ error: result.error }, { status: result.status })
-  }
-  return NextResponse.json(result.data)
+  return toResponse(result)
 }

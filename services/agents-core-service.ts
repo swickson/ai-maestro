@@ -60,19 +60,10 @@ import { getHosts, getSelfHost, getSelfHostId, isSelf } from '@/lib/hosts-config
 import { persistSession, unpersistSession } from '@/lib/session-persistence'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { initializeAllAgents, getStartupStatus } from '@/lib/agent-startup'
-import { sessionActivity } from '@/services/shared-state'
+import { sessionActivity, agentActivity } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
 import type { Host } from '@/types/host'
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface ServiceResult<T> {
-  data?: T
-  error?: string
-  status: number // HTTP-like status code for the route to use
-}
+import { type ServiceResult, missingField, notFound, invalidField, invalidRequest, operationFailed, gone, timeout } from '@/services/service-errors'
 
 interface DiscoveredSession {
   name: string
@@ -595,6 +586,14 @@ export async function listAgents(): Promise<ServiceResult<{
 
       const hasOnlineSession = updatedSessions.some(s => s.status === 'online')
 
+      // Check for standalone agent heartbeat (agents without tmux sessions)
+      const heartbeatTs = agentActivity.get(agent.id)
+      const heartbeatAge = heartbeatTs ? (Date.now() - heartbeatTs) / 1000 : Infinity
+      const hasRecentHeartbeat = heartbeatAge < 120 // 2 minutes
+      const isOnline = hasOnlineSession || hasRecentHeartbeat
+      // Standalone = no tmux sessions discovered AND not a cloud agent
+      const isStandalone = agentSessions.length === 0 && agent.deployment?.type !== 'cloud'
+
       // Create session status for API response (backward compatibility)
       const onlineSession = updatedSessions.find(s => s.status === 'online')
       const primarySession = updatedSessions.find(s => s.index === 0) || updatedSessions[0]
@@ -611,19 +610,29 @@ export async function listAgents(): Promise<ServiceResult<{
             hostId,
             hostName,
           }
+        : hasRecentHeartbeat
+        ? {
+            status: 'online',
+            workingDirectory: agent.workingDirectory || primarySession?.workingDirectory,
+            lastActivity: new Date(heartbeatTs!).toISOString(),
+            hostId,
+            hostName,
+            standalone: true,
+          }
         : {
             status: 'offline',
             workingDirectory: agent.workingDirectory || primarySession?.workingDirectory,
             hostId,
             hostName,
+            ...(isStandalone && { standalone: true }),
           }
 
       const updatedAgent: Agent = {
         ...agent,
         name: agentName,
         sessions: updatedSessions,
-        status: hasOnlineSession ? 'active' : 'offline',
-        lastActive: hasOnlineSession ? new Date().toISOString() : agent.lastActive,
+        status: isOnline ? 'active' : 'offline',
+        lastActive: isOnline ? new Date().toISOString() : agent.lastActive,
       }
 
       resultAgents.push(mergeAgentWithSession(updatedAgent, sessionStatus, hostId, hostName, hostUrl, false))
@@ -707,7 +716,7 @@ export async function listAgents(): Promise<ServiceResult<{
     }
   } catch (error) {
     console.error('[Agents] Failed to fetch agents:', error)
-    return { error: 'Failed to fetch agents', status: 500 }
+    return operationFailed('fetch agents', (error as Error).message)
   }
 }
 
@@ -729,9 +738,8 @@ export function createNewAgent(body: CreateAgentRequest): ServiceResult<{ agent:
     const agent = createAgent(body)
     return { data: { agent }, status: 201 }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to create agent'
     console.error('Failed to create agent:', error)
-    return { error: message, status: 400 }
+    return invalidRequest((error as Error).message || 'Failed to create agent')
   }
 }
 
@@ -743,12 +751,12 @@ export function getAgentById(id: string): ServiceResult<{ agent: Agent }> {
   try {
     const agent = getAgent(id)
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', id)
     }
     return { data: { agent }, status: 200 }
   } catch (error) {
     console.error('Failed to get agent:', error)
-    return { error: 'Failed to get agent', status: 500 }
+    return operationFailed('get agent', (error as Error).message)
   }
 }
 
@@ -761,22 +769,21 @@ export function updateAgentById(id: string, body: UpdateAgentRequest): ServiceRe
     // Check if agent exists and is not soft-deleted
     const existing = getAgent(id, true) // include deleted to distinguish 404 vs 410
     if (!existing) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', id)
     }
     if (existing.deletedAt) {
-      return { error: 'Cannot update a deleted agent', status: 410 }
+      return gone('Agent')
     }
 
     const agent = updateAgent(id, body)
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', id)
     }
 
     return { data: { agent }, status: 200 }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to update agent'
     console.error('Failed to update agent:', error)
-    return { error: message, status: 400 }
+    return invalidRequest((error as Error).message || 'Failed to update agent')
   }
 }
 
@@ -788,22 +795,21 @@ export function deleteAgentById(id: string, hard: boolean): ServiceResult<{ succ
   try {
     const agent = getAgent(id, true) // include deleted to distinguish 404 vs 410
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', id)
     }
     if (agent.deletedAt && !hard) {
-      // Return 410 with extra context: already deleted
-      return { error: 'Agent already deleted', status: 410 }
+      return gone('Agent')
     }
 
     const success = deleteAgent(id, hard)
     if (!success) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', id)
     }
 
     return { data: { success: true, hard }, status: 200 }
   } catch (error) {
     console.error('Failed to delete agent:', error)
-    return { error: 'Failed to delete agent', status: 500 }
+    return operationFailed('delete agent', (error as Error).message)
   }
 }
 
@@ -828,7 +834,7 @@ export function registerAgent(body: RegisterAgentParams): ServiceResult<{
       const { sessionName, workingDirectory } = body
 
       if (!sessionName) {
-        return { error: 'Missing required field: sessionName', status: 400 }
+        return missingField('sessionName')
       }
 
       agentId = sessionName.replace(/[^a-zA-Z0-9_-]/g, '-')
@@ -869,7 +875,7 @@ export function registerAgent(body: RegisterAgentParams): ServiceResult<{
     } else {
       // Full agent config format (cloud agents)
       if (!body.id || !body.deployment?.cloud?.websocketUrl) {
-        return { error: 'Missing required fields: id and websocketUrl', status: 400 }
+        return missingField('id and websocketUrl')
       }
 
       agentId = body.id
@@ -898,10 +904,7 @@ export function registerAgent(body: RegisterAgentParams): ServiceResult<{
     }
   } catch (error) {
     console.error('Failed to register agent:', error)
-    return {
-      error: `Failed to register agent: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      status: 500,
-    }
+    return operationFailed('register agent', (error as Error).message)
   }
 }
 
@@ -947,7 +950,7 @@ export function lookupAgentByName(name: string): ServiceResult<{
     }
   } catch (error) {
     console.error('[Agent Lookup] Error:', error)
-    return { data: { exists: false }, status: 500 }
+    return operationFailed('lookup agent', error instanceof Error ? error.message : 'Internal server error')
   }
 }
 
@@ -1129,7 +1132,7 @@ export async function getAgentSessionStatus(agentId: string): Promise<ServiceRes
   try {
     const agent = getAgent(agentId)
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentId)
     }
 
     const sessionName = agent.name || agent.alias
@@ -1169,10 +1172,7 @@ export async function getAgentSessionStatus(agentId: string): Promise<ServiceRes
     }
   } catch (error) {
     console.error('[Agent Session] Error:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      status: 500,
-    }
+    return operationFailed('get session status', (error as Error).message)
   }
 }
 
@@ -1185,19 +1185,18 @@ export function linkAgentSession(agentId: string, params: LinkSessionParams): Se
     const { sessionName, workingDirectory } = params
 
     if (!sessionName) {
-      return { error: 'sessionName is required', status: 400 }
+      return missingField('sessionName')
     }
 
     const success = linkSession(agentId, sessionName, workingDirectory || process.cwd())
     if (!success) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentId)
     }
 
     return { data: { success: true }, status: 200 }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to link session'
     console.error('Failed to link session:', error)
-    return { error: message, status: 400 }
+    return invalidRequest((error as Error).message || 'Failed to link session')
   }
 }
 
@@ -1223,23 +1222,23 @@ export async function sendAgentSessionCommand(
     const { command, requireIdle = true, addNewline = true } = params
 
     if (!command || typeof command !== 'string') {
-      return { error: 'Command is required', status: 400 }
+      return missingField('command')
     }
 
     const agent = getAgent(agentId)
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentId)
     }
 
     const sessionName = agent.name || agent.alias
     if (!sessionName) {
-      return { error: 'Agent has no name configured', status: 400 }
+      return invalidField('name', 'Agent has no name configured')
     }
 
     const runtime = getRuntime()
     const exists = await runtime.sessionExists(sessionName)
     if (!exists) {
-      return { error: 'Tmux session not found', status: 404 }
+      return notFound('Tmux session', sessionName)
     }
 
     if (requireIdle && !isSessionIdle(sessionName)) {
@@ -1252,7 +1251,6 @@ export async function sendAgentSessionCommand(
           timeSinceActivity,
           idleThreshold: IDLE_THRESHOLD_MS,
         },
-        error: 'Session is not idle',
         status: 409,
       }
     }
@@ -1276,10 +1274,7 @@ export async function sendAgentSessionCommand(
     }
   } catch (error) {
     console.error('[Agent Session Command] Error:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      status: 500,
-    }
+    return operationFailed('send session command', (error as Error).message)
   }
 }
 
@@ -1302,7 +1297,7 @@ export async function unlinkOrDeleteAgentSession(
 
     const agent = getAgent(agentId)
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentId)
     }
 
     const runtime = getRuntime()
@@ -1321,7 +1316,7 @@ export async function unlinkOrDeleteAgentSession(
       // Hard delete with backup
       const success = deleteAgent(agentId, true)
       if (!success) {
-        return { error: 'Failed to delete agent', status: 500 }
+        return operationFailed('delete agent')
       }
 
       return {
@@ -1346,7 +1341,7 @@ export async function unlinkOrDeleteAgentSession(
 
     const success = unlinkSession(agentId)
     if (!success) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentId)
     }
 
     return {
@@ -1360,7 +1355,7 @@ export async function unlinkOrDeleteAgentSession(
     }
   } catch (error) {
     console.error('Failed to unlink/delete session:', error)
-    return { error: 'Failed to unlink session', status: 500 }
+    return operationFailed('unlink session', (error as Error).message)
   }
 }
 
@@ -1388,18 +1383,15 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
     // Check including soft-deleted to give a better error message (410 Gone vs 404)
     const agent = getAgent(agentId, true)
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentId)
     }
     if (agent.deletedAt) {
-      return {
-        error: `Agent was deleted on ${new Date(agent.deletedAt).toLocaleDateString()}. Restore from backup or create a new agent.`,
-        status: 410
-      }
+      return gone('Agent')
     }
 
     const agentName = agent.name || agent.alias
     if (!agentName) {
-      return { error: 'Agent has no name configured', status: 400 }
+      return invalidField('name', 'Agent has no name configured')
     }
 
     const workingDirectory = agent.workingDirectory ||
@@ -1432,9 +1424,8 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
     try {
       await runtime.createSession(sessionName, workingDirectory)
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      console.error(`[Wake] Failed to create tmux session:`, detail)
-      return { error: `Failed to create tmux session: ${detail}`, status: 500 }
+      console.error(`[Wake] Failed to create tmux session:`, error)
+      return operationFailed('create tmux session', (error as Error).message)
     }
 
     // Persist session metadata
@@ -1525,10 +1516,7 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
     }
   } catch (error) {
     console.error('[Wake] Error:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Failed to wake agent',
-      status: 500,
-    }
+    return operationFailed('wake agent', (error as Error).message)
   }
 }
 
@@ -1550,12 +1538,12 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
 
     const agent = getAgent(agentId)
     if (!agent) {
-      return { error: 'Agent not found', status: 404 }
+      return notFound('Agent', agentId)
     }
 
     const agentName = agent.name || agent.alias
     if (!agentName) {
-      return { error: 'Agent has no name configured', status: 400 }
+      return invalidField('name', 'Agent has no name configured')
     }
 
     const runtime = getRuntime()
@@ -1619,10 +1607,7 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
     }
   } catch (error) {
     console.error('[Hibernate] Error:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Failed to hibernate agent',
-      status: 500,
-    }
+    return operationFailed('hibernate agent', (error as Error).message)
   }
 }
 
@@ -1652,10 +1637,7 @@ export async function initializeStartup(): Promise<ServiceResult<{
     }
   } catch (error) {
     console.error('[Startup] Error:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      status: 500,
-    }
+    return operationFailed('initialize startup', (error as Error).message)
   }
 }
 
@@ -1669,10 +1651,7 @@ export function getStartupInfo(): ServiceResult<any> {
     return { data: { success: true, ...status }, status: 200 }
   } catch (error) {
     console.error('[Startup] Error:', error)
-    return {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      status: 500,
-    }
+    return operationFailed('get startup info', (error as Error).message)
   }
 }
 
@@ -1683,7 +1662,7 @@ export function getStartupInfo(): ServiceResult<any> {
 export async function proxyHealthCheck(url: string): Promise<ServiceResult<any>> {
   try {
     if (!url || typeof url !== 'string') {
-      return { error: 'URL is required', status: 400 }
+      return missingField('url')
     }
 
     const controller = new AbortController()
@@ -1696,18 +1675,15 @@ export async function proxyHealthCheck(url: string): Promise<ServiceResult<any>>
     clearTimeout(timeoutId)
 
     if (!response.ok) {
-      return { error: `Agent returned HTTP ${response.status}`, status: response.status }
+      return operationFailed('health check', `Agent returned HTTP ${response.status}`)
     }
 
     const data = await response.json()
     return { data, status: 200 }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      return { error: 'Timeout connecting to agent', status: 504 }
+      return timeout('Timeout connecting to agent')
     }
-    return {
-      error: `Failed to connect to agent: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      status: 500,
-    }
+    return operationFailed('connect to agent', (error as Error).message)
   }
 }

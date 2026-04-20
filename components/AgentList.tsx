@@ -511,7 +511,7 @@ export default function AgentList({
 
       if (!response.ok) {
         const data = await response.json()
-        throw new Error(data.error || 'Failed to hibernate agent')
+        throw new Error(data.message || data.error || 'Failed to hibernate agent')
       }
 
       // Refresh the agent list to show updated status
@@ -559,7 +559,7 @@ export default function AgentList({
 
       if (!response.ok) {
         const data = await response.json()
-        throw new Error(data.error || 'Failed to wake agent')
+        throw new Error(data.message || data.error || 'Failed to wake agent')
       }
 
       // Close dialog and refresh the agent list
@@ -652,7 +652,7 @@ export default function AgentList({
 
       if (!response.ok) {
         const data = await response.json()
-        throw new Error(data.error || 'Failed to move agent')
+        throw new Error(data.message || data.error || 'Failed to move agent')
       }
 
       // Refresh the agent list to show updated position
@@ -681,7 +681,7 @@ export default function AgentList({
 
       if (!response.ok) {
         const data = await response.json()
-        throw new Error(data.error || 'Failed to create agent')
+        throw new Error(data.message || data.error || 'Failed to create agent')
       }
 
       return true // Success - modal will handle showing celebration
@@ -2082,7 +2082,7 @@ function CreateAgentAdvancedModal({
 
         if (!response.ok) {
           const data = await response.json()
-          throw new Error(data.error || 'Failed to create Docker agent')
+          throw new Error(data.message || data.error || 'Failed to create Docker agent')
         }
 
         setCreationSuccess(true)
