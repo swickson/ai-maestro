@@ -7,6 +7,7 @@ import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
 import { lookupAgentById } from '@/lib/agent-directory'
 import { enqueueForSession, shouldUseAdditionalContext } from '@/lib/meeting-inject-queue'
+import { stripAvatarPaths } from '@/lib/meeting-inject-utils'
 
 /**
  * Inject a meeting chat prompt into an agent's tmux session.
@@ -190,7 +191,7 @@ export async function POST(
         if (contextMessages.length > 0) {
           const lines = contextMessages.map(m => {
             const role = m.fromType === 'human' ? '👤' : '🤖'
-            return `  ${role} ${m.fromAlias}: ${m.message.slice(0, 200)}`
+            return `  ${role} ${m.fromAlias}: ${stripAvatarPaths(m.message).slice(0, 200)}`
           })
           let contextText = lines.join('\n')
           if (contextText.length > 2000) {
@@ -230,12 +231,16 @@ export async function POST(
               agentLabel = session?.name || agentId.slice(0, 8)
             }
           }
+          const kanbanLine = meeting.teamId
+            ? `Task Kanban available for this team — meeting-task.sh {create|update|move|list} ${meeting.teamId} ... --host ${meetingHostUrl}`
+            : ''
           const prompt = [
             `[Meeting: ${meeting.name}]`,
             contextBlock,
-            `${senderName} says: ${body.message}`,
+            `${senderName} says: ${stripAvatarPaths(body.message as string)}`,
             '',
             `Reply by running: meeting-send.sh ${meetingId} "YOUR_REPLY" --from "${agentId}" --alias "${agentLabel}" --host ${meetingHostUrl}`,
+            ...(kanbanLine ? [kanbanLine] : []),
           ].join('\n')
           // Phase 4: Fire-and-forget — handles local + remote injection
           injectMeetingPrompt(agentId, prompt).catch(err => {
