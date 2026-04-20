@@ -32,10 +32,13 @@ export async function POST(request: NextRequest) {
       }
 
       // Hybrid path (flag-gated per agent kind): enqueue as structured context
-      // and wake-ping with bare Enter. Hook drains on next idle_prompt.
+      // and wake-ping with "." + Enter (bare Enter was a no-op in Claude Code).
+      // Hook drains on the resulting UserPromptSubmit.
       const agent = getAgentBySession(sessionName)
       if (agent && shouldUseAdditionalContext(agent.program)) {
         enqueueForSession(sessionName, body.injection)
+        await runtime.sendKeys(sessionName, '.', { literal: true, enter: false })
+        await new Promise(r => setTimeout(r, 100))
         await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
         console.log(`[API] /api/agents/notify: queued + wake-pinged ${sessionName} (${agent.program})`)
         return NextResponse.json({ success: true, queued: true })

@@ -72,11 +72,15 @@ async function injectMeetingPrompt(
     if (!exists) return
 
     // Hybrid path (flag-gated per agent kind): enqueue the prompt as structured
-    // context and fire a bare-Enter wake-ping. The agent's hook drains the
-    // queue on the next idle_prompt / SessionStart and delivers the payload as
-    // additionalContext — never through the shell, so '!' and friends survive.
+    // context and fire a minimal wake-ping ("." + Enter). The agent's hook
+    // drains the queue on the resulting UserPromptSubmit and delivers the
+    // payload as additionalContext — never through the shell, so '!' and
+    // friends survive. Bare Enter was a no-op in Claude Code (empty prompts
+    // aren't submitted); "." forces a real prompt cycle.
     if (agent && shouldUseAdditionalContext(agent.program)) {
       enqueueForSession(sessionName, prompt)
+      await runtime.sendKeys(sessionName, '.', { literal: true, enter: false })
+      await new Promise(r => setTimeout(r, 100))
       await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
       console.log(`[MeetingChat] Queued prompt + wake-pinged local agent ${agentName} (${agent.program})`)
       return
