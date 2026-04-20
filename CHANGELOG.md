@@ -3,6 +3,72 @@
 All notable changes to AI Maestro are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.29.8] - 2026-04-17
+
+### Fixed
+- **Terminal content no longer appears "cut off" during active output** — Removed server-side PTY pause/resume backpressure in `server.mjs` that was adding artificial delays between chunks. When tmux redraws the screen (cursor/clear sequences followed by content), these delays made intermediate "cleared" states visible. xterm.js already batches writes via `requestAnimationFrame`, so chunks now flow at their natural rate and render atomically within a single frame.
+- **Synchronized Output passthrough for tmux** — Updated `scripts/setup-tmux.sh` to set `default-terminal` to `tmux-256color` (was `screen-256color`) and added `terminal-features` with `sync` flag. This enables DEC mode 2026 (Synchronized Output) passthrough so xterm.js can defer rendering until the end-of-update sequence, making screen redraws truly atomic. Both tmux 3.6a and xterm.js 6.0.0 support this — it just wasn't configured.
+
+## [0.29.3] - 2026-04-17
+
+### Fixed
+- **Standalone agents now visible in dashboard sidebar** — The sidebar uses `/api/agents` (agents-core-service), not `/api/sessions`. Heartbeat data was only integrated into the sessions endpoint. Now `listAgents()` checks the `agentActivity` heartbeat map so standalone agents show as online with `session.standalone: true`.
+- **Heartbeat ID resolution** — The heartbeat function now resolves agent identifiers by both UUID and name, fixing a mismatch where heartbeats stored under the agent name couldn't be found by UUID lookup in `listAgents()`.
+- **Standalone agent terminal view** — Clicking a standalone agent no longer attempts a WebSocket/tmux connection. The dashboard shows a "Standalone Agent" placeholder explaining the agent runs outside tmux. This applies whether the agent is online (recent heartbeat) or offline (expired heartbeat).
+- **Persistent standalone flag** — Agents with no tmux sessions and no cloud deployment are marked `standalone: true` even when offline, preventing the "Start Session" prompt for agents that were never meant to have a terminal.
+
+## [0.29.2] - 2026-04-16
+
+### Added
+- **Standalone agent presence** — Agents that run outside of tmux (plain terminal, API-only, remote hosts) can now appear live in the dashboard via a heartbeat mechanism. New `POST /api/agents/:id/heartbeat` endpoint lets any agent announce itself periodically. The dashboard discovers standalone agents alongside tmux sessions, Docker containers, and cloud deployments. Agents with a recent heartbeat (< 2 min) show in the sidebar; stale heartbeats auto-expire.
+- **Hook-based heartbeat for Claude Code** — The AI Maestro hook now sends a heartbeat on every event (SessionStart, Stop, Notification), so Claude Code sessions automatically register their presence even when running outside tmux. The hook also sends `agentId` alongside `sessionName` in status broadcasts for more precise activity tracking.
+- **`agentActivity` shared state** — New in-memory Map tracking standalone agent heartbeat timestamps, shared between server.mjs and API routes via the existing globalThis bridge pattern.
+- **Client-side activity by agentId** — The `useSessionActivity` hook now indexes activity updates by both `sessionName` and `agentId`, and `getSessionActivity()` accepts an optional `agentId` parameter for standalone agent lookups.
+- **`standalone` flag on Session type** — Sessions discovered via heartbeat carry `standalone: true` so the UI can distinguish them from tmux/Docker/cloud sessions.
+
+### Fixed
+- **Hook directory matching bug** — Removed `agentWd.startsWith(cwd + '/')` from all 3 hook copies. This condition caused a parent directory agent to incorrectly match when running from any child directory (e.g., agent in `/project` would match cwd `/project-tools`). Only exact matches and "cwd is inside agent's directory" now count.
+
+## [0.29.1] - 2026-04-16
+
+### Fixed
+- **Push notifications now wake Claude reliably** — Real-time AMP inbox notifications previously required the operator to manually click Enter in each agent's terminal before the agent would process the message. Root cause: the tmux `send-keys -l '<text>' \; send-keys C-m` chain delivered the text and the Enter in the same tmux tick, so Claude Code's input handler could receive the submit in the same batch as the text — before the input field had updated — and lose the submit. `lib/notification-service.ts` now splits the text and the Enter into two separate `send-keys` calls with a 150ms shell-level delay between them, so agents process inbound messages without operator intervention.
+
+## [0.29.0] - 2026-04-16
+
+### Added
+- **Unified API error format** — All API error responses across the codebase now follow the AMP protocol format: `{ error: 'code', message: 'Human text', field?, details? }`. One consistent shape for all 106 route handlers. (#285, #327 — thanks @mvillmow for the original report)
+- **`services/service-errors.ts`** — Single source of truth for `ServiceResult<T>`, `ServiceError`, and `ServiceErrorCode` (30 codes: AMP's 18 + 12 generic). Ships 20+ factory functions (`missingField`, `notFound`, `operationFailed`, `alreadyExists`, `gone`, `invalidState`, etc.) and validation helpers (`requireString`, `requireArray`, `requireNameFormat`).
+- **`app/api/_helpers.ts`** — `toResponse()` turns any `ServiceResult` into a `NextResponse` with consistent error formatting.
+
+### Changed
+- **25 service files** migrated to shared `ServiceResult` and factories (~305 error returns standardized).
+- **88 route files** converted to thin wrappers: `return toResponse(result)`.
+- **25 component files** updated to read `data.message || data.error` for backward-compatible error display.
+- **5 test files** updated (49 assertions now match structured `ServiceError` shape).
+- **`lib/types/amp.ts`** refactored: `AMPErrorCode` is now `Extract<ServiceErrorCode, ...>`, `AMPError extends ServiceError`. `AMPNameTakenError` interface corrected to match runtime shape (`details.suggestions`).
+- **`services/headless-router.ts`** — `sendServiceResult()` mirrors `toResponse()` for headless mode.
+- Net change: **154 files, +1,365 / −1,977 = −612 lines** despite adding the new foundation.
+
+### Fixed
+- `preconditionFailed()` factory now returns **412** (was 400).
+- `lookupAgentByName` and `lookupAgentByDirectoryName` catch blocks now propagate real errors via `operationFailed()` instead of silently swallowing failures.
+- `toResponse()` defensive fallback preserves caller's 4xx status instead of always overriding to 500.
+
+## [0.27.0] - 2026-04-14
+
+### Added
+- **Multi-agent hook support** — AMP inbox notifications now work across Claude Code, Codex CLI, and Gemini CLI. Hook script auto-detects which AI agent is calling it and returns the correct response format (`additionalContext` for Claude, `systemMessage` for Codex/Gemini; normalizes Gemini's `AfterAgent` → `Stop`). Installer auto-detects installed agents and writes hook configs for each, enabling `codex_hooks = true` in Codex's `config.toml`. (#324)
+- **Claude Code `additionalContext` for inbox notifications** — Replaced broken tmux `send-keys` notification with Claude Code's native `additionalContext` hook response. Agents now receive inbox notifications as system reminders injected into their conversation context instead of having text typed into their TUI input field. Added standalone fallback via `amp-inbox.sh --count` so notifications still work when AI Maestro is down. (#321, #322, #323)
+
+### Changed
+- Removed `sendMessageNotification()` (broken tmux send-keys approach) in favor of hook-based `additionalContext` injection.
+
+## [0.26.6] - 2026-04-06
+
+### Fixed
+- **macOS hostname drift in mesh identity** — `isSelf()` now checks cached aliases so machines retain mesh identity after the OS hostname changes. Two-pass lookup (hostname first, then IP alias with exactly-one-match guard) prevents DHCP false positives from claiming remote hosts as self. (#318, #320)
+
 ## [0.26.5] - 2026-03-25
 
 ### Added
