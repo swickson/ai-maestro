@@ -184,7 +184,30 @@ async function checkUnreadMessagesStandalone() {
     }
 }
 
-// Drain any queued meeting messages for the agent bound to this cwd.
+// Resolve the agent for this hook invocation.
+// Priority: AIM_AGENT_ID env (exact) → AIM_AGENT_NAME env (exact) → cwd exact match.
+// The env vars are set by lib/agent-runtime.ts via `tmux set-environment` on every
+// agent session and propagate to child processes (Claude + its hooks). Cwd fallback
+// only fires for non-tmux launches, and uses exact equality to avoid the
+// collision/startsWith bug where multiple agents share a working directory.
+function resolveAgent(cwd, agents) {
+    const envId = process.env.AIM_AGENT_ID;
+    if (envId) {
+        const byId = agents.find(a => a.id === envId);
+        if (byId) return byId;
+    }
+    const envName = process.env.AIM_AGENT_NAME;
+    if (envName) {
+        const byName = agents.find(a => a.name === envName);
+        if (byName) return byName;
+    }
+    return agents.find(a => {
+        const agentWd = a.workingDirectory || a.session?.workingDirectory;
+        return agentWd && agentWd === cwd;
+    }) || null;
+}
+
+// Drain any queued meeting messages for the agent bound to this hook invocation.
 // Returns a formatted context string (joined by blank lines) or null if empty.
 // Uses the session name as the queue key — matches how the meeting server
 // keys injections. See lib/meeting-inject-queue.ts.
@@ -194,14 +217,7 @@ async function drainMeetingInjectQueue(cwd) {
         if (!agentsResponse.ok) return null;
 
         const agentsData = await agentsResponse.json();
-        const agent = (agentsData.agents || []).find(a => {
-            const agentWd = a.workingDirectory || a.session?.workingDirectory;
-            if (!agentWd) return false;
-            if (agentWd === cwd) return true;
-            if (cwd.startsWith(agentWd + '/')) return true;
-            if (agentWd.startsWith(cwd + '/')) return true;
-            return false;
-        });
+        const agent = resolveAgent(cwd, agentsData.agents || []);
         if (!agent) return null;
 
         const sessionName = agent.name || agent.alias || agent.session?.tmuxSessionName;
@@ -233,30 +249,11 @@ function mergeContexts(...parts) {
 // Check for unread messages for this agent
 async function checkUnreadMessages(cwd) {
     try {
-        // Find agent by working directory
         const agentsResponse = await fetch('http://localhost:23000/api/agents');
         if (!agentsResponse.ok) return null;
 
         const agentsData = await agentsResponse.json();
-        const agents = agentsData.agents || [];
-
-        // Find agent matching this working directory
-        // Check exact match first, then check if cwd is within the agent's directory or vice versa
-        const agent = agents.find(a => {
-            const agentWd = a.workingDirectory || a.session?.workingDirectory;
-            if (!agentWd) return false;
-
-            // Exact match
-            if (agentWd === cwd) return true;
-
-            // cwd is subdirectory of agent's working directory
-            if (cwd.startsWith(agentWd + '/')) return true;
-
-            // Agent's working directory is subdirectory of cwd
-            if (agentWd.startsWith(cwd + '/')) return true;
-
-            return false;
-        });
+        const agent = resolveAgent(cwd, agentsData.agents || []);
 
         if (!agent) {
             debugLog({ event: 'no_agent_for_cwd', cwd });
