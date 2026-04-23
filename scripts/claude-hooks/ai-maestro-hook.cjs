@@ -47,19 +47,11 @@ function hashCwd(cwd) {
 // Broadcast status update via WebSocket (non-blocking)
 async function broadcastStatusUpdate(cwd, state) {
     try {
-        // Find the session name for this working directory
         const agentsResponse = await fetch('http://localhost:23000/api/agents');
         if (!agentsResponse.ok) return;
 
         const agentsData = await agentsResponse.json();
-        const agent = (agentsData.agents || []).find(a => {
-            const agentWd = a.workingDirectory || a.session?.workingDirectory;
-            if (!agentWd) return false;
-            if (agentWd === cwd) return true;
-            if (cwd.startsWith(agentWd + '/')) return true;
-            if (agentWd.startsWith(cwd + '/')) return true;
-            return false;
-        });
+        const agent = resolveAgent(cwd, agentsData.agents || []);
 
         if (!agent) return;
 
@@ -194,12 +186,18 @@ function resolveAgent(cwd, agents) {
     const envId = process.env.AIM_AGENT_ID;
     if (envId) {
         const byId = agents.find(a => a.id === envId);
-        if (byId) return byId;
+        if (byId) {
+            debugLog({ event: 'resolved_agent_from_env', source: 'id', value: envId });
+            return byId;
+        }
     }
     const envName = process.env.AIM_AGENT_NAME;
     if (envName) {
         const byName = agents.find(a => a.name === envName);
-        if (byName) return byName;
+        if (byName) {
+            debugLog({ event: 'resolved_agent_from_env', source: 'name', value: envName });
+            return byName;
+        }
     }
     return agents.find(a => {
         const agentWd = a.workingDirectory || a.session?.workingDirectory;
