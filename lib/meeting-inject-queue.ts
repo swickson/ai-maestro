@@ -83,8 +83,28 @@ export function shouldUseAdditionalContext(program: string | undefined): boolean
 // so any line that happens to begin with `!` corrupts the session.
 //
 // Narrow fix: prefix a space before any `!` at line-start so it becomes
-// literal text. Follow-up #TBD tracks the proper fix (tmux bracketed paste
-// mode so the whole payload arrives as one atomic input, no interior Enters).
+// literal text. Belt-and-suspenders even with bracketed-paste wrap below —
+// if the paste boundaries were ever dropped by an intermediary terminal, the
+// sanitizer still prevents the worst corruption mode.
 export function sanitizeForRawInject(text: string): string {
   return text.replace(/(^|\n)!/g, '$1 !')
+}
+
+// ─── Bracketed-paste wrap ───────────────────────────────────────────────────
+// Codex CLI (and likely other Rust TUIs) keep DEC 2004 bracketed-paste mode on.
+// Without explicit paste markers tmux auto-wraps multi-byte send-keys, but the
+// close vs our trailing Enter is a race: on larger payloads the Enter can
+// land inside Codex's still-open paste-receive window and get absorbed as
+// paste content, so no submit fires. Observable symptom: the meeting body
+// sits staged on Codex's input line (pagination hides most of it) and only a
+// manual keystroke submits it. See swickson/ai-maestro#49 for the probe trace.
+//
+// Fix: frame the body with ESC[200~ / ESC[201~ ourselves. Codex sees an
+// atomic paste, closes its window the moment it reads 201~, and our Enter
+// then lands cleanly as a submit keystroke outside any paste context.
+const PASTE_START = '\x1b[200~'
+const PASTE_END = '\x1b[201~'
+
+export function wrapAsBracketedPaste(text: string): string {
+  return `${PASTE_START}${text}${PASTE_END}`
 }

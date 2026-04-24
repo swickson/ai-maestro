@@ -7,6 +7,7 @@ import {
   inferKindFromProgram,
   shouldUseAdditionalContext,
   sanitizeForRawInject,
+  wrapAsBracketedPaste,
 } from '@/lib/meeting-inject-queue'
 
 describe('meeting-inject-queue', () => {
@@ -143,6 +144,30 @@ describe('meeting-inject-queue', () => {
 
     it('is a no-op on empty input', () => {
       expect(sanitizeForRawInject('')).toBe('')
+    })
+  })
+
+  describe('wrapAsBracketedPaste', () => {
+    const START = '\x1b[200~'
+    const END = '\x1b[201~'
+
+    it('wraps plain text in ESC[200~ ... ESC[201~', () => {
+      expect(wrapAsBracketedPaste('hello')).toBe(`${START}hello${END}`)
+    })
+
+    it('preserves multi-line content verbatim inside the wrap', () => {
+      const body = '[Meeting: X]\nalice says: hi\n\nReply by running: ...'
+      expect(wrapAsBracketedPaste(body)).toBe(`${START}${body}${END}`)
+    })
+
+    it('wraps empty input as an empty paste block', () => {
+      expect(wrapAsBracketedPaste('')).toBe(`${START}${END}`)
+    })
+
+    it('composes with sanitizeForRawInject (wrap of sanitized text)', () => {
+      const input = '!cmd\n!trigger'
+      const sanitized = sanitizeForRawInject(input)
+      expect(wrapAsBracketedPaste(sanitized)).toBe(`${START} !cmd\n !trigger${END}`)
     })
   })
 })

@@ -6,7 +6,7 @@ import { routeMessage } from '@/lib/meeting-router'
 import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
 import { lookupAgentById } from '@/lib/agent-directory'
-import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject } from '@/lib/meeting-inject-queue'
+import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject, wrapAsBracketedPaste } from '@/lib/meeting-inject-queue'
 import { stripAvatarPaths } from '@/lib/meeting-inject-utils'
 
 /**
@@ -86,12 +86,13 @@ async function injectMeetingPrompt(
       return
     }
 
-    // Legacy path: send full text via tmux send-keys.
-    // Split text and Enter with 500ms delay — long injections need time
-    // to finish writing before Enter fires (same fix as remote notify endpoint).
-    // Sanitize line-start `!` so Gemini/Claude/IPython shell-escape mode doesn't
-    // swallow the injection mid-stream.
-    const safePrompt = sanitizeForRawInject(prompt)
+    // Legacy path: send full text via tmux send-keys, framed as an explicit
+    // bracketed-paste block. The sanitizer handles line-start `!` as a last-
+    // line-of-defense; wrapAsBracketedPaste adds ESC[200~/ESC[201~ so Codex
+    // (and other DEC 2004 TUIs) close their paste-receive window on the
+    // explicit 201~ marker before the Enter keystroke lands. The 500ms delay
+    // still covers tmux write-flush for large payloads on slow hosts.
+    const safePrompt = wrapAsBracketedPaste(sanitizeForRawInject(prompt))
     await runtime.sendKeys(sessionName, safePrompt, { literal: true, enter: false })
     await new Promise(r => setTimeout(r, 500))
     await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
