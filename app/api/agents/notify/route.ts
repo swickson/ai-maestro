@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { notifyAgent } from '@/lib/notification-service'
 import { getRuntime } from '@/lib/agent-runtime'
-import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject } from '@/lib/meeting-inject-queue'
+import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject, wrapAsBracketedPaste } from '@/lib/meeting-inject-queue'
 import { getAgentBySession } from '@/lib/agent-registry'
 
 /**
@@ -44,12 +44,13 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: true, queued: true })
       }
 
-      // Legacy path: send the injection text, then wait before sending Enter.
-      // Long injections (1000+ chars with conversation context) need time
-      // to finish writing to tmux before Enter fires, especially over network hops.
-      // Sanitize line-start `!` so Gemini/Claude/IPython shell-escape mode doesn't
-      // swallow the injection mid-stream.
-      const safeInjection = sanitizeForRawInject(String(body.injection))
+      // Legacy path: send the injection as an explicit bracketed-paste block
+      // (ESC[200~…ESC[201~) so Codex/Gemini close their paste-receive window
+      // on the 201~ marker before our trailing Enter lands. Without the
+      // explicit wrap, tmux's auto-paste-wrap raced with the Enter on larger
+      // payloads and the Enter got absorbed into the paste body. 500ms still
+      // covers tmux write-flush for multi-KB payloads on slow hosts.
+      const safeInjection = wrapAsBracketedPaste(sanitizeForRawInject(String(body.injection)))
       await runtime.sendKeys(sessionName, safeInjection, { literal: true, enter: false })
       await new Promise(r => setTimeout(r, 500))
       await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
