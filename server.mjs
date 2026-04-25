@@ -933,8 +933,11 @@ async function startServer(handleRequest) {
     // agent on a peer host first proxies host→host, then this branch fires on
     // the agent's own host with localhost-relative routing.
     try {
-      const { getAgentByName } = await import('./lib/agent-registry.ts')
-      const cloudAgent = getAgentByName(sessionName)
+      const { getAgent, getAgentByName } = await import('./lib/agent-registry.ts')
+      // sessionName may be either the agent's name (preferred — agentToSession
+      // returns name for cloud agents) or its UUID (older clients, or
+      // operator-typed URLs). Try ID first since it's the authoritative key.
+      const cloudAgent = getAgent(sessionName) || getAgentByName(sessionName)
       if (cloudAgent?.deployment?.type === 'cloud') {
         const cloudWsUrl = cloudAgent.deployment.cloud?.websocketUrl
         if (!cloudWsUrl) {
@@ -948,8 +951,12 @@ async function startServer(handleRequest) {
           .replace(/\/term.*$/, '')
           .replace(/^ws:/, 'http:')
           .replace(/^wss:/, 'https:')
-        console.log(`☁️  [CLOUD] Routing ${sessionName} to container at ${containerBaseUrl}`)
-        handleRemoteWorker(ws, sessionName, containerBaseUrl)
+        // The container's /term?name=... lookup uses AGENT_ID (= agent name),
+        // NOT the agent UUID. Always pass the canonical name so the container
+        // resolves correctly regardless of whether the inbound URL had name or UUID.
+        const containerSessionName = cloudAgent.name || sessionName
+        console.log(`☁️  [CLOUD] Routing ${sessionName} (resolved to ${containerSessionName}) to container at ${containerBaseUrl}`)
+        handleRemoteWorker(ws, containerSessionName, containerBaseUrl)
         return
       }
     } catch (error) {
