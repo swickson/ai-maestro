@@ -1066,17 +1066,21 @@ export default function AgentList({
                                   >
                                     {[...agentsList]
                                       .sort((a, b) => {
-                                        // Sort by status first (online > hibernated > offline), then by alias
-                                        const aSession = a.sessions?.[0]
-                                        const bSession = b.sessions?.[0]
-                                        const aOnline = aSession?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
-                                        const bOnline = bSession?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
+                                        // Sort by status first (online > hibernated > offline), then by alias.
+                                        // Read agent.session (singular, heartbeat-aware) for the online check
+                                        // — agent.sessions[0] is the legacy tmux entry and is stale "offline"
+                                        // for cloud agents.
+                                        const aOnline = a.session?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
+                                        const bOnline = b.session?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
                                         if (aOnline !== bOnline) return bOnline - aOnline
                                         return (a.label || a.name || a.alias || '').toLowerCase().localeCompare((b.label || b.name || b.alias || '').toLowerCase())
                                       })
                                       .map((agent) => {
-                                        const session = agent.sessions?.[0]
-                                        const isOnline = session?.status === 'online'
+                                        // Use agent.session (singular, heartbeat-aware) not agent.sessions[0]
+                                        // (legacy tmux entry, "offline" for cloud agents). The plural array still
+                                        // drives isHibernated detection, but the online check must read the
+                                        // synthesized session-status that listAgents builds.
+                                        const isOnline = agent.session?.status === 'online'
                                         const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
                                         const sessionName = agent.name
                                         const activityInfo = sessionName ? getSessionActivity(sessionName) : null
@@ -1233,18 +1237,21 @@ export default function AgentList({
                               <ul className="space-y-0.5">
                                 {[...agentsList]
                                   .sort((a, b) => {
-                                    // Sort by status first (online > hibernated > offline), then by alias
-                                    const aSession = a.sessions?.[0]
-                                    const bSession = b.sessions?.[0]
-                                    const aOnline = aSession?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
-                                    const bOnline = bSession?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
+                                    // Sort by status first (online > hibernated > offline), then by alias.
+                                    // See parallel rendering site above for why agent.session (singular) is read
+                                    // here instead of agent.sessions[0].
+                                    const aOnline = a.session?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
+                                    const bOnline = b.session?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
                                     if (aOnline !== bOnline) return bOnline - aOnline
                                     return (a.label || a.name || a.alias || '').toLowerCase().localeCompare((b.label || b.name || b.alias || '').toLowerCase())
                                   })
                                   .map((agent) => {
                                   const isActive = activeAgentId === agent.id
-                                  const session = agent.sessions?.[0]
-                                  const isOnline = session?.status === 'online'
+                                  // See comment at the parallel rendering site above:
+                                  // agent.session (singular) reflects heartbeat-driven online status
+                                  // for cloud agents; agent.sessions[0] (plural, legacy) is stuck at
+                                  // "offline" for them and would falsely dim the card.
+                                  const isOnline = agent.session?.status === 'online'
                                   const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
                                   const indentClass = level2 === 'default' ? 'pl-10' : 'pl-14'
 
