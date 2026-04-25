@@ -35,6 +35,10 @@ export interface DockerCreateRequest {
 // Reject paths that could break out of the quoted `-v "..."` shell argument.
 const UNSAFE_PATH_CHARS = /["'`$\n\r\\]/
 
+// Trusts the caller: sandbox.mounts is operator-declared today (e.g., agent
+// creation by the dashboard or a host operator). If this ever becomes user-
+// controlled (an agent mutating its own mounts, unprivileged operators), add
+// realpath + prefix-check against an allow-list of host roots before shelling.
 export function validateMounts(mounts: SandboxMount[] | undefined): string | null {
   if (!mounts) return null
   for (const [i, m] of mounts.entries()) {
