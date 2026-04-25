@@ -60,8 +60,14 @@ export function getRandomAlias(agentName: string): string {
  * CRITICAL: session.id must be the tmux session name for WebSocket to connect.
  */
 export function agentToSession(agent: Agent): Session {
+  // For cloud agents, the in-container ai-maestro-agent's AGENT_ID env var is
+  // set to the agent name, and its /term?name=... lookup matches on that.
+  // The host-tmux fallback (agent.id, a UUID) does NOT match what the container
+  // expects, so cloud agents specifically must resolve to agent.name. Host-tmux
+  // agents continue to use tmuxSessionName, and unknown shapes fall back to id.
   return {
-    id: agent.session?.tmuxSessionName || agent.id,
+    id: agent.session?.tmuxSessionName
+      || (agent.deployment?.type === 'cloud' ? (agent.name || agent.alias || agent.id) : agent.id),
     name: agent.label || agent.name || agent.alias || '',
     workingDirectory: agent.session?.workingDirectory || agent.preferences?.defaultWorkingDirectory || '',
     status: 'active' as const,
