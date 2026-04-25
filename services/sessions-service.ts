@@ -307,7 +307,6 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
       for (const agent of allAgents) {
         const agentName = agent.name || agent.alias
         if (!agentName || sessions.find(s => s.name === agentName)) continue
-        if (agent.deployment?.type === 'cloud') continue
 
         const heartbeatTs = agentActivity.get(agent.id)
         if (!heartbeatTs) continue
