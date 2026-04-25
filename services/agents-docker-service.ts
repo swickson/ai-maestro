@@ -157,9 +157,15 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const memory = body.memory || '4g'
 
   // Build docker run command
+  // AGENT_ID is set to the tmux session name; the heartbeat endpoint resolves
+  // name → UUID (sessions-service.ts:570). AIMAESTRO_HOST_URL points at the
+  // host ai-maestro via the docker-bridge gateway alias added below.
+  const hostPort = process.env.PORT || '23000'
   const envFlags = [
     `-e TMUX_SESSION_NAME="${name}"`,
     `-e AI_TOOL="${aiTool}"`,
+    `-e AGENT_ID="${name}"`,
+    `-e AIMAESTRO_HOST_URL="http://host.docker.internal:${hostPort}"`,
   ]
   if (body.githubToken) {
     envFlags.push(`-e GITHUB_TOKEN="${body.githubToken}"`)
@@ -170,6 +176,8 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const dockerCmd = [
     'docker run -d',
     `--name "${containerName}"`,
+    '--add-host=host.docker.internal:host-gateway',
+    body.autoRemove ? '' : '--restart unless-stopped',
     ...envFlags,
     `-v "${workDir}:/workspace"`,
     ...extraMountFlags,
