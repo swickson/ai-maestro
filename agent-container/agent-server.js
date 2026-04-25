@@ -26,6 +26,9 @@ const SESSION_NAME = process.env.TMUX_SESSION_NAME || 'agent-session'
 const WORKSPACE = process.env.WORKSPACE || '/workspace'
 // AI tool to start in the session (e.g., 'claude', 'aider', 'cursor', or empty for shell only)
 const AI_TOOL = process.env.AI_TOOL || ''
+// Host ai-maestro URL for heartbeat. Empty disables heartbeat (e.g., local dev without a host).
+const AIMAESTRO_HOST_URL = process.env.AIMAESTRO_HOST_URL || ''
+const HEARTBEAT_INTERVAL_MS = 60_000
 
 console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
@@ -98,6 +101,42 @@ async function configureGit() {
   } catch (err) {
     console.error(`✗ Failed to configure git:`, err.message)
   }
+}
+
+// Periodic heartbeat to host ai-maestro so listAgents reports this cloud agent online
+// via hasRecentHeartbeat (services/agents-core-service.ts). Without this, cloud agents
+// have no tmux session AND no heartbeat → always rendered offline in the dashboard list.
+let heartbeatTimer = null
+function startHeartbeat() {
+  if (!AIMAESTRO_HOST_URL) {
+    console.log(`ℹ AIMAESTRO_HOST_URL not set — heartbeat disabled`)
+    return
+  }
+  const url = `${AIMAESTRO_HOST_URL.replace(/\/$/, '')}/api/agents/${encodeURIComponent(AGENT_ID)}/heartbeat`
+  console.log(`ℹ Heartbeat enabled: POST ${url} every ${HEARTBEAT_INTERVAL_MS / 1000}s`)
+  let lastErrorMessage = null
+  const beat = async () => {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (lastErrorMessage) {
+        console.log(`✓ Heartbeat recovered`)
+        lastErrorMessage = null
+      }
+    } catch (err) {
+      const msg = err.message || String(err)
+      if (msg !== lastErrorMessage) {
+        console.error(`✗ Heartbeat failed: ${msg}`)
+        lastErrorMessage = msg
+      }
+    }
+  }
+  beat()
+  heartbeatTimer = setInterval(beat, HEARTBEAT_INTERVAL_MS)
 }
 
 // Initialize tmux session on startup
@@ -306,11 +345,16 @@ Waiting for browser connections...
 
   // Initialize tmux session
   await initializeTmuxSession()
+
+  // Begin heartbeat to host ai-maestro (no-op if AIMAESTRO_HOST_URL is unset)
+  startHeartbeat()
 })
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('\nReceived SIGTERM, shutting down gracefully...')
+
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
 
   // Close all WebSocket connections
   sessions.forEach((sessionData, sessionKey) => {
