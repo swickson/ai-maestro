@@ -922,9 +922,41 @@ async function startServer(handleRequest) {
       }
     }
 
-    // NOTE: Container/cloud agent routing is not yet implemented
-    // Future: Check agent metadata for cloud deployment and proxy to container WebSocket
-    // Currently all agents are local tmux sessions
+    // Cloud-agent dispatch: if the requested session belongs to an agent with
+    // deployment.type === 'cloud', proxy the WebSocket to the agent's container
+    // via handleRemoteWorker. The container's in-process ai-maestro-agent server
+    // speaks the same /term protocol the host server speaks (initial connected
+    // handshake, raw PTY frames, JSON input messages), so the proxy is a plain
+    // WS-to-WS pipe — no protocol bridging.
+    //
+    // Cross-host case is handled by the existing isSelf branch above: a cloud
+    // agent on a peer host first proxies host→host, then this branch fires on
+    // the agent's own host with localhost-relative routing.
+    try {
+      const { getAgentByName } = await import('./lib/agent-registry.ts')
+      const cloudAgent = getAgentByName(sessionName)
+      if (cloudAgent?.deployment?.type === 'cloud') {
+        const cloudWsUrl = cloudAgent.deployment.cloud?.websocketUrl
+        if (!cloudWsUrl) {
+          console.error(`☁️  [CLOUD] Agent ${sessionName} has deployment.type=cloud but no websocketUrl`)
+          ws.close(1011, 'Cloud agent missing websocketUrl')
+          return
+        }
+        // websocketUrl is shape "ws://localhost:<port>/term"; strip the /term
+        // path and convert to http so handleRemoteWorker can rebuild it.
+        const containerBaseUrl = cloudWsUrl
+          .replace(/\/term.*$/, '')
+          .replace(/^ws:/, 'http:')
+          .replace(/^wss:/, 'https:')
+        console.log(`☁️  [CLOUD] Routing ${sessionName} to container at ${containerBaseUrl}`)
+        handleRemoteWorker(ws, sessionName, containerBaseUrl)
+        return
+      }
+    } catch (error) {
+      console.error('☁️  [CLOUD] Error routing to cloud agent:', error)
+      ws.close(1011, 'Cloud agent routing error')
+      return
+    }
 
     // Get or create session state (for traditional local tmux sessions)
     let sessionState = terminalSessions.get(sessionName)
