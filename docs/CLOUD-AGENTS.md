@@ -27,7 +27,7 @@ For agents whose work lives entirely inside their working directory (or a parent
 | Agent | Mounts |
 | --- | --- |
 | Distill, Hale | `/home/gosub/agents/<agent>` (rw) |
-| Mason, Optic | `n4-armory` (rw) + `n4safety_app` (ro) + `n4safety_docs` (ro) |
+| Mason, Optic | `n4-armory` (rw) + `n4safety-app` (ro) + `n4safety-website` (ro) |
 
 Read-only on sibling references prevents an agent scoped to one project from accidentally writing into a peer project.
 
