@@ -25,6 +25,7 @@ const {
   mockMessageQueue,
   mockFs,
   mockUuid,
+  mockContainerUtils,
 } = vi.hoisted(() => {
   const mockRuntime = {
     listSessions: vi.fn().mockResolvedValue([]),
@@ -93,6 +94,10 @@ const {
     mockUuid: {
       v4: vi.fn(() => `uuid-${++uuidCounter}`),
     },
+    mockContainerUtils: {
+      inspectContainerStatus: vi.fn().mockResolvedValue('missing' as const),
+      startContainer: vi.fn().mockResolvedValue(undefined),
+    },
   }
 })
 
@@ -112,6 +117,7 @@ vi.mock('child_process', () => ({
   exec: vi.fn((_cmd: string, cb: Function) => cb(null, { stdout: '', stderr: '' })),
   execSync: vi.fn().mockReturnValue(''),
 }))
+vi.mock('@/lib/container-utils', () => mockContainerUtils)
 
 // ============================================================================
 // Import module under test (after mocks)
@@ -155,6 +161,8 @@ beforeEach(() => {
   mockHostsConfig.getSelfHost.mockReturnValue({ id: 'test-host', name: 'Test Host', url: 'http://localhost:23000' })
   mockHostsConfig.getHosts.mockReturnValue([{ id: 'test-host', name: 'Test Host', url: 'http://localhost:23000' }])
   mockHostsConfig.isSelf.mockReturnValue(true)
+  mockContainerUtils.inspectContainerStatus.mockResolvedValue('missing')
+  mockContainerUtils.startContainer.mockResolvedValue(undefined)
 })
 
 // ============================================================================
@@ -650,6 +658,113 @@ describe('wakeAgent', () => {
     const result = await wakeAgent('agent-1', { startProgram: false })
 
     expect(result.status).toBe(500)
+  })
+
+  // ─── Cloud-agent (containerized) wake path — fix for #6 ───────────────────
+  describe('cloud (containerized) wake', () => {
+    function makeCloudAgent(overrides: Record<string, unknown> = {}) {
+      return makeAgent({
+        id: 'cloud-1',
+        name: 'cloud-agent',
+        workingDirectory: '/workspace',
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            containerName: 'aim-cloud-agent',
+            websocketUrl: 'ws://localhost:23001/term',
+            healthCheckUrl: 'http://localhost:23001/health',
+            status: 'running',
+          },
+        },
+        ...overrides,
+      })
+    }
+
+    it('returns alreadyRunning when container is running and skips host tmux', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.alreadyRunning).toBe(true)
+      expect(mockContainerUtils.startContainer).not.toHaveBeenCalled()
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('starts the container when stopped and skips host tmux', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('stopped')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.programStarted).toBe(true)
+      expect(mockContainerUtils.startContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('refuses host fallback by default when container is missing', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(400)
+      expect((result.data as ServiceError)?.message).toMatch(/container .* does not exist/i)
+      expect((result.data as ServiceError)?.message).toMatch(/sandbox/i)
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('refuses host fallback by default when docker daemon is down', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('docker_down')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(400)
+      expect((result.data as ServiceError)?.message).toMatch(/docker daemon/i)
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('falls through to host tmux when allowHostFallback=true and container missing', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockRuntime.sessionExists.mockResolvedValue(false)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false, allowHostFallback: true })
+
+      expect(result.status).toBe(200)
+      expect(mockRuntime.createSession).toHaveBeenCalledWith('cloud-agent', '/workspace')
+    })
+
+    it('returns 400 when cloud agent has no containerName configured', async () => {
+      const agent = makeCloudAgent({
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            websocketUrl: 'ws://localhost:23001/term',
+            // containerName intentionally missing
+          },
+        },
+      })
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(400)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+    })
   })
 })
 
