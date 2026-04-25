@@ -10,6 +10,7 @@ import { promisify } from 'util'
 import { createAgent, loadAgents, saveAgents } from '@/lib/agent-registry'
 import { getHosts, isSelf } from '@/lib/hosts-config'
 import { type ServiceResult, missingField, operationFailed, invalidRequest, serviceError } from '@/services/service-errors'
+import type { SandboxMount } from '@/types/agent'
 
 const execAsync = promisify(exec)
 
@@ -28,6 +29,41 @@ export interface DockerCreateRequest {
   autoRemove?: boolean
   label?: string
   avatar?: string
+  mounts?: SandboxMount[]
+}
+
+// Reject paths that could break out of the quoted `-v "..."` shell argument.
+const UNSAFE_PATH_CHARS = /["'`$\n\r\\]/
+
+// Trusts the caller: sandbox.mounts is operator-declared today (e.g., agent
+// creation by the dashboard or a host operator). If this ever becomes user-
+// controlled (an agent mutating its own mounts, unprivileged operators), add
+// realpath + prefix-check against an allow-list of host roots before shelling.
+export function validateMounts(mounts: SandboxMount[] | undefined): string | null {
+  if (!mounts) return null
+  for (const [i, m] of mounts.entries()) {
+    if (typeof m?.hostPath !== 'string' || typeof m?.containerPath !== 'string') {
+      return `mounts[${i}]: hostPath and containerPath are required strings`
+    }
+    if (!m.hostPath.startsWith('/') || !m.containerPath.startsWith('/')) {
+      return `mounts[${i}]: hostPath and containerPath must be absolute paths`
+    }
+    if (UNSAFE_PATH_CHARS.test(m.hostPath) || UNSAFE_PATH_CHARS.test(m.containerPath)) {
+      return `mounts[${i}]: paths must not contain quotes, backticks, $, backslashes, or newlines`
+    }
+    if (m.containerPath === '/workspace') {
+      return `mounts[${i}]: /workspace is reserved for the agent working directory`
+    }
+  }
+  return null
+}
+
+export function buildMountFlags(mounts: SandboxMount[] | undefined): string[] {
+  if (!mounts || mounts.length === 0) return []
+  return mounts.map(m => {
+    const suffix = m.readOnly ? ':ro' : ''
+    return `-v "${m.hostPath}:${m.containerPath}${suffix}"`
+  })
 }
 
 // ── Public Functions ────────────────────────────────────────────────────────
@@ -38,6 +74,11 @@ export interface DockerCreateRequest {
 export async function createDockerAgent(body: DockerCreateRequest): Promise<ServiceResult<Record<string, unknown>>> {
   if (!body.name?.trim()) {
     return missingField('name')
+  }
+
+  const mountError = validateMounts(body.mounts)
+  if (mountError) {
+    return invalidRequest(mountError)
   }
 
   const name = body.name.trim().toLowerCase()
@@ -124,11 +165,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     envFlags.push(`-e GITHUB_TOKEN="${body.githubToken}"`)
   }
 
+  const extraMountFlags = buildMountFlags(body.mounts)
+
   const dockerCmd = [
     'docker run -d',
     `--name "${containerName}"`,
     ...envFlags,
     `-v "${workDir}:/workspace"`,
+    ...extraMountFlags,
     `-p ${port}:23000`,
     `--cpus=${cpus}`,
     `--memory=${memory}`,
@@ -173,7 +217,10 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
           websocketUrl: `ws://localhost:${port}/term`,
           healthCheckUrl: `http://localhost:${port}/health`,
           status: 'running',
-        }
+        },
+        ...(body.mounts && body.mounts.length > 0
+          ? { sandbox: { mounts: body.mounts } }
+          : {}),
       }
       saveAgents(agents)
     }
