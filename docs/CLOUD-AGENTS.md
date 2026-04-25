@@ -150,6 +150,23 @@ When promoting, document the daemon's host-side lifecycle (systemd unit or equiv
 
 (Tier 3 — system package, image rebuild required.)
 
+### "I need to migrate an existing agent to Pattern A (local → cloud, or pre-schema cloud → cloud)."
+
+`createDockerAgent` only creates new records — it throws on duplicate names by design. There is no in-place "redeploy this agent's container" flow yet (tracked as `2db1aa3b`). Until that lands, the migration path is **snapshot → clobber → recreate → restore**, with deliberate UUID churn:
+
+1. **Snapshot the existing record.** Read `GET /api/agents/<oldId>` (or the registry directly) and save the JSON. The load-bearing field is `hooks["on-wake"]`. Anything stored under `~/.aimaestro/agents/<oldId>/` (`agent.db`, `brain/`, `keys/`, `registrations/`) needs separate snapshotting if the agent has accumulated state — see the brain-restore note below.
+2. **Hard-delete the old record.** `DELETE /api/agents/<oldId>?hard=true` automatically backs everything up under `~/.aimaestro/backups/agents/<oldId>-<timestamp>/` (registry entry, agent data dir, message dirs, AMP dir). Soft-delete is not enough — the name uniqueness check in `createAgent` would still trip.
+3. **Free the container name** (only needed if migrating an existing cloud agent whose container name will collide): `docker stop <containerName> && docker rm <containerName>`.
+4. **Create fresh via the canonical flow.** `POST /api/agents/docker/create` with `{name, label, avatar, program, [model], [yolo], workingDirectory, [mounts]}`. This both starts a new container with the right `deployment.sandbox.mounts[]` and registers a fresh agent record. Returns a **new UUID**.
+5. **Restore the on-wake hook.** `PATCH /api/agents/<newId>` with `{hooks: {"on-wake": "<captured prompt verbatim>"}}`. Without this the agent has no on-wake behavior and waking is a no-op.
+6. **(Optional) Restore agent.db and brain.** If the agent had non-trivial accumulated state — conversations, consolidations, `doc_chunks` with vector embeddings, code graph — the snapshot under `~/.aimaestro/backups/agents/<oldId>-<timestamp>/agent-data/` contains the original `agent.db` and `brain/`. To restore: `pm2 stop ai-maestro` (the server holds an open SQLite handle on the new dir's `agent.db`), copy the backup files over `~/.aimaestro/agents/<newId>/agent.db` and `~/.aimaestro/agents/<newId>/brain/cortex-inbox.jsonl`, remove any stale `agent.db-journal` / `agent.db-wal` / `agent.db-shm` siblings, `pm2 start ai-maestro`. Save the freshly-bootstrapped agent.db as a `.pre-restore-<epoch>` first if you want a rollback.
+7. **Wake to verify.** `POST /api/agents/<newId>/wake` with body `{}` should return `success: true` and emit `[Wake] Agent <name> (<newId>) — running in CONTAINER aim-<name> (already running)` in `pm2 logs ai-maestro`. No new host tmux session should be created (`tmux ls | grep <name>` returns nothing).
+
+(Two non-tier observations from the first batch of migrations on 2026-04-25 — Hale, Mason, Optic on Holmes:)
+
+- **The UUID changes.** Every reference that pinned the old UUID — cross-host directory caches, scripts, kanban tasks — needs refresh. AMP routing survives because addresses are email-style (`<name>@<tenant>.aimaestro.local`), not UUID-based.
+- **Agents with empty databases (40 KB / 56 rows of pure schema scaffolding) lose nothing in step 6.** Agents with real accumulated state (Hale's was 3 MB / 14,225 rows: conversations, consolidations, vector embeddings, code graph) need step 6 explicitly or the historical brain is orphaned in the backup tree. When `2db1aa3b` lands, in-place redeploy will obviate steps 1, 2, 5, and 6 — the recipe collapses to "update mounts + recreate container."
+
 ---
 
 ## Identity and persistence
@@ -180,11 +197,14 @@ These agents have full host filesystem access by design. They are operationally 
 
 | Piece | Status |
 | --- | --- |
-| `services/agents-docker-service.ts` scaffolding | Exists |
-| `app/api/agents/docker/create/route.ts` | Exists |
-| AgentCreationWizard docker tab | Exists |
-| `wakeAgent()` honors `deployment.type=cloud` on every wake | Fixed — PR [#56](https://github.com/swickson/ai-maestro/pull/56) (v0.30.10) |
-| `deployment.sandbox.mounts[]` schema | Landed — PR [#58](https://github.com/swickson/ai-maestro/pull/58) (v0.30.11) |
-| MCP server mount strategy | Decided — [CLOUD-AGENT-MCP-DECISION.md](CLOUD-AGENT-MCP-DECISION.md) (per-container default; host daemon only as named exception) |
-| Pattern A migrations (Distill, Hale, Mason, Optic) | Pending — Iron Syndicate kanban |
-| Pattern B migration (Rollie) | Pending — Iron Syndicate kanban (Pattern B + Option B for MCP servers) |
+| `services/agents-docker-service.ts` scaffolding | Done |
+| `app/api/agents/docker/create/route.ts` | Done |
+| AgentCreationWizard docker tab | Done |
+| `wakeAgent()` honors `deployment.type=cloud` on every wake | Done — PR [#56](https://github.com/swickson/ai-maestro/pull/56) (closes [#6](https://github.com/swickson/ai-maestro/issues/6)) |
+| `deployment.sandbox.mounts[]` schema + docker-create plumbing | Done — PR [#58](https://github.com/swickson/ai-maestro/pull/58) |
+| Cloud-agent MCP-server policy (Option C hybrid; Rollie is B) | Decided — PR [#59](https://github.com/swickson/ai-maestro/pull/59) / `docs/CLOUD-AGENT-MCP-DECISION.md` |
+| Pattern A migrations: Hale, Mason, Optic on Holmes | Done (2026-04-25) |
+| Pattern B migration (Rollie) | Pending Hutch's pickup; MCP-strategy resolved |
+| Cloud agents visible in dashboard list (#60 Half A) | Server-side merged in PR [#62](https://github.com/swickson/ai-maestro/pull/62) (v0.30.12); Holmes container rebuild pending |
+| Cloud-agent terminal pipe (#60 Half B) | Pending — kanban `0c3b6339` (server.mjs:925 cloud branch + handleRemoteWorker reuse) |
+| In-place container redeploy for an existing agent record | Pending — kanban `2db1aa3b` (sibling: `43753261` `agent.update()` mutation guard) |
