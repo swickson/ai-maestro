@@ -101,6 +101,20 @@ This is the slow path. If a change can be made via tier 1 or 2 instead, prefer t
 
 ---
 
+## Where MCP servers run: in-container by default
+
+Across all three tiers, MCP servers run **inside the agent's container** by default (per-container spawn). This keeps blast radius small, makes per-agent identity automatic, and matches how tier-1 `npx` stdio servers already behave.
+
+Promote an MCP server to a host-side daemon (and bind-mount its unix socket via `sandbox.mounts[]`) only when one of these is true:
+
+- It needs host-only resources (host hardware, a host-bound DB socket, a host-scoped credential store).
+- It is the source of truth for state genuinely shared across agents — and that state lives in the MCP server itself, not in a backend the MCP just talks to.
+- Its per-process footprint is heavy enough that one instance per agent doesn't scale.
+
+When promoting, document the daemon's host-side lifecycle (systemd unit or equivalent, log path, restart policy) alongside the `sandbox.mounts[]` entry. See [CLOUD-AGENT-MCP-DECISION.md](CLOUD-AGENT-MCP-DECISION.md) for the rationale.
+
+---
+
 ## Operator workflow examples
 
 ### "I want to try the Linear MCP server on Mason."
@@ -169,9 +183,8 @@ These agents have full host filesystem access by design. They are operationally 
 | `services/agents-docker-service.ts` scaffolding | Exists |
 | `app/api/agents/docker/create/route.ts` | Exists |
 | AgentCreationWizard docker tab | Exists |
-| `wakeAgent()` honors `deployment.type=cloud` on every wake | **Broken — issue [#6](https://github.com/swickson/ai-maestro/issues/6)** |
-| `deployment.cloud.mounts[]` schema | **Pending — issue [#52](https://github.com/swickson/ai-maestro/issues/52) / Iron Syndicate kanban P2** |
-| Pattern A migrations (Distill, Hale, Mason, Optic) | Pending P1 + P2 |
-| Pattern B migration (Rollie) | Pending P1 + P2 + MCP server shape clarification |
-
-Until #6 lands, this document describes the intended steady-state. Once #6 closes, the rest of the kanban board executes against this spec.
+| `wakeAgent()` honors `deployment.type=cloud` on every wake | Fixed — PR [#56](https://github.com/swickson/ai-maestro/pull/56) (v0.30.10) |
+| `deployment.sandbox.mounts[]` schema | Landed — PR [#58](https://github.com/swickson/ai-maestro/pull/58) (v0.30.11) |
+| MCP server mount strategy | Decided — [CLOUD-AGENT-MCP-DECISION.md](CLOUD-AGENT-MCP-DECISION.md) (per-container default; host daemon only as named exception) |
+| Pattern A migrations (Distill, Hale, Mason, Optic) | Pending — Iron Syndicate kanban |
+| Pattern B migration (Rollie) | Pending — Iron Syndicate kanban (Pattern B + Option B for MCP servers) |
