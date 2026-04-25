@@ -25,6 +25,7 @@ export async function POST(
   let program: string | undefined
   let hostUrl: string | undefined
   let projectDirectory: string | undefined
+  let allowHostFallback = false
   try {
     const body = await request.json()
     console.log(`[Wake] Received body:`, JSON.stringify(body))
@@ -42,6 +43,9 @@ export async function POST(
     }
     if (typeof body.projectDirectory === 'string') {
       projectDirectory = body.projectDirectory
+    }
+    if (body.allowHostFallback === true) {
+      allowHostFallback = true
     }
   } catch (e) {
     console.log(`[Wake] No body or invalid JSON, using defaults. Error:`, e)
@@ -65,7 +69,7 @@ export async function POST(
       const response = await fetch(`${remoteHostUrl}/api/agents/${id}/wake`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startProgram, sessionIndex, program, projectDirectory }),
+        body: JSON.stringify({ startProgram, sessionIndex, program, projectDirectory, allowHostFallback }),
         signal: controller.signal,
       })
       clearTimeout(timeoutId)
@@ -81,6 +85,6 @@ export async function POST(
     }
   }
 
-  const result = await wakeAgent(id, { startProgram, sessionIndex, program, projectDirectory })
+  const result = await wakeAgent(id, { startProgram, sessionIndex, program, projectDirectory, allowHostFallback })
   return toResponse(result)
 }
