@@ -121,6 +121,7 @@ function startHeartbeat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'active' }),
+        signal: AbortSignal.timeout(10_000),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       if (lastErrorMessage) {

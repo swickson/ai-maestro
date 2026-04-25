@@ -177,6 +177,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     'docker run -d',
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
+    body.autoRemove ? '' : '--restart unless-stopped',
     ...envFlags,
     `-v "${workDir}:/workspace"`,
     ...extraMountFlags,
