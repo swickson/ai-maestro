@@ -264,6 +264,16 @@ export interface Agent {
 
 export type DeploymentType = 'local' | 'cloud'
 
+export interface SandboxMount {
+  hostPath: string                  // Absolute path on host (e.g., /home/user/code/project)
+  containerPath: string             // Absolute path inside container (e.g., /workspace/project)
+  readOnly?: boolean                // Default false; sets `:ro` on the docker bind
+}
+
+export interface SandboxConfig {
+  mounts?: SandboxMount[]           // Bind mounts applied at container creation
+}
+
 export interface AgentDeployment {
   type: DeploymentType              // Where the agent is running
 
@@ -286,6 +296,9 @@ export interface AgentDeployment {
     containerName?: string            // Docker container name
     status?: 'provisioning' | 'running' | 'stopped' | 'error'
   }
+
+  // Sandbox configuration (currently consumed by cloud/container deployments)
+  sandbox?: SandboxConfig
 }
 
 export interface AgentTools {
