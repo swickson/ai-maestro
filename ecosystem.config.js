@@ -11,10 +11,14 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 23000,
+        MAESTRO_MODE: 'full',
+        MAESTRO_MEETING_CONTEXT_KINDS: 'claude',
       },
       env_development: {
         NODE_ENV: 'development',
         PORT: 23000,
+        MAESTRO_MODE: 'full',
+        MAESTRO_MEETING_CONTEXT_KINDS: 'claude',
       },
       error_file: './logs/pm2-error.log',
       out_file: './logs/pm2-out.log',
