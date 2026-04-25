@@ -982,3 +982,43 @@ describe('incrementAgentMetric', () => {
     expect(result).toBe(false)
   })
 })
+
+// ============================================================================
+// deployment.sandbox round-trip
+// ============================================================================
+
+describe('deployment.sandbox.mounts', () => {
+  it('persists sandbox.mounts on the agent record across save/load', () => {
+    const agent = createAgent(makeCreateRequest({ name: 'sandbox-agent' }))
+    const loaded = loadAgents()
+    const idx = loaded.findIndex(a => a.id === agent.id)
+    loaded[idx].deployment = {
+      type: 'cloud',
+      cloud: {
+        provider: 'local-container',
+        containerName: 'aim-sandbox-agent',
+        websocketUrl: 'ws://localhost:23001/term',
+        status: 'running',
+      },
+      sandbox: {
+        mounts: [
+          { hostPath: '/home/user/code', containerPath: '/work/code' },
+          { hostPath: '/etc/ssl/certs', containerPath: '/certs', readOnly: true },
+        ],
+      },
+    }
+    saveAgents(loaded)
+
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual([
+      { hostPath: '/home/user/code', containerPath: '/work/code' },
+      { hostPath: '/etc/ssl/certs', containerPath: '/certs', readOnly: true },
+    ])
+  })
+
+  it('keeps deployment.sandbox optional — agents without it round-trip cleanly', () => {
+    const agent = createAgent(makeCreateRequest({ name: 'no-sandbox' }))
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox).toBeUndefined()
+  })
+})
