@@ -62,6 +62,7 @@ import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { initializeAllAgents, getStartupStatus } from '@/lib/agent-startup'
 import { sessionActivity, agentActivity } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
+import { inspectContainerStatus, startContainer } from '@/lib/container-utils'
 import type { Host } from '@/types/host'
 import { type ServiceResult, missingField, notFound, invalidField, invalidRequest, operationFailed, gone, timeout } from '@/services/service-errors'
 
@@ -121,6 +122,12 @@ export interface WakeAgentParams {
   sessionIndex?: number
   program?: string
   projectDirectory?: string  // Runtime: where the agent works (Lane 2)
+  /**
+   * Opt-in: for cloud (containerized) agents, allow falling back to a host-native
+   * tmux wake when the container is unavailable (missing / docker daemon down).
+   * Default false — sandboxing is preserved by failing loudly. See swickson/ai-maestro#6.
+   */
+  allowHostFallback?: boolean
 }
 
 export interface HibernateAgentParams {
@@ -1398,12 +1405,91 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
                             agent.preferences?.defaultWorkingDirectory ||
                             process.cwd()
 
-    const runtime = getRuntime()
     const sessionName = computeSessionName(agentName, sessionIndex)
+
+    // ─── Cloud (containerized) agents: dispatch to docker before host tmux ───
+    // Fixes swickson/ai-maestro#6 — without this branch, wakeAgent silently runs
+    // every cloud agent on the host via tmux, bypassing the container sandbox.
+    if (agent.deployment?.type === 'cloud' && agent.deployment.cloud?.provider === 'local-container') {
+      const containerName = agent.deployment.cloud.containerName
+      if (!containerName) {
+        return invalidField('deployment.cloud.containerName', 'Cloud agent has no containerName configured')
+      }
+
+      const status = await inspectContainerStatus(containerName)
+
+      if (status === 'running' || status === 'paused') {
+        console.log(`[Wake] Agent ${agentName} (${agentId}) — running in CONTAINER ${containerName} (already ${status})`)
+        updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory)
+        return {
+          data: {
+            success: true,
+            agentId,
+            name: agentName,
+            sessionName,
+            sessionIndex,
+            workingDirectory,
+            woken: true,
+            alreadyRunning: true,
+            message: `Agent "${agentName}" container ${containerName} is already running`,
+          },
+          status: 200,
+        }
+      }
+
+      if (status === 'stopped' || status === 'created') {
+        try {
+          await startContainer(containerName)
+          console.log(`[Wake] Agent ${agentName} (${agentId}) — running in CONTAINER ${containerName} (started)`)
+          updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory, true)
+          return {
+            data: {
+              success: true,
+              agentId,
+              name: agentName,
+              sessionName,
+              sessionIndex,
+              workingDirectory,
+              woken: true,
+              programStarted: true,
+              message: `Agent "${agentName}" container ${containerName} has been started`,
+            },
+            status: 200,
+          }
+        } catch (err) {
+          console.error(`[Wake] Failed to start container ${containerName}:`, err)
+          if (!params.allowHostFallback) {
+            return operationFailed(
+              `start container ${containerName}`,
+              `${(err as Error).message}. Refusing host-native fallback (would lose sandboxing). Pass allowHostFallback=true to override.`
+            )
+          }
+          console.warn(`[Wake] Falling back to HOST tmux for ${agentName} — sandboxing LOST (allowHostFallback=true)`)
+          // fall through to existing host tmux path
+        }
+      } else {
+        // status === 'missing' or 'docker_down'
+        if (!params.allowHostFallback) {
+          const reason = status === 'missing'
+            ? `container ${containerName} does not exist`
+            : 'docker daemon is unreachable'
+          return invalidRequest(
+            `Agent "${agentName}" is configured as a sandboxed cloud agent but ${reason}. ` +
+            `Refusing host-native fallback (would lose sandboxing). ` +
+            `Pass allowHostFallback=true to override, or recreate the container. See swickson/ai-maestro#6.`
+          )
+        }
+        console.warn(`[Wake] Container ${containerName} ${status}, falling back to HOST tmux for ${agentName} — sandboxing LOST (allowHostFallback=true)`)
+        // fall through to existing host tmux path
+      }
+    }
+
+    const runtime = getRuntime()
 
     // Check if session already exists
     const exists = await runtime.sessionExists(sessionName)
     if (exists) {
+      console.log(`[Wake] Agent ${agentName} (${agentId}) — running on HOST tmux session ${sessionName} (already running)`)
       updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory)
       return {
         data: {
@@ -1423,6 +1509,7 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
     // Create new tmux session
     try {
       await runtime.createSession(sessionName, workingDirectory)
+      console.log(`[Wake] Agent ${agentName} (${agentId}) — running on HOST tmux session ${sessionName} (created)`)
     } catch (error) {
       console.error(`[Wake] Failed to create tmux session:`, error)
       return operationFailed('create tmux session', (error as Error).message)
