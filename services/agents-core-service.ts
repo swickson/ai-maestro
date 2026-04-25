@@ -597,6 +597,21 @@ export async function listAgents(): Promise<ServiceResult<{
       const heartbeatTs = agentActivity.get(agent.id)
       const heartbeatAge = heartbeatTs ? (Date.now() - heartbeatTs) / 1000 : Infinity
       const hasRecentHeartbeat = heartbeatAge < 120 // 2 minutes
+
+      // If agent is online via heartbeat without a discovered tmux session
+      // (cloud agents and standalone host agents), reflect that on the
+      // registry-stored sessions[] entry so UI consumers reading the array
+      // see consistent state with the unified agent.session.status field.
+      // Without this, sessions[0].status stays "offline" and dim-styling fires
+      // (e.g. AgentList.tsx:1267 `!isOnline ? opacity-70`).
+      if (hasRecentHeartbeat && !hasOnlineSession && updatedSessions.length > 0) {
+        updatedSessions[0] = {
+          ...updatedSessions[0],
+          status: 'online',
+          lastActive: new Date(heartbeatTs!).toISOString(),
+        }
+      }
+
       const isOnline = hasOnlineSession || hasRecentHeartbeat
       // Standalone = no tmux sessions discovered AND not a cloud agent
       const isStandalone = agentSessions.length === 0 && agent.deployment?.type !== 'cloud'
