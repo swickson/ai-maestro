@@ -266,7 +266,45 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
       console.error('Error discovering cloud agents:', error)
     }
 
-    // Discover Docker container agents
+    // Discover heartbeat-registered agents (no tmux session). Must run BEFORE
+    // the Docker-discovery block: a cloud agent's container appears in `docker ps`
+    // AND has a fresh heartbeat. If Docker discovery wins the name-uniqueness race,
+    // the heartbeat block skips at the sessions.find() guard and the session
+    // entry is left without status=active / agentId / standalone, so the UI
+    // renders the cloud agent as offline despite a healthy heartbeat.
+    try {
+      const allAgents = loadAgents()
+      for (const agent of allAgents) {
+        const agentName = agent.name || agent.alias
+        if (!agentName || sessions.find(s => s.name === agentName)) continue
+
+        const heartbeatTs = agentActivity.get(agent.id)
+        if (!heartbeatTs) continue
+
+        const age = (Date.now() - heartbeatTs) / 1000
+        if (age > 120) continue  // stale heartbeat (2 min)
+
+        sessions.push({
+          id: agentName,
+          name: agentName,
+          workingDirectory: agent.workingDirectory || agent.sessions?.[0]?.workingDirectory || '',
+          status: age > 3 ? 'idle' : 'active',
+          createdAt: agent.createdAt,
+          lastActivity: new Date(heartbeatTs).toISOString(),
+          windows: 0,
+          hostId,
+          version: AI_MAESTRO_VERSION,
+          agentId: agent.id,
+          standalone: true,
+        })
+      }
+    } catch (error) {
+      console.error('Error discovering standalone agents:', error)
+    }
+
+    // Discover Docker container agents (fallback for containers without a fresh
+    // heartbeat — e.g., supervisor wedged or pre-heartbeat image). Skips by name
+    // when the heartbeat block has already populated the session.
     try {
       const { stdout: dockerOutput } = await execAsync(
         "docker ps --filter 'name=aim-' --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || echo ''"
@@ -299,37 +337,6 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
       }
     } catch {
       // Docker not available
-    }
-
-    // Discover standalone agents (registered with heartbeat, no tmux session)
-    try {
-      const allAgents = loadAgents()
-      for (const agent of allAgents) {
-        const agentName = agent.name || agent.alias
-        if (!agentName || sessions.find(s => s.name === agentName)) continue
-
-        const heartbeatTs = agentActivity.get(agent.id)
-        if (!heartbeatTs) continue
-
-        const age = (Date.now() - heartbeatTs) / 1000
-        if (age > 120) continue  // stale heartbeat (2 min)
-
-        sessions.push({
-          id: agentName,
-          name: agentName,
-          workingDirectory: agent.workingDirectory || agent.sessions?.[0]?.workingDirectory || '',
-          status: age > 3 ? 'idle' : 'active',
-          createdAt: agent.createdAt,
-          lastActivity: new Date(heartbeatTs).toISOString(),
-          windows: 0,
-          hostId,
-          version: AI_MAESTRO_VERSION,
-          agentId: agent.id,
-          standalone: true,
-        })
-      }
-    } catch (error) {
-      console.error('Error discovering standalone agents:', error)
     }
 
     // Discover OpenClaw sessions (custom tmux sockets)
