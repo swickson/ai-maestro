@@ -47,6 +47,19 @@ export async function startContainer(name: string): Promise<void> {
 }
 
 /**
+ * Stop a container gracefully via SIGTERM (then SIGKILL after `timeoutSec`).
+ * Mirrors `docker stop`'s default 10s graceful window. Used by the hibernate
+ * cloud-agent branch — without it, hibernate of a cloud agent silently no-ops
+ * the host tmux check and leaves the docker container running.
+ */
+export async function stopContainer(name: string, timeoutSec: number = 10): Promise<void> {
+  await execAsync(
+    `docker stop -t ${timeoutSec} ${shellQuote(name)}`,
+    { timeout: (timeoutSec + 5) * 1000 }
+  )
+}
+
+/**
  * Send keys to a tmux session running INSIDE a container, via `docker exec`.
  *
  * Mirrors the host-side `runtime.sendKeys` interface used by the notify route
