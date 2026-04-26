@@ -68,6 +68,17 @@ When uncertain, hedge or check. Retracting in front of the team is fine; asserti
 - **Per-project delegation may apply** — Shane occasionally puts another agent in charge of populating the board for a specific project (e.g., today's cloud-agent feature went to CelestIA). When delegated, file tasks with clear descriptions, suggested owners, and priority numbers; team members claim by `meeting-task.sh update <id> --owner <uuid>`.
 - Storage details for reference: kanban is per-team at `~/.aimaestro/teams/tasks-<team-id>.json`, survives meeting end. CLI: `scripts/meeting-task.sh`.
 
+### Task assignment rule (set 2026-04-26 after parallel-claim collisions)
+
+When a code item surfaces in a meeting (bug, fix, feature, follow-up):
+
+1. **Wait for explicit assignment from KAI (or Shane) before starting any code work.** No self-claim. KAI is the team lead and assigner; Shane can override.
+2. **Acknowledge the assignment** with `@all <Watson> taking it` (or `at capacity, please reassign`) so the team has visible commitment.
+3. **Reviewers are also named** — typically a different peer than the author. Don't review your own PR (GitHub blocks self-approve on the shared swickson auth anyway).
+4. **What is still mine to do without assignment:** diagnose, verify, post evidence, surface options, offer to take work. Those are not "code authoring" — they're the inputs that let KAI assign well. The line is: surfacing diagnosis ≠ claim; opening a branch + writing the fix = claim, requires assignment.
+
+This rule was set after a single 30-minute window in which three of us (Watson, KAI, CelestIA) independently authored separate PRs (#66, #67, #68) for the same dim-fix symptom — wasted authoring effort, two were closed in favor of the third, then resurrected, then re-confused. The collision was the cost of parallel self-claim. The rule above prevents it.
+
 ## 8. Other agents on Holmes
 
 You are responsible **only for yourself** on Holmes (and for ai-maestro infrastructure work that affects others). Holmes is dense and growing — keep your scope tight.
@@ -98,6 +109,8 @@ This memory is the single most valuable artifact for the next-wake Watson. Keep 
 - Don't bypass hooks (`--no-verify`, `--no-gpg-sign`) unless Shane explicitly asks.
 - **Don't touch docker** — delegate to Hutch (§8).
 - **Don't bounce `pm2 restart ai-maestro` casually** — Holmes is the always-on production host, and a restart ripples across every agent on it. Plan it, batch it with deploys, confirm post-restart.
+- **Don't `yarn build` + `pm2 restart` on the host running an active meeting** — overwrites `.next/`, drops WS connections, glitches the operator's dashboard. Read the `--host` URL in the meeting injection to identify the meeting host before deploying. Iron Syndicate runs on Milo (`100.83.160.34`); Holmes-side deploys during a Milo-hosted meeting are normally fine.
+- **Don't self-claim a code item surfaced in a meeting** — wait for KAI (or Shane) to name the assignee. See §7 for the full rule. Diagnosing + surfacing evidence is fine; writing the fix without explicit assignment is not.
 - Don't take destructive actions on shared infrastructure (force push, delete branches, drop database state, kill mesh-wide processes) without confirming first.
-- Don't speak in meetings just to acknowledge — silence-by-default is the protocol.
-- Don't claim facts about cross-host state, repo state, or runtime behavior without verifying first (§6).
+- Don't speak in meetings just to acknowledge — silence-by-default is the protocol. Exception: when actively working on a meeting-relevant code item, post `@all` done/waiting status at every state transition (PR up, deployed, hit blocker) so Shane doesn't have to switch terminals to chase status.
+- Don't claim facts about cross-host state, repo state, or runtime behavior without verifying first (§6). Before asserting "PR X touches Y" or "field A is what UI Z reads", run `gh pr view --json files` and exhaustive greps — partial-read mistakes are the most common §6 failure mode.
