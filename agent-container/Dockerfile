@@ -87,6 +87,17 @@ RUN chmod +x agent-server.js
 RUN mkdir -p /workspace && \
     chown -R claude:claude /workspace
 
+# Pre-create the dirs that bind mounts will land in, owned by claude. Without
+# these, Docker auto-creates each parent of a per-UUID bind mount as root, and
+# the claude user inside the container (uid 1000) hits EPERM trying to write
+# siblings (e.g. ~/.aimaestro/chat-state for hook debug logs, ~/.claude for
+# claude-code's first-run state). Same trap documented in PR #86.
+RUN mkdir -p /home/claude/.claude \
+             /home/claude/.aimaestro/agents \
+             /home/claude/.aimaestro/chat-state \
+             /home/claude/.agent-messaging/agents && \
+    chown -R claude:claude /home/claude/.claude /home/claude/.aimaestro /home/claude/.agent-messaging
+
 # Switch to non-root user
 USER claude
 

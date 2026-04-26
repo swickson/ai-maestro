@@ -113,8 +113,15 @@ export function buildEnvFlags(env: Record<string, string> | undefined): string[]
 // to the tmux session name and silently auto-creates a phantom empty identity
 // with no signing key — every outbound message would be unverifiable.
 //
-// All four mounts are derived deterministically from the agent UUID, so they
+// All three mounts are derived deterministically from the agent UUID, so they
 // can be reproduced on container redeploy without operator input.
+//
+// Note: ~/.claude is intentionally NOT mounted — wholesale-mounting the host
+// operator's claude state into the container leaked host-absolute hook paths
+// (every Stop/UserPromptSubmit fired MODULE_NOT_FOUND inside the container)
+// and exposed the operator's full session history/projects/credentials read-
+// write to the cloud agent. Per-container claude config is provisioned in
+// provisionCloudClaudeConfig + buildCloudClaudeSettingsMount instead.
 export function buildAmpCommonMounts(agentId: string, hostHome: string = os.homedir()): SandboxMount[] {
   return [
     {
@@ -130,11 +137,66 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
       containerPath: path.posix.join(CONTAINER_HOME, '.local', 'bin'),
       readOnly: true,
     },
-    {
-      hostPath: path.join(hostHome, '.claude'),
-      containerPath: path.posix.join(CONTAINER_HOME, '.claude'),
-    },
   ]
+}
+
+// Provision per-container Claude Code config: copies the hook script and
+// writes a settings.json into the agent's per-UUID dir, with hook paths
+// pointing at the container-side mount of that hook script. Returns the
+// generated paths for use by buildCloudClaudeSettingsMount.
+//
+// The hook script is snapshotted into the per-UUID dir at create time so
+// each cloud agent has a stable, independent copy. To refresh, re-run the
+// agent-create flow.
+export function provisionCloudClaudeConfig(
+  agentId: string,
+  hostHome: string = os.homedir(),
+  repoRoot: string = process.cwd()
+): { settingsPath: string; hookPath: string } {
+  const sourceHook = path.join(repoRoot, 'scripts', 'claude-hooks', 'ai-maestro-hook.cjs')
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  fs.mkdirSync(agentDir, { recursive: true })
+
+  const hookPath = path.join(agentDir, 'claude-hook.cjs')
+  fs.copyFileSync(sourceHook, hookPath)
+  fs.chmodSync(hookPath, 0o755)
+
+  const settingsPath = path.join(agentDir, 'claude-settings.json')
+  const containerHook = path.posix.join(
+    CONTAINER_HOME, '.aimaestro', 'agents', agentId, 'claude-hook.cjs'
+  )
+  const settings = {
+    hooks: {
+      Notification: [
+        {
+          matcher: 'idle_prompt|permission_prompt',
+          hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 5 }],
+        },
+      ],
+      Stop: [{ hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 5 }] }],
+      SessionStart: [{ hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 5 }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 30 }] }],
+    },
+  }
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
+
+  return { settingsPath, hookPath }
+}
+
+// File-level bind mount that overlays the per-container settings.json onto
+// /home/claude/.claude/settings.json without exposing the rest of the host's
+// ~/.claude tree. Mount target's parent (/home/claude/.claude) must pre-exist
+// in the image as claude-owned — see agent-container/Dockerfile — otherwise
+// Docker auto-creates it as root and blocks claude from writing siblings.
+export function buildCloudClaudeSettingsMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'claude-settings.json'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.claude', 'settings.json'),
+    readOnly: true,
+  }
 }
 
 // Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
@@ -445,7 +507,6 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, body.extraEnv)
 
   const ampMounts = buildAmpCommonMounts(agentId)
-  const mergedMounts = mergeMounts(ampMounts, body.mounts)
 
   // Pre-create host-side AMP dirs that are about to be bind-mounted. If the
   // host path doesn't exist, docker creates it as a root-owned empty directory,
@@ -459,6 +520,22 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       console.warn(`[Docker Service] Could not pre-create mount source ${m.hostPath}:`, err)
     }
   }
+
+  // Provision the per-container Claude Code settings.json + hook snapshot in
+  // the agent's per-UUID dir, then add a file-level bind mount that overlays
+  // /home/claude/.claude/settings.json without leaking the rest of the host's
+  // ~/.claude tree (history, projects, credentials) into the container. The
+  // mount only takes effect for claude-program agents but is harmless for
+  // gemini/codex (they ignore claude settings).
+  try {
+    provisionCloudClaudeConfig(agentId)
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud claude config:', err instanceof Error ? err.message : err)
+  }
+  const mergedMounts = mergeMounts(
+    [...ampMounts, buildCloudClaudeSettingsMount(agentId)],
+    body.mounts
+  )
 
   const dockerCmd = [
     'docker run -d',
