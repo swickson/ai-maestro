@@ -1650,10 +1650,15 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
 
       const status = await inspectContainerStatus(containerName)
 
-      if (status === 'stopped' || status === 'missing') {
+      // 'created' = docker-created but never started, semantically already-not-running
+      // (and `docker stop` on it is a no-op-or-error depending on docker version).
+      // Mirrors wake's bundling (which groups stopped+created → start) inversely.
+      if (status === 'stopped' || status === 'missing' || status === 'created') {
         updateAgentSessionInRegistry(agentId, sessionIndex, 'offline')
         const message = status === 'missing'
           ? `Agent "${agentName}" container ${containerName} does not exist; registry updated`
+          : status === 'created'
+          ? `Agent "${agentName}" container ${containerName} was created but never started; registry updated`
           : `Agent "${agentName}" container ${containerName} was already stopped; registry updated`
         return {
           data: { success: true, agentId, name: agentName, sessionName, sessionIndex, hibernated: true, message },
@@ -1668,7 +1673,7 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
         )
       }
 
-      // status is 'running', 'paused', or 'created' — stop it
+      // status is 'running' or 'paused' — stop it
       try {
         await stopContainer(containerName)
         console.log(`[Hibernate] Agent ${agentName} (${agentId}) — stopped CONTAINER ${containerName}`)

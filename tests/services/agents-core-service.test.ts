@@ -992,6 +992,19 @@ describe('hibernateAgent', () => {
       expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
     })
 
+    it('returns success without docker stop when container is in created state', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('created')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.message).toMatch(/created but never started/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
     it('returns 500 when docker daemon is down', async () => {
       const agent = makeCloudAgent()
       mockAgentRegistry.getAgent.mockReturnValue(agent)
