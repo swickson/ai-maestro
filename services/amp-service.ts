@@ -720,7 +720,17 @@ export async function registerAgent(
       }
     }
 
-    // Store the public key
+    // Store the public key. privatePem is intentionally empty here: the
+    // standard registration flow assumes the agent generated its own keypair
+    // offline (amp-init) and keeps the private locally. Server only stores
+    // the public for fingerprinting + verification.
+    //
+    // CAVEAT for callers that pre-generated keys server-side (see
+    // bootstrapAmpIdentity in agents-docker-service.ts:bootstrapAmpIdentity):
+    // this saveKeyPair call OVERWRITES private.pem with empty bytes. Such
+    // callers must re-save the real keypair AFTER registerAgent returns to
+    // restore the private. Order matters; do not move this write below the
+    // initAgentAMPHome call (which would also touch keys).
     try {
       saveKeyPair(agent.id, {
         privatePem: '',

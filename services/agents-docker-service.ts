@@ -12,7 +12,9 @@ import { exec } from 'child_process'
 import { promisify } from 'util'
 import { v4 as uuidv4 } from 'uuid'
 import { createAgent, loadAgents, saveAgents } from '@/lib/agent-registry'
-import { getHosts, isSelf } from '@/lib/hosts-config'
+import { getHosts, isSelf, getOrganization } from '@/lib/hosts-config'
+import { generateKeyPair, saveKeyPair } from '@/lib/amp-keys'
+import { registerAgent } from '@/services/amp-service'
 import { type ServiceResult, missingField, operationFailed, invalidRequest, serviceError } from '@/services/service-errors'
 import type { SandboxMount } from '@/types/agent'
 
@@ -174,6 +176,90 @@ export function mergeMounts(common: SandboxMount[], operator: SandboxMount[] | u
 // Merge envs so operator-supplied entries override common ones for the same key.
 export function mergeEnv(common: Record<string, string>, operator: Record<string, string> | undefined): Record<string, string> {
   return { ...common, ...(operator ?? {}) }
+}
+
+// Bootstrap an AMP identity for a freshly-created cloud agent: generate the
+// keypair, register with the local AI Maestro AMP server (issues the API key),
+// and write the keypair + provider registration file into the agent's per-UUID
+// dir so the bind mount lands populated.
+//
+// Without this, brand-new cloud agents have an empty per-UUID dir (the bind-
+// mount target exists but contains no keys/registrations/config), and the
+// container's amp-* CLI cannot sign outbound messages until amp-init runs
+// from inside — which fails today because the agent's per-UUID mount sits
+// under a root-owned parent (/home/claude/.agent-messaging/agents/), so amp-
+// init's mkdir for a new sibling UUID hits EPERM. See PR #79 for the per-
+// agent mount tradeoff and the meeting thread for the discovery.
+//
+// Failures are logged loudly but non-fatal — the container is already
+// running by the time we get here, the agent can use its program normally,
+// only AMP signing is unavailable until an operator amp-init's manually.
+async function bootstrapAmpIdentity(
+  agentId: string,
+  agentName: string,
+  hostHome: string = os.homedir()
+): Promise<void> {
+  const tenant = getOrganization()
+  if (!tenant) {
+    console.warn('[Docker Service] Skipping AMP bootstrap — organization not configured. Run setup or amp-init manually after the agent boots.')
+    return
+  }
+
+  const keyPair = await generateKeyPair()
+
+  // registerAgent will adopt the existing agent record (we just created it
+  // with this UUID) and issue an API key. It also calls saveKeyPair internally
+  // with an EMPTY private (because the registration flow assumes the agent
+  // generated its own keys offline) — we re-save with the real private below
+  // to overwrite that empty file.
+  const regResult = await registerAgent(
+    {
+      name: agentName,
+      tenant,
+      public_key: keyPair.publicPem,
+      key_algorithm: 'Ed25519',
+      agent_id: agentId,
+    },
+    null
+  )
+
+  if (regResult.status !== 200 && regResult.status !== 201) {
+    const errMsg = (regResult.data as { message?: string })?.message || 'Unknown registration error'
+    console.warn(`[Docker Service] AMP registration failed (HTTP ${regResult.status}): ${errMsg}. Container will still run; AMP signing unavailable until operator amp-init.`)
+    return
+  }
+
+  // Overwrite the empty private.pem from registerAgent's saveKeyPair call
+  saveKeyPair(agentId, keyPair)
+
+  // Write the provider registration file into the agent's per-UUID dir so
+  // amp-helper inside the container can find the API key + provider endpoint.
+  const regResp = regResult.data as {
+    address: string
+    agent_id: string
+    api_key: string
+    provider: { name: string; endpoint: string; route_url: string }
+    tenant: string
+  }
+  const agentMessagingDir = path.join(hostHome, '.agent-messaging', 'agents', agentId)
+  const regsDir = path.join(agentMessagingDir, 'registrations')
+  fs.mkdirSync(regsDir, { recursive: true })
+  const regFilePath = path.join(regsDir, `${regResp.provider.name}.json`)
+  const regFileBody = {
+    provider: regResp.provider.name,
+    apiUrl: regResp.provider.endpoint,
+    routeUrl: regResp.provider.route_url,
+    agentName,
+    tenant: regResp.tenant,
+    address: regResp.address,
+    apiKey: regResp.api_key,
+    providerAgentId: regResp.agent_id,
+    fingerprint: keyPair.fingerprint,
+    registeredAt: new Date().toISOString(),
+  }
+  fs.writeFileSync(regFilePath, JSON.stringify(regFileBody, null, 2), { mode: 0o600 })
+
+  console.log(`[Docker Service] Bootstrapped AMP identity for ${agentName} (${agentId.substring(0, 8)}...)`)
 }
 
 // ── Public Functions ────────────────────────────────────────────────────────
@@ -377,6 +463,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     }
   } catch (err) {
     console.error('[Docker Service] Registry error:', err)
+  }
+
+  // Bootstrap AMP identity server-side so the per-UUID bind mount lands
+  // populated with keys + registration. Non-fatal — container is already up.
+  try {
+    await bootstrapAmpIdentity(agentId, name)
+  } catch (err) {
+    console.warn('[Docker Service] AMP bootstrap threw:', err instanceof Error ? err.message : err)
   }
 
   return {
