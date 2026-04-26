@@ -180,8 +180,8 @@ export function mergeEnv(common: Record<string, string>, operator: Record<string
 
 // Bootstrap an AMP identity for a freshly-created cloud agent: generate the
 // keypair, register with the local AI Maestro AMP server (issues the API key),
-// and write the keypair + provider registration file into the agent's per-UUID
-// dir so the bind mount lands populated.
+// and write the keypair + config + IDENTITY.md + provider registration file
+// into the agent's per-UUID dir so the bind mount lands populated.
 //
 // Without this, brand-new cloud agents have an empty per-UUID dir (the bind-
 // mount target exists but contains no keys/registrations/config), and the
@@ -191,9 +191,19 @@ export function mergeEnv(common: Record<string, string>, operator: Record<string
 // init's mkdir for a new sibling UUID hits EPERM. See PR #79 for the per-
 // agent mount tradeoff and the meeting thread for the discovery.
 //
+// Tree mismatch caveat: lib/amp-keys.ts saveKeyPair writes to
+// ~/.aimaestro/agents/<id>/keys/ (the registry/runtime side, used by the
+// SERVER to verify the public key), but amp-helper inside the container
+// reads from ~/.agent-messaging/agents/<id>/keys/ (the messaging side,
+// where amp-init traditionally writes). Bootstrap writes to BOTH: saveKeyPair
+// for server-side public-key storage + direct write to the messaging side
+// for the agent's own signing keys. registerAgent's internal saveKeyPair
+// call (with empty private) is also overwritten by our saveKeyPair call to
+// keep the registry-side store correct.
+//
 // Failures are logged loudly but non-fatal — the container is already
 // running by the time we get here, the agent can use its program normally,
-// only AMP signing is unavailable until an operator amp-init's manually.
+// only AMP signing is unavailable until an operator amp-init runs manually.
 async function bootstrapAmpIdentity(
   agentId: string,
   agentName: string,
@@ -207,11 +217,11 @@ async function bootstrapAmpIdentity(
 
   const keyPair = await generateKeyPair()
 
-  // registerAgent will adopt the existing agent record (we just created it
-  // with this UUID) and issue an API key. It also calls saveKeyPair internally
-  // with an EMPTY private (because the registration flow assumes the agent
-  // generated its own keys offline) — we re-save with the real private below
-  // to overwrite that empty file.
+  // registerAgent adopts the existing agent record (we just created it with
+  // this UUID), issues an API key, marks the agent AMP-registered, and calls
+  // initAgentAMPHome to set up the messaging-side dir + .index.json entry.
+  // It also calls saveKeyPair internally with an EMPTY private — we re-save
+  // with the real private after to overwrite the registry-side store.
   const regResult = await registerAgent(
     {
       name: agentName,
@@ -229,11 +239,11 @@ async function bootstrapAmpIdentity(
     return
   }
 
-  // Overwrite the empty private.pem from registerAgent's saveKeyPair call
+  // Server-side store: overwrite the empty private from registerAgent's
+  // saveKeyPair call so the registry-side keys/ dir holds real bytes
+  // (used by the server for fingerprint verification on inbound).
   saveKeyPair(agentId, keyPair)
 
-  // Write the provider registration file into the agent's per-UUID dir so
-  // amp-helper inside the container can find the API key + provider endpoint.
   const regResp = regResult.data as {
     address: string
     agent_id: string
@@ -241,9 +251,59 @@ async function bootstrapAmpIdentity(
     provider: { name: string; endpoint: string; route_url: string }
     tenant: string
   }
+
+  // Messaging-side per-UUID dir is the path amp-helper inside the container
+  // reads from. Write keys, config.json (overriding initAgentAMPHome's
+  // minimal stub which inherits machine-level "default" tenant), IDENTITY.md,
+  // and the provider registration file.
   const agentMessagingDir = path.join(hostHome, '.agent-messaging', 'agents', agentId)
+  const keysDir = path.join(agentMessagingDir, 'keys')
   const regsDir = path.join(agentMessagingDir, 'registrations')
+  fs.mkdirSync(keysDir, { recursive: true })
   fs.mkdirSync(regsDir, { recursive: true })
+
+  // Keys — match amp-init's mode bits (private 0600, public 0644)
+  fs.writeFileSync(path.join(keysDir, 'private.pem'), keyPair.privatePem, { mode: 0o600 })
+  fs.writeFileSync(path.join(keysDir, 'public.pem'), keyPair.publicPem, { mode: 0o644 })
+
+  // config.json — rewrite with real tenant + address + fingerprint from the
+  // registration response. initAgentAMPHome wrote a stub with "default"
+  // tenant copied from the machine-level config; that mismatch causes
+  // amp-identity to misreport the agent's own address.
+  const configBody = {
+    version: '1.1',
+    agent: {
+      name: agentName,
+      tenant: regResp.tenant,
+      address: regResp.address,
+      fingerprint: keyPair.fingerprint,
+      createdAt: new Date().toISOString(),
+      id: agentId,
+    },
+    provider: {
+      domain: regResp.provider.name,
+      maestro_url: 'http://host.docker.internal:23000',
+    },
+  }
+  fs.writeFileSync(path.join(agentMessagingDir, 'config.json'), JSON.stringify(configBody, null, 2), { mode: 0o644 })
+
+  // IDENTITY.md — markdown card amp-identity references for context recovery
+  const identityBody =
+    `# Agent Messaging Protocol (AMP) Identity\n\n` +
+    `This agent is configured for inter-agent messaging using AMP.\n\n` +
+    `## Core Identity\n\n` +
+    `| Field | Value |\n` +
+    `|-------|-------|\n` +
+    `| **Name** | ${agentName} |\n` +
+    `| **Tenant** | ${regResp.tenant} |\n` +
+    `| **Address** | ${regResp.address} |\n` +
+    `| **Fingerprint** | ${keyPair.fingerprint} |\n` +
+    `| **UUID** | ${agentId} |\n\n` +
+    `Bootstrapped server-side at create-time by ai-maestro createDockerAgent.\n`
+  fs.writeFileSync(path.join(agentMessagingDir, 'IDENTITY.md'), identityBody, { mode: 0o644 })
+
+  // Provider registration file — amp-helper looks here for the API key +
+  // route URL when sending outbound.
   const regFilePath = path.join(regsDir, `${regResp.provider.name}.json`)
   const regFileBody = {
     provider: regResp.provider.name,
