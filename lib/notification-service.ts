@@ -11,6 +11,7 @@ import { getAgent, getAgentByName } from '@/lib/agent-registry'
 import { computeSessionName } from '@/types/agent'
 import { getSelfHostId, isSelf } from '@/lib/hosts-config-server.mjs'
 import { getRuntime } from '@/lib/agent-runtime'
+import { sendKeysToContainer } from '@/lib/container-utils'
 
 // Configuration (can be overridden via environment variables)
 const NOTIFICATIONS_ENABLED = process.env.NOTIFICATIONS_ENABLED !== 'false'
@@ -55,16 +56,27 @@ const NOTIFICATION_SUBMIT_DELAY_MS = 150
  * shell-level delay between them (text first, then Enter). See the comment on
  * NOTIFICATION_SUBMIT_DELAY_MS for why this matters.
  */
-async function sendTmuxNotification(sessionName: string, message: string): Promise<void> {
-  const runtime = getRuntime()
+async function sendTmuxNotification(sessionName: string, message: string, containerName?: string): Promise<void> {
   // Target the first pane of the first window
   const target = `${sessionName}:0.0`
 
   // Wrap in echo so shells still render the notification at an idle prompt.
   const escapedMessage = message.replace(/'/g, "'\\''")
-  await runtime.sendKeys(target, `echo '${escapedMessage}'`, { literal: true })
-  await new Promise(resolve => setTimeout(resolve, NOTIFICATION_SUBMIT_DELAY_MS))
-  await runtime.sendKeys(target, 'Enter')
+  const echoLine = `echo '${escapedMessage}'`
+
+  if (containerName) {
+    // Cloud agent: dispatch via docker exec to the in-container tmux. Note
+    // that sendKeysToContainer takes the SESSION name (it builds the target
+    // internally as `<session>:0.0`), so pass sessionName not target.
+    await sendKeysToContainer(containerName, sessionName, echoLine, { literal: true, enter: false })
+    await new Promise(resolve => setTimeout(resolve, NOTIFICATION_SUBMIT_DELAY_MS))
+    await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
+  } else {
+    const runtime = getRuntime()
+    await runtime.sendKeys(target, echoLine, { literal: true })
+    await new Promise(resolve => setTimeout(resolve, NOTIFICATION_SUBMIT_DELAY_MS))
+    await runtime.sendKeys(target, 'Enter')
+  }
 }
 
 /**
@@ -142,7 +154,24 @@ export async function notifyAgent(options: NotificationOptions): Promise<Notific
     const primarySession = agent.sessions.find(s => s.index === 0) || agent.sessions[0]
     const sessionName = computeSessionName(agent.name, primarySession.index)
 
-    // Check if tmux session exists
+    // Cloud-agent dispatch: tmux runs INSIDE the container, host has no
+    // matching session. Without this branch, sessionExists below returns
+    // false and the notification is silently dropped — exactly the symptom
+    // operators reported (incoming AMPs not waking cloud agents). See
+    // PR #56 (closes #6) for the same dispatch shape on the wake path.
+    if (agent.deployment?.type === 'cloud') {
+      const containerName = agent.deployment.cloud?.containerName
+      if (!containerName) {
+        console.log(`[Notify] Cloud agent ${agentName} has no containerName configured`)
+        return { success: true, notified: false, reason: 'Cloud agent missing containerName' }
+      }
+      const notification = formatNotification(options)
+      await sendTmuxNotification(sessionName, notification, containerName)
+      console.log(`[Notify] ✓ Notified ${agentName} about message from ${options.fromName} (cloud, container=${containerName})`)
+      return { success: true, notified: true }
+    }
+
+    // Local (host-tmux) agents: existing path.
     const runtime = getRuntime()
     const sessionExists = await runtime.sessionExists(sessionName)
     if (!sessionExists) {

@@ -46,6 +46,47 @@ export async function startContainer(name: string): Promise<void> {
   await execAsync(`docker start ${shellQuote(name)}`, { timeout: 10000 })
 }
 
+/**
+ * Send keys to a tmux session running INSIDE a container, via `docker exec`.
+ *
+ * Mirrors the host-side `runtime.sendKeys` interface used by the notify route
+ * and notification-service. Cloud agents have no host tmux session — their
+ * tmux runs inside `containerName` — so the host send-keys path returns
+ * "session not found" and short-circuits any wake-prompt or notification.
+ * This helper closes that gap by doing the equivalent send inside the
+ * container.
+ *
+ * `keys` is the literal text to send. `opts.literal` controls whether tmux
+ * interprets the input literally (-l flag, default true here) or as named keys
+ * (e.g. `Enter`). `opts.enter` appends a trailing Enter as a separate
+ * send-keys call (matches the two-step pattern used elsewhere — text first,
+ * then Enter — to defeat TUI batching).
+ */
+export async function sendKeysToContainer(
+  containerName: string,
+  sessionName: string,
+  keys: string,
+  opts: { literal?: boolean; enter?: boolean } = {}
+): Promise<void> {
+  const literal = opts.literal !== false
+  const target = `${sessionName}:0.0`
+  if (keys.length > 0) {
+    const flag = literal ? '-l ' : ''
+    // shellQuote handles the keys (may contain quotes/backticks); container
+    // name and session name are operator-controlled, so shellQuote them too.
+    await execAsync(
+      `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} ${flag}${shellQuote(keys)}`,
+      { timeout: 5000 }
+    )
+  }
+  if (opts.enter) {
+    await execAsync(
+      `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} Enter`,
+      { timeout: 5000 }
+    )
+  }
+}
+
 /** Single-quote a string for safe interpolation into a shell command. */
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
