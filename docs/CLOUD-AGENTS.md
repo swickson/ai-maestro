@@ -18,7 +18,7 @@ Cloud agents are the right default for any agent running with `--yolo`, `--dange
 
 ## Two patterns, one schema
 
-All cloud agents share the same registry shape under `deployment.cloud.mounts[]`. Two operational patterns emerge from how much external surface an agent needs.
+All cloud agents share the same registry shape under `deployment.sandbox.mounts[]`. Two operational patterns emerge from how much external surface an agent needs.
 
 ### Pattern A — Bare-container agents
 
@@ -44,8 +44,44 @@ Pattern B intentionally avoids `git clone + build` inside the container on first
 
 ### Common mounts (both patterns)
 
-- `~/.aimaestro/agents/<agent-id>/` — agent identity, AMP keys, hook-debug log
-- `~/.claude/` (or `~/.codex/`, `~/.gemini/`) — agent CLI config including `mcp-config.json`
+These four are auto-included by `POST /api/agents/docker/create` for every cloud agent — operators don't need to declare them. They are recomputed deterministically from the agent UUID at any future redeploy.
+
+- `~/.agent-messaging/agents/<agent-id>/` (rw) — AMP identity: signing keys, registrations, inbox/sent. Without this, amp-helper's name-based fallback auto-creates a phantom empty identity inside the container.
+- `~/.aimaestro/agents/<agent-id>/` (rw) — dashboard / runtime: `agent.db`, `brain/`, `status.json`, hook-debug log.
+- `~/.local/bin/` (ro) → `/home/claude/.local/bin/` — `amp-*` CLI scripts on PATH inside the container. Read-only because the container shouldn't mutate operator tooling.
+- `~/.claude/` (rw) — agent CLI config including `mcp-config.json`. (For non-claude programs, the analogous `~/.codex/` or `~/.gemini/` should be substituted via operator-supplied `mounts[]`.)
+
+### Common envs (both patterns)
+
+Auto-injected by `POST /api/agents/docker/create` so amp-helper resolves the agent identity at priority 1 (explicit `AMP_DIR`) and reaches the host AI Maestro server through the `host.docker.internal` gateway alias.
+
+- `CLAUDE_AGENT_ID=<agent-uuid>`
+- `AMP_DIR=/home/claude/.agent-messaging/agents/<agent-uuid>`
+- `AMP_MAESTRO_URL=http://host.docker.internal:23000`
+
+Operator-supplied `extraEnv` in the create request merges on top — same key wins for the operator, so any of these can be overridden when needed. Precedence: **image default `ENV` < auto-injected common envs < operator `extraEnv`**.
+
+### UID/GID alignment (load-bearing — Hutch's "#1 silent failure")
+
+The container's `claude` user is uid=1000/gid=1000. The host user that owns `~/.agent-messaging/` and `~/.aimaestro/` **must also be uid=1000** for the bind mounts to work. If the UIDs don't match:
+
+- amp-send writes from inside the container produce host files with mismatched ownership; relay silently breaks or emits permission-denied.
+- The new agent's per-agent dirs are created as the server-process user (uid 1000 on bananajr/Holmes by convention) — if the container runs at a different uid, the keys/registrations directory is unreadable from inside.
+
+If your host user isn't uid 1000, either rebuild the image with a matching `USER_ID` build arg (the Dockerfile accepts one) or override at runtime via `docker run --user`.
+
+### Per-agent vs whole-directory `~/.agent-messaging` mount
+
+This doc bind-mounts only the per-agent subdir (`~/.agent-messaging/agents/<id>/`) into the container. An alternative is to bind the whole parent `~/.agent-messaging/` so the container sees every agent's message dirs (used by some Holmes deployments to enable cross-agent inbox reads from inside relay agents).
+
+| | Per-agent (this doc's default) | Whole-directory |
+|---|---|---|
+| Blast radius | Isolated; one agent can't read another's inbox | Cross-agent reads possible |
+| Use case | Default; matches the AMP "per-agent isolation" comment in amp-helper.sh | Relay/conductor agents that legitimately need to inspect peer inboxes |
+| `_index_lookup` (name → uuid resolution from inside container) | Falls through to mesh routing for unknown names | Resolves locally via `.index.json` |
+| Confidentiality | Stronger | Weaker |
+
+If an agent genuinely needs cross-agent visibility, override per-agent default by adding `{ hostPath: "<home>/.agent-messaging", containerPath: "/home/claude/.agent-messaging" }` to its operator-supplied `mounts[]` — the operator entry overrides the auto-injected per-agent mount at the same containerPath.
 
 ### Explicitly **not** mounted
 
@@ -79,10 +115,12 @@ For MCP servers or CLI tools that aren't on npm, or that you want to keep out of
   "deployment": {
     "type": "cloud",
     "cloud": {
-      "image": "ai-maestro-agent:latest",
+      "image": "ai-maestro-agent:latest"
+    },
+    "sandbox": {
       "mounts": [
-        { "host": "/home/gosub/agents/rollie", "container": "/home/gosub/agents/rollie", "mode": "rw" },
-        { "host": "/opt/mcp-foo", "container": "/opt/mcp-foo", "mode": "ro" }
+        { "hostPath": "/home/gosub/agents/rollie", "containerPath": "/home/gosub/agents/rollie" },
+        { "hostPath": "/opt/mcp-foo", "containerPath": "/opt/mcp-foo", "readOnly": true }
       ]
     }
   }
@@ -136,7 +174,7 @@ When promoting, document the daemon's host-side lifecycle (systemd unit or equiv
 ### "I want to add a custom Python MCP server I'm hacking on."
 
 1. Develop on the host at `/home/gosub/code/my-mcp/`.
-2. Add `{ "host": "/home/gosub/code/my-mcp", "container": "/opt/my-mcp", "mode": "rw" }` to the agent's `deployment.cloud.mounts[]`.
+2. Add `{ "hostPath": "/home/gosub/code/my-mcp", "containerPath": "/opt/my-mcp" }` to the agent's `deployment.sandbox.mounts[]`.
 3. Edit `mcp-config.json`: `"my-mcp": { "command": "python", "args": ["/opt/my-mcp/server.py"] }`.
 4. Restart agent. Iterate freely on the host — every restart sees the latest code.
 
@@ -158,14 +196,17 @@ When promoting, document the daemon's host-side lifecycle (systemd unit or equiv
 2. **Hard-delete the old record.** `DELETE /api/agents/<oldId>?hard=true` automatically backs everything up under `~/.aimaestro/backups/agents/<oldId>-<timestamp>/` (registry entry, agent data dir, message dirs, AMP dir). Soft-delete is not enough — the name uniqueness check in `createAgent` would still trip.
 3. **Free the container name** (only needed if migrating an existing cloud agent whose container name will collide): `docker stop <containerName> && docker rm <containerName>`.
 4. **Create fresh via the canonical flow.** `POST /api/agents/docker/create` with `{name, label, avatar, program, [model], [yolo], workingDirectory, [mounts]}`. This both starts a new container with the right `deployment.sandbox.mounts[]` and registers a fresh agent record. Returns a **new UUID**.
-5. **Restore the on-wake hook.** `PATCH /api/agents/<newId>` with `{hooks: {"on-wake": "<captured prompt verbatim>"}}`. Without this the agent has no on-wake behavior and waking is a no-op.
-6. **(Optional) Restore agent.db and brain.** If the agent had non-trivial accumulated state — conversations, consolidations, `doc_chunks` with vector embeddings, code graph — the snapshot under `~/.aimaestro/backups/agents/<oldId>-<timestamp>/agent-data/` contains the original `agent.db` and `brain/`. To restore: `pm2 stop ai-maestro` (the server holds an open SQLite handle on the new dir's `agent.db`), copy the backup files over `~/.aimaestro/agents/<newId>/agent.db` and `~/.aimaestro/agents/<newId>/brain/cortex-inbox.jsonl`, remove any stale `agent.db-journal` / `agent.db-wal` / `agent.db-shm` siblings, `pm2 start ai-maestro`. Save the freshly-bootstrapped agent.db as a `.pre-restore-<epoch>` first if you want a rollback.
-7. **Wake to verify.** `POST /api/agents/<newId>/wake` with body `{}` should return `success: true` and emit `[Wake] Agent <name> (<newId>) — running in CONTAINER aim-<name> (already running)` in `pm2 logs ai-maestro`. No new host tmux session should be created (`tmux ls | grep <name>` returns nothing).
+5. **Restore the on-wake hook.** `PATCH /api/agents/<newId>` with `{hooks: {"on-wake": "<captured prompt verbatim>"}}`. Without this the agent has no on-wake behavior and waking is a no-op. (Skip if the snapshot's `hooks` was null — some agents are cron-driven, not wake-driven.)
+6. **Restore the AMP identity metadata.** `PATCH /api/agents/<newId>` with `{metadata: {amp: <captured metadata.amp verbatim>}}`. The snapshot's `metadata.amp.apiKeyHash` is what server-side auth checks against — restoring it preserves the agent's existing AMP API key. Skipping this step is fine **only** if you also intend to issue the agent a fresh API key (see step 7b below).
+7. **Repoint the AMP API key store.** Direct-edit `~/.aimaestro/amp-api-keys.json` and update the active key's `agent_id` from the old UUID to the new UUID. Without this, `amp-send` from the migrated agent returns `HTTP 500 / "Sender agent not found in registry"` — the API key validates but resolves to the deleted UUID, and `getAgent(oldId)` returns null. Diagnostic: `jq '. | map(select(.address == "<agent-name>@<tenant>"))' ~/.aimaestro/amp-api-keys.json` should show one `status: active` record after the edit, with `agent_id` matching the new UUID. (7b alternative: skip 6+7 and run `amp-init` inside the container to issue a fresh key — this rotates the agent's AMP signing identity, so other agents that have its public key cached may need a refresh on first signed message.)
+8. **Restore agent.db and brain.** If the agent had non-trivial accumulated state — conversations, consolidations, `doc_chunks` with vector embeddings, code graph — the snapshot under `~/.aimaestro/backups/agents/<oldId>-<timestamp>/agent-data/` contains the original `agent.db` and `brain/`. To restore: `pm2 stop ai-maestro` (the server holds an open SQLite handle on the new dir's `agent.db`), copy the backup files over `~/.aimaestro/agents/<newId>/agent.db` and `~/.aimaestro/agents/<newId>/brain/cortex-inbox.jsonl`, remove any stale `agent.db-journal` / `agent.db-wal` / `agent.db-shm` siblings, `pm2 start ai-maestro`. Save the freshly-bootstrapped agent.db as a `.pre-restore-<epoch>` first if you want a rollback. Also copy the snapshot's `~/.agent-messaging/agents/<oldId>/{keys,registrations,IDENTITY.md,config.json,messages,attachments}` into the corresponding new-UUID dir, then rewrite `config.json`'s `agent.id` field to the new UUID (`jq --arg new "$NEW" '.agent.id = $new' config.json`). The keypair and provider registrations carry over so the AMP fingerprint is preserved.
+9. **Wake to verify.** `POST /api/agents/<newId>/wake` with body `{}` should return `success: true` and emit `[Wake] Agent <name> (<newId>) — running in CONTAINER aim-<name> (already running)` in `pm2 logs ai-maestro`. No new host tmux session should be created (`tmux ls | grep <name>` returns nothing). Smoke-test AMP from inside the container with `docker exec <containerName> amp-identity` (should print the original fingerprint) and `docker exec <containerName> amp-send <peer-name> "test" "test"` (should return `Status: delivered`).
 
 (Two non-tier observations from the first batch of migrations on 2026-04-25 — Hale, Mason, Optic on Holmes:)
 
 - **The UUID changes.** Every reference that pinned the old UUID — cross-host directory caches, scripts, kanban tasks — needs refresh. AMP routing survives because addresses are email-style (`<name>@<tenant>.aimaestro.local`), not UUID-based.
-- **Agents with empty databases (40 KB / 56 rows of pure schema scaffolding) lose nothing in step 6.** Agents with real accumulated state (Hale's was 3 MB / 14,225 rows: conversations, consolidations, vector embeddings, code graph) need step 6 explicitly or the historical brain is orphaned in the backup tree. When `2db1aa3b` lands, in-place redeploy will obviate steps 1, 2, 5, and 6 — the recipe collapses to "update mounts + recreate container."
+- **Agents with empty databases (40 KB / 56 rows of pure schema scaffolding) lose nothing in step 8.** Agents with real accumulated state (Hale's was 3 MB / 14,225 rows: conversations, consolidations, vector embeddings, code graph; Hardin's was 5.3 MB) need step 8 explicitly or the historical brain is orphaned in the backup tree. When `2db1aa3b` lands, in-place redeploy will obviate steps 1, 2, 5, 6, 7, and 8 — the recipe collapses to "update mounts + recreate container."
+- **Steps 6 + 7 (AMP metadata + api-keys repoint) were derived from Hardin's 2026-04-26 migration.** Without them, every amp-send from the migrated agent returned HTTP 500 even though identity dirs were correctly mounted and amp-helper resolved the fingerprint. The smoke-test pattern in step 9 surfaces this immediately — run it before declaring the migration done.
 
 ---
 

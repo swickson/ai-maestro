@@ -5,8 +5,12 @@
  * Routes are thin wrappers that call these functions.
  */
 
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import { v4 as uuidv4 } from 'uuid'
 import { createAgent, loadAgents, saveAgents } from '@/lib/agent-registry'
 import { getHosts, isSelf } from '@/lib/hosts-config'
 import { type ServiceResult, missingField, operationFailed, invalidRequest, serviceError } from '@/services/service-errors'
@@ -30,10 +34,25 @@ export interface DockerCreateRequest {
   label?: string
   avatar?: string
   mounts?: SandboxMount[]
+  extraEnv?: Record<string, string>
 }
 
 // Reject paths that could break out of the quoted `-v "..."` shell argument.
 const UNSAFE_PATH_CHARS = /["'`$\n\r\\]/
+
+// Reject env values that could break out of the quoted `-e KEY="value"` shell
+// argument, or smuggle a second flag into the docker invocation. Same character
+// class as path validation — both are interpolated into a quoted shell string.
+const UNSAFE_ENV_VALUE_CHARS = /["'`$\n\r\\]/
+
+// POSIX env var name shape: leading letter or underscore, then alphanumerics
+// or underscores. Matches what `env` and most shells will actually export.
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+// Container user/home for the standard cloud-agent image (agent-container/Dockerfile).
+// Used to compute container-side paths for AMP common mounts. If the image's
+// USER ever changes, update this and the Dockerfile together.
+const CONTAINER_HOME = '/home/claude'
 
 // Trusts the caller: sandbox.mounts is operator-declared today (e.g., agent
 // creation by the dashboard or a host operator). If this ever becomes user-
@@ -58,6 +77,22 @@ export function validateMounts(mounts: SandboxMount[] | undefined): string | nul
   return null
 }
 
+export function validateExtraEnv(env: Record<string, string> | undefined): string | null {
+  if (!env) return null
+  for (const [key, value] of Object.entries(env)) {
+    if (!ENV_KEY_RE.test(key)) {
+      return `extraEnv: invalid key "${key}" — must match ${ENV_KEY_RE}`
+    }
+    if (typeof value !== 'string') {
+      return `extraEnv["${key}"]: value must be a string`
+    }
+    if (UNSAFE_ENV_VALUE_CHARS.test(value)) {
+      return `extraEnv["${key}"]: value must not contain quotes, backticks, $, backslashes, or newlines`
+    }
+  }
+  return null
+}
+
 export function buildMountFlags(mounts: SandboxMount[] | undefined): string[] {
   if (!mounts || mounts.length === 0) return []
   return mounts.map(m => {
@@ -66,7 +101,83 @@ export function buildMountFlags(mounts: SandboxMount[] | undefined): string[] {
   })
 }
 
+export function buildEnvFlags(env: Record<string, string> | undefined): string[] {
+  if (!env) return []
+  return Object.entries(env).map(([k, v]) => `-e ${k}="${v}"`)
+}
+
+// AMP common mounts wire the container so amp-helper.sh can resolve the agent's
+// identity and find the AMP CLI on PATH. Without these, amp-helper falls back
+// to the tmux session name and silently auto-creates a phantom empty identity
+// with no signing key — every outbound message would be unverifiable.
+//
+// All four mounts are derived deterministically from the agent UUID, so they
+// can be reproduced on container redeploy without operator input.
+export function buildAmpCommonMounts(agentId: string, hostHome: string = os.homedir()): SandboxMount[] {
+  return [
+    {
+      hostPath: path.join(hostHome, '.agent-messaging', 'agents', agentId),
+      containerPath: path.posix.join(CONTAINER_HOME, '.agent-messaging', 'agents', agentId),
+    },
+    {
+      hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId),
+      containerPath: path.posix.join(CONTAINER_HOME, '.aimaestro', 'agents', agentId),
+    },
+    {
+      hostPath: path.join(hostHome, '.local', 'bin'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.local', 'bin'),
+      readOnly: true,
+    },
+    {
+      hostPath: path.join(hostHome, '.claude'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.claude'),
+    },
+  ]
+}
+
+// Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
+// ahead of the standard Debian path. The base image's Dockerfile sets only
+// the standard path, so without this override `which amp-send` fails inside
+// the container even though the binary is mounted and works by full path.
+const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+
+// AMP common envs tell amp-helper.sh exactly which agent identity dir to use
+// (priority 1 of its resolution order) and where to reach the AI Maestro server
+// from inside the container (host.docker.internal is added via --add-host).
+//
+// Without these, amp-helper falls through to its name-based fallback, which
+// auto-creates a phantom empty identity, and amp-send tries to call the
+// container's own loopback agent-server instead of the AI Maestro API.
+//
+// CLAUDE_AGENT_NAME backs amp-helper's priority-3 resolution path — set
+// alongside CLAUDE_AGENT_ID so name-based lookups (sender name in routed
+// messages, index lookups) get the same answer as id-based lookups.
+export function buildAmpCommonEnv(agentId: string, agentName: string, hostUrl: string): Record<string, string> {
+  return {
+    CLAUDE_AGENT_ID: agentId,
+    CLAUDE_AGENT_NAME: agentName,
+    AMP_DIR: path.posix.join(CONTAINER_HOME, '.agent-messaging', 'agents', agentId),
+    AMP_MAESTRO_URL: hostUrl,
+    PATH: CONTAINER_PATH,
+  }
+}
+
+// Merge mounts so operator-supplied entries override common ones at the same
+// containerPath (operator wins), preserving operator order then appending any
+// common mount the operator did not already cover.
+export function mergeMounts(common: SandboxMount[], operator: SandboxMount[] | undefined): SandboxMount[] {
+  const operatorList = operator ?? []
+  const operatorPaths = new Set(operatorList.map(m => m.containerPath))
+  return [...operatorList, ...common.filter(m => !operatorPaths.has(m.containerPath))]
+}
+
+// Merge envs so operator-supplied entries override common ones for the same key.
+export function mergeEnv(common: Record<string, string>, operator: Record<string, string> | undefined): Record<string, string> {
+  return { ...common, ...(operator ?? {}) }
+}
+
 // ── Public Functions ────────────────────────────────────────────────────────
+
 
 /**
  * Create a new agent running inside a Docker container.
@@ -79,6 +190,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const mountError = validateMounts(body.mounts)
   if (mountError) {
     return invalidRequest(mountError)
+  }
+
+  const envError = validateExtraEnv(body.extraEnv)
+  if (envError) {
+    return invalidRequest(envError)
   }
 
   const name = body.name.trim().toLowerCase()
@@ -156,31 +272,56 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const cpus = body.cpus || 2
   const memory = body.memory || '4g'
 
-  // Build docker run command
-  // AGENT_ID is set to the tmux session name; the heartbeat endpoint resolves
-  // name → UUID (sessions-service.ts:570). AIMAESTRO_HOST_URL points at the
-  // host ai-maestro via the docker-bridge gateway alias added below.
-  const hostPort = process.env.PORT || '23000'
-  const envFlags = [
-    `-e TMUX_SESSION_NAME="${name}"`,
-    `-e AI_TOOL="${aiTool}"`,
-    `-e AGENT_ID="${name}"`,
-    `-e AIMAESTRO_HOST_URL="http://host.docker.internal:${hostPort}"`,
-  ]
-  if (body.githubToken) {
-    envFlags.push(`-e GITHUB_TOKEN="${body.githubToken}"`)
-  }
+  // Pre-generate the agent UUID so AMP common mounts and CLAUDE_AGENT_ID can
+  // reference it on first container start. createAgent below accepts an
+  // explicit `id` and will use it verbatim if it matches the UUID shape.
+  const agentId = uuidv4()
 
-  const extraMountFlags = buildMountFlags(body.mounts)
+  // Build the docker invocation. Common AMP mounts/envs are auto-included for
+  // every cloud agent so amp-helper can resolve identity (CLAUDE_AGENT_ID +
+  // AMP_DIR) and reach the host AI Maestro server (AMP_MAESTRO_URL via the
+  // host.docker.internal alias). Operator-supplied mounts/extraEnv merge on
+  // top: same containerPath / same env key wins for the operator, so callers
+  // can override defaults when needed.
+  const hostPort = process.env.PORT || '23000'
+  const hostInternalUrl = `http://host.docker.internal:${hostPort}`
+
+  const baseEnv: Record<string, string> = {
+    TMUX_SESSION_NAME: name,
+    AI_TOOL: aiTool,
+    AGENT_ID: name,
+    AIMAESTRO_HOST_URL: hostInternalUrl,
+  }
+  if (body.githubToken) {
+    baseEnv.GITHUB_TOKEN = body.githubToken
+  }
+  const ampEnv = buildAmpCommonEnv(agentId, name, hostInternalUrl)
+  const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, body.extraEnv)
+
+  const ampMounts = buildAmpCommonMounts(agentId)
+  const mergedMounts = mergeMounts(ampMounts, body.mounts)
+
+  // Pre-create host-side AMP dirs that are about to be bind-mounted. If the
+  // host path doesn't exist, docker creates it as a root-owned empty directory,
+  // which (a) leaves the container's claude (uid 1000) unable to write keys
+  // and (b) silently masks the missing-identity failure. We create them as the
+  // server process user (uid matches the container's claude user by convention).
+  for (const m of ampMounts) {
+    try {
+      fs.mkdirSync(m.hostPath, { recursive: true })
+    } catch (err) {
+      console.warn(`[Docker Service] Could not pre-create mount source ${m.hostPath}:`, err)
+    }
+  }
 
   const dockerCmd = [
     'docker run -d',
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
     body.autoRemove ? '' : '--restart unless-stopped',
-    ...envFlags,
+    ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,
-    ...extraMountFlags,
+    ...buildMountFlags(mergedMounts),
     `-p ${port}:23000`,
     `--cpus=${cpus}`,
     `--memory=${memory}`,
@@ -197,10 +338,13 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return operationFailed('start container', message)
   }
 
-  // Register in agent registry
-  let agentId: string | undefined
+  // Register in agent registry. Persist only the operator-supplied mounts
+  // under deployment.sandbox.mounts — AMP common mounts are recomputed
+  // deterministically from the agent UUID at any future redeploy, so storing
+  // them would create drift if defaults evolve.
   try {
     const agent = createAgent({
+      id: agentId,
       name,
       label: body.label,
       avatar: body.avatar,
@@ -212,7 +356,6 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       deploymentType: 'cloud',
       hostId: body.hostId,
     })
-    agentId = agent.id
 
     const agents = loadAgents()
     const idx = agents.findIndex(a => a.id === agent.id)
