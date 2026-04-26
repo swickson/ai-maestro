@@ -24,7 +24,14 @@ RUN apt-get update && apt-get install -y \
     python3 \
     jq \
     openssl \
+    locales \
     && rm -rf /var/lib/apt/lists/*
+
+# Generate the en_US.UTF-8 locale. Without this, the LANG/LC_ALL envs set
+# below are advisory only — the locale data isn't installed, so every shell
+# start emits `bash: warning: setlocale: LC_ALL: cannot change locale`.
+RUN sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen
 
 # Install Node.js 20.x
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -80,6 +87,30 @@ ENV AGENT_ID=agent-local
 ENV TMUX_SESSION_NAME=agent-session
 ENV WORKSPACE=/workspace
 ENV AGENT_PORT=23000
+
+# Locale — paired with the locale-gen step above. Setting these without
+# generating the locale data is what produced the setlocale warnings on
+# every Mason/Optic shell start before this bake.
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+
+# Terminal — 256-color + 24-bit color baseline so CLIs (Claude Code, less,
+# vim, tmux, fzf) render rich output without runtime overrides.
+ENV TERM=xterm-256color
+ENV COLORTERM=truecolor
+
+# Login shell — matches the user's shell set on creation (-s /bin/zsh
+# above). Tools that spawn subshells via $SHELL (git, tmux default-shell,
+# less, $EDITOR openers) now stay consistent with what an interactive
+# login gets.
+ENV SHELL=/bin/zsh
+
+# PATH — prepend the AMP CLI mount point so `which amp-send` resolves
+# inside the container without the runtime -e PATH= override that
+# createDockerAgent injects (v0.30.19). The runtime override still wins
+# for operator-customized PATHs; this is the long-term default.
+ENV PATH=/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Git configuration (will use token at runtime)
 # Note: GITHUB_TOKEN should be passed as environment variable at runtime, not baked into image
