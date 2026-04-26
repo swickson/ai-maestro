@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     build-essential \
     python3 \
+    jq \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x
