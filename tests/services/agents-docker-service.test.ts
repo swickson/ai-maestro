@@ -6,7 +6,10 @@
  * pin down the narrow contract that determines what gets shelled out.
  */
 
-import { describe, it, expect } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   validateMounts,
   validateExtraEnv,
@@ -14,6 +17,8 @@ import {
   buildEnvFlags,
   buildAmpCommonMounts,
   buildAmpCommonEnv,
+  buildCloudClaudeSettingsMount,
+  provisionCloudClaudeConfig,
   mergeMounts,
   mergeEnv,
 } from '@/services/agents-docker-service'
@@ -201,14 +206,13 @@ describe('buildAmpCommonMounts', () => {
   const uuid = '11111111-1111-1111-1111-111111111111'
   const home = '/home/gosub'
 
-  it('returns four mounts derived from the agent UUID', () => {
+  it('returns three mounts derived from the agent UUID', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
-    expect(mounts).toHaveLength(4)
+    expect(mounts).toHaveLength(3)
     expect(mounts.map(m => m.containerPath)).toEqual([
       `/home/claude/.agent-messaging/agents/${uuid}`,
       `/home/claude/.aimaestro/agents/${uuid}`,
       '/home/claude/.local/bin',
-      '/home/claude/.claude',
     ])
   })
 
@@ -218,7 +222,6 @@ describe('buildAmpCommonMounts', () => {
       `${home}/.agent-messaging/agents/${uuid}`,
       `${home}/.aimaestro/agents/${uuid}`,
       `${home}/.local/bin`,
-      `${home}/.claude`,
     ])
   })
 
@@ -228,19 +231,97 @@ describe('buildAmpCommonMounts', () => {
     expect(cli?.readOnly).toBe(true)
   })
 
-  it('leaves identity and config mounts read-write', () => {
+  it('leaves identity mounts read-write', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
     const idAmp = mounts.find(m => m.containerPath === `/home/claude/.agent-messaging/agents/${uuid}`)
     const idMaestro = mounts.find(m => m.containerPath === `/home/claude/.aimaestro/agents/${uuid}`)
-    const claudeCfg = mounts.find(m => m.containerPath === '/home/claude/.claude')
     expect(idAmp?.readOnly).toBeFalsy()
     expect(idMaestro?.readOnly).toBeFalsy()
-    expect(claudeCfg?.readOnly).toBeFalsy()
+  })
+
+  it('does not include a wholesale ~/.claude mount', () => {
+    const mounts = buildAmpCommonMounts(uuid, home)
+    expect(mounts.find(m => m.containerPath === '/home/claude/.claude')).toBeUndefined()
+    expect(mounts.find(m => m.hostPath === `${home}/.claude`)).toBeUndefined()
   })
 
   it('passes the SandboxMount validator', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
     expect(validateMounts(mounts)).toBeNull()
+  })
+})
+
+describe('buildCloudClaudeSettingsMount', () => {
+  const uuid = '33333333-3333-3333-3333-333333333333'
+  const home = '/home/gosub'
+
+  it('returns a file-level mount targeting /home/claude/.claude/settings.json', () => {
+    const m = buildCloudClaudeSettingsMount(uuid, home)
+    expect(m.hostPath).toBe(`${home}/.aimaestro/agents/${uuid}/claude-settings.json`)
+    expect(m.containerPath).toBe('/home/claude/.claude/settings.json')
+  })
+
+  it('is read-only', () => {
+    expect(buildCloudClaudeSettingsMount(uuid, home).readOnly).toBe(true)
+  })
+
+  it('passes the SandboxMount validator', () => {
+    expect(validateMounts([buildCloudClaudeSettingsMount(uuid, home)])).toBeNull()
+  })
+})
+
+describe('provisionCloudClaudeConfig', () => {
+  const uuid = '44444444-4444-4444-4444-444444444444'
+  let tmpHome: string
+  let tmpRepo: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-home-'))
+    tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-repo-'))
+    const hookSrcDir = path.join(tmpRepo, 'scripts', 'claude-hooks')
+    fs.mkdirSync(hookSrcDir, { recursive: true })
+    fs.writeFileSync(path.join(hookSrcDir, 'ai-maestro-hook.cjs'), '// stub hook\nprocess.exit(0)\n')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+    fs.rmSync(tmpRepo, { recursive: true, force: true })
+  })
+
+  it('snapshots the hook script into the per-UUID dir', () => {
+    const { hookPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    expect(hookPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'claude-hook.cjs'))
+    expect(fs.existsSync(hookPath)).toBe(true)
+    expect(fs.readFileSync(hookPath, 'utf8')).toContain('stub hook')
+  })
+
+  it('makes the snapshotted hook executable', () => {
+    const { hookPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    expect(fs.statSync(hookPath).mode & 0o111).not.toBe(0)
+  })
+
+  it('writes a settings.json with hook paths pointing at the container-side hook location', () => {
+    const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    const containerHook = `/home/claude/.aimaestro/agents/${uuid}/claude-hook.cjs`
+    for (const event of ['Notification', 'Stop', 'SessionStart', 'UserPromptSubmit']) {
+      const cfg = settings.hooks[event][0]
+      expect(cfg.hooks[0].command).toBe(`node ${containerHook}`)
+    }
+  })
+
+  it('does not reference the host repo path in the generated settings', () => {
+    const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const body = fs.readFileSync(settingsPath, 'utf8')
+    expect(body).not.toContain(tmpRepo)
+    expect(body).not.toContain(tmpHome)
+  })
+
+  it('creates the per-UUID dir if missing', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    expect(fs.existsSync(agentDir)).toBe(false)
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    expect(fs.existsSync(agentDir)).toBe(true)
   })
 })
 
