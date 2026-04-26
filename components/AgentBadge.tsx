@@ -14,7 +14,7 @@ import {
   Box,
 } from 'lucide-react'
 import { computeHash, getAvatarUrl } from '@/lib/hash-utils'
-import { Agent, AgentSession } from '@/types/agent'
+import { Agent, AgentSession, AgentSessionStatus } from '@/types/agent'
 import { SessionActivityStatus } from '@/hooks/useSessionActivity'
 
 interface AgentBadgeProps {
@@ -62,9 +62,12 @@ function isEmoji(str: string): boolean {
   return /\p{Emoji_Presentation}|\p{Extended_Pictographic}/u.test(str)
 }
 
-// Get status info from agent state
+// Get status info from agent state.
+// Accepts either AgentSession (tmux-derived, from agent.sessions[]) or
+// AgentSessionStatus (heartbeat-derived, from agent.session). Only the
+// `status` field is read here, which has the same shape on both types.
 function getStatusInfo(
-  session: AgentSession | undefined,
+  session: AgentSession | AgentSessionStatus | undefined,
   isHibernated: boolean,
   activityStatus?: SessionActivityStatus
 ): { color: string; bgColor: string; label: string; pulse?: boolean } {
@@ -105,8 +108,10 @@ export default function AgentBadge({
   const [showMenu, setShowMenu] = React.useState(false)
   const menuRef = React.useRef<HTMLDivElement>(null)
 
-  // Get the primary session
-  const session = agent.sessions?.[0]
+  // Get the primary session. Use agent.session (singular) — populated by listAgents
+  // from heartbeat-derived sessionStatus — so cloud agents (no host tmux but heartbeating)
+  // render as online. agent.sessions[0] would be tmux-derived and wrongly mark them offline.
+  const session = agent.session
   const isOnline = session?.status === 'online'
   const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
 
