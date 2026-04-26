@@ -246,11 +246,13 @@ describe('buildAmpCommonMounts', () => {
 
 describe('buildAmpCommonEnv', () => {
   const uuid = '22222222-2222-2222-2222-222222222222'
+  const name = 'ops-exec-test'
   const hostUrl = 'http://host.docker.internal:23000'
 
-  it('returns the four identity/routing/path envs', () => {
-    expect(buildAmpCommonEnv(uuid, hostUrl)).toEqual({
+  it('returns the five identity/name/routing/path envs', () => {
+    expect(buildAmpCommonEnv(uuid, name, hostUrl)).toEqual({
       CLAUDE_AGENT_ID: uuid,
+      CLAUDE_AGENT_NAME: name,
       AMP_DIR: `/home/claude/.agent-messaging/agents/${uuid}`,
       AMP_MAESTRO_URL: hostUrl,
       PATH: '/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
@@ -258,12 +260,12 @@ describe('buildAmpCommonEnv', () => {
   })
 
   it('puts the AMP CLI dir ahead of the standard path', () => {
-    const env = buildAmpCommonEnv(uuid, hostUrl)
+    const env = buildAmpCommonEnv(uuid, name, hostUrl)
     expect(env.PATH.split(':')[0]).toBe('/home/claude/.local/bin')
   })
 
   it('passes the extraEnv validator', () => {
-    expect(validateExtraEnv(buildAmpCommonEnv(uuid, hostUrl))).toBeNull()
+    expect(validateExtraEnv(buildAmpCommonEnv(uuid, name, hostUrl))).toBeNull()
   })
 })
 
@@ -315,5 +317,17 @@ describe('mergeEnv', () => {
 
   it('union-merges disjoint keys', () => {
     expect(mergeEnv({ FOO: 'a' }, { BAR: 'b' })).toEqual({ FOO: 'a', BAR: 'b' })
+  })
+
+  // Precedence chain image-default < auto-injected < operator. The image's
+  // ENV is the docker baseline; -e flags override it; mergeEnv layers operator
+  // overrides on top of auto. This test pins the auto-vs-operator step.
+  it('preserves operator override of an auto-injected AMP env', () => {
+    const uuid = '33333333-3333-3333-3333-333333333333'
+    const auto = buildAmpCommonEnv(uuid, 'ops-exec-test', 'http://host.docker.internal:23000')
+    const operator = { AMP_MAESTRO_URL: 'http://operator-override:9999' }
+    const merged = mergeEnv(auto, operator)
+    expect(merged.AMP_MAESTRO_URL).toBe('http://operator-override:9999')
+    expect(merged.CLAUDE_AGENT_ID).toBe(uuid) // un-overridden auto values stay
   })
 })

@@ -59,7 +59,29 @@ Auto-injected by `POST /api/agents/docker/create` so amp-helper resolves the age
 - `AMP_DIR=/home/claude/.agent-messaging/agents/<agent-uuid>`
 - `AMP_MAESTRO_URL=http://host.docker.internal:23000`
 
-Operator-supplied `extraEnv` in the create request merges on top — same key wins for the operator, so any of these can be overridden when needed.
+Operator-supplied `extraEnv` in the create request merges on top — same key wins for the operator, so any of these can be overridden when needed. Precedence: **image default `ENV` < auto-injected common envs < operator `extraEnv`**.
+
+### UID/GID alignment (load-bearing — Hutch's "#1 silent failure")
+
+The container's `claude` user is uid=1000/gid=1000. The host user that owns `~/.agent-messaging/` and `~/.aimaestro/` **must also be uid=1000** for the bind mounts to work. If the UIDs don't match:
+
+- amp-send writes from inside the container produce host files with mismatched ownership; relay silently breaks or emits permission-denied.
+- The new agent's per-agent dirs are created as the server-process user (uid 1000 on bananajr/Holmes by convention) — if the container runs at a different uid, the keys/registrations directory is unreadable from inside.
+
+If your host user isn't uid 1000, either rebuild the image with a matching `USER_ID` build arg (the Dockerfile accepts one) or override at runtime via `docker run --user`.
+
+### Per-agent vs whole-directory `~/.agent-messaging` mount
+
+This doc bind-mounts only the per-agent subdir (`~/.agent-messaging/agents/<id>/`) into the container. An alternative is to bind the whole parent `~/.agent-messaging/` so the container sees every agent's message dirs (used by some Holmes deployments to enable cross-agent inbox reads from inside relay agents).
+
+| | Per-agent (this doc's default) | Whole-directory |
+|---|---|---|
+| Blast radius | Isolated; one agent can't read another's inbox | Cross-agent reads possible |
+| Use case | Default; matches the AMP "per-agent isolation" comment in amp-helper.sh | Relay/conductor agents that legitimately need to inspect peer inboxes |
+| `_index_lookup` (name → uuid resolution from inside container) | Falls through to mesh routing for unknown names | Resolves locally via `.index.json` |
+| Confidentiality | Stronger | Weaker |
+
+If an agent genuinely needs cross-agent visibility, override per-agent default by adding `{ hostPath: "<home>/.agent-messaging", containerPath: "/home/claude/.agent-messaging" }` to its operator-supplied `mounts[]` — the operator entry overrides the auto-injected per-agent mount at the same containerPath.
 
 ### Explicitly **not** mounted
 
@@ -93,10 +115,12 @@ For MCP servers or CLI tools that aren't on npm, or that you want to keep out of
   "deployment": {
     "type": "cloud",
     "cloud": {
-      "image": "ai-maestro-agent:latest",
+      "image": "ai-maestro-agent:latest"
+    },
+    "sandbox": {
       "mounts": [
-        { "host": "/home/gosub/agents/rollie", "container": "/home/gosub/agents/rollie", "mode": "rw" },
-        { "host": "/opt/mcp-foo", "container": "/opt/mcp-foo", "mode": "ro" }
+        { "hostPath": "/home/gosub/agents/rollie", "containerPath": "/home/gosub/agents/rollie" },
+        { "hostPath": "/opt/mcp-foo", "containerPath": "/opt/mcp-foo", "readOnly": true }
       ]
     }
   }
@@ -150,7 +174,7 @@ When promoting, document the daemon's host-side lifecycle (systemd unit or equiv
 ### "I want to add a custom Python MCP server I'm hacking on."
 
 1. Develop on the host at `/home/gosub/code/my-mcp/`.
-2. Add `{ "host": "/home/gosub/code/my-mcp", "container": "/opt/my-mcp", "mode": "rw" }` to the agent's `deployment.cloud.mounts[]`.
+2. Add `{ "hostPath": "/home/gosub/code/my-mcp", "containerPath": "/opt/my-mcp" }` to the agent's `deployment.sandbox.mounts[]`.
 3. Edit `mcp-config.json`: `"my-mcp": { "command": "python", "args": ["/opt/my-mcp/server.py"] }`.
 4. Restart agent. Iterate freely on the host — every restart sees the latest code.
 

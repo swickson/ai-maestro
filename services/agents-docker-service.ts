@@ -148,9 +148,14 @@ const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:/usr/local/sbin:/usr/local/
 // Without these, amp-helper falls through to its name-based fallback, which
 // auto-creates a phantom empty identity, and amp-send tries to call the
 // container's own loopback agent-server instead of the AI Maestro API.
-export function buildAmpCommonEnv(agentId: string, hostUrl: string): Record<string, string> {
+//
+// CLAUDE_AGENT_NAME backs amp-helper's priority-3 resolution path — set
+// alongside CLAUDE_AGENT_ID so name-based lookups (sender name in routed
+// messages, index lookups) get the same answer as id-based lookups.
+export function buildAmpCommonEnv(agentId: string, agentName: string, hostUrl: string): Record<string, string> {
   return {
     CLAUDE_AGENT_ID: agentId,
+    CLAUDE_AGENT_NAME: agentName,
     AMP_DIR: path.posix.join(CONTAINER_HOME, '.agent-messaging', 'agents', agentId),
     AMP_MAESTRO_URL: hostUrl,
     PATH: CONTAINER_PATH,
@@ -290,7 +295,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   if (body.githubToken) {
     baseEnv.GITHUB_TOKEN = body.githubToken
   }
-  const ampEnv = buildAmpCommonEnv(agentId, hostInternalUrl)
+  const ampEnv = buildAmpCommonEnv(agentId, name, hostInternalUrl)
   const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, body.extraEnv)
 
   const ampMounts = buildAmpCommonMounts(agentId)
