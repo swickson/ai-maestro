@@ -1066,17 +1066,17 @@ export default function AgentList({
                                   >
                                     {[...agentsList]
                                       .sort((a, b) => {
-                                        // Sort by status first (online > hibernated > offline), then by alias
-                                        const aSession = a.sessions?.[0]
-                                        const bSession = b.sessions?.[0]
-                                        const aOnline = aSession?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
-                                        const bOnline = bSession?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
+                                        // Sort by status first (online > hibernated > offline), then by alias.
+                                        // Read agent.session (singular, populated by listAgents from heartbeat-derived
+                                        // sessionStatus) so cloud agents — which have no host tmux but DO heartbeat —
+                                        // sort as online. agent.sessions[0] is tmux-derived and would mis-sort cloud.
+                                        const aOnline = a.session?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
+                                        const bOnline = b.session?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
                                         if (aOnline !== bOnline) return bOnline - aOnline
                                         return (a.label || a.name || a.alias || '').toLowerCase().localeCompare((b.label || b.name || b.alias || '').toLowerCase())
                                       })
                                       .map((agent) => {
-                                        const session = agent.sessions?.[0]
-                                        const isOnline = session?.status === 'online'
+                                        const isOnline = agent.session?.status === 'online'
                                         const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
                                         const sessionName = agent.name
                                         const activityInfo = sessionName ? getSessionActivity(sessionName) : null
@@ -1233,18 +1233,18 @@ export default function AgentList({
                               <ul className="space-y-0.5">
                                 {[...agentsList]
                                   .sort((a, b) => {
-                                    // Sort by status first (online > hibernated > offline), then by alias
-                                    const aSession = a.sessions?.[0]
-                                    const bSession = b.sessions?.[0]
-                                    const aOnline = aSession?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
-                                    const bOnline = bSession?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
+                                    // Sort by status first (online > hibernated > offline), then by alias.
+                                    // See sister site above re: reading agent.session (singular) so cloud agents
+                                    // sort as online based on heartbeat rather than mis-sorting on tmux-derived
+                                    // sessions[0].status.
+                                    const aOnline = a.session?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
+                                    const bOnline = b.session?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
                                     if (aOnline !== bOnline) return bOnline - aOnline
                                     return (a.label || a.name || a.alias || '').toLowerCase().localeCompare((b.label || b.name || b.alias || '').toLowerCase())
                                   })
                                   .map((agent) => {
                                   const isActive = activeAgentId === agent.id
-                                  const session = agent.sessions?.[0]
-                                  const isOnline = session?.status === 'online'
+                                  const isOnline = agent.session?.status === 'online'
                                   const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
                                   const indentClass = level2 === 'default' ? 'pl-10' : 'pl-14'
 
