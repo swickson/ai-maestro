@@ -18,7 +18,7 @@ Cloud agents are the right default for any agent running with `--yolo`, `--dange
 
 ## Two patterns, one schema
 
-All cloud agents share the same registry shape under `deployment.cloud.mounts[]`. Two operational patterns emerge from how much external surface an agent needs.
+All cloud agents share the same registry shape under `deployment.sandbox.mounts[]`. Two operational patterns emerge from how much external surface an agent needs.
 
 ### Pattern A — Bare-container agents
 
@@ -44,8 +44,22 @@ Pattern B intentionally avoids `git clone + build` inside the container on first
 
 ### Common mounts (both patterns)
 
-- `~/.aimaestro/agents/<agent-id>/` — agent identity, AMP keys, hook-debug log
-- `~/.claude/` (or `~/.codex/`, `~/.gemini/`) — agent CLI config including `mcp-config.json`
+These four are auto-included by `POST /api/agents/docker/create` for every cloud agent — operators don't need to declare them. They are recomputed deterministically from the agent UUID at any future redeploy.
+
+- `~/.agent-messaging/agents/<agent-id>/` (rw) — AMP identity: signing keys, registrations, inbox/sent. Without this, amp-helper's name-based fallback auto-creates a phantom empty identity inside the container.
+- `~/.aimaestro/agents/<agent-id>/` (rw) — dashboard / runtime: `agent.db`, `brain/`, `status.json`, hook-debug log.
+- `~/.local/bin/` (ro) → `/home/claude/.local/bin/` — `amp-*` CLI scripts on PATH inside the container. Read-only because the container shouldn't mutate operator tooling.
+- `~/.claude/` (rw) — agent CLI config including `mcp-config.json`. (For non-claude programs, the analogous `~/.codex/` or `~/.gemini/` should be substituted via operator-supplied `mounts[]`.)
+
+### Common envs (both patterns)
+
+Auto-injected by `POST /api/agents/docker/create` so amp-helper resolves the agent identity at priority 1 (explicit `AMP_DIR`) and reaches the host AI Maestro server through the `host.docker.internal` gateway alias.
+
+- `CLAUDE_AGENT_ID=<agent-uuid>`
+- `AMP_DIR=/home/claude/.agent-messaging/agents/<agent-uuid>`
+- `AMP_MAESTRO_URL=http://host.docker.internal:23000`
+
+Operator-supplied `extraEnv` in the create request merges on top — same key wins for the operator, so any of these can be overridden when needed.
 
 ### Explicitly **not** mounted
 
