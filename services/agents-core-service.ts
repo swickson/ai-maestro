@@ -62,7 +62,7 @@ import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { initializeAllAgents, getStartupStatus } from '@/lib/agent-startup'
 import { sessionActivity, agentActivity } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
-import { inspectContainerStatus, startContainer } from '@/lib/container-utils'
+import { inspectContainerStatus, startContainer, stopContainer } from '@/lib/container-utils'
 import type { Host } from '@/types/host'
 import { type ServiceResult, missingField, notFound, invalidField, invalidRequest, operationFailed, gone, timeout } from '@/services/service-errors'
 
@@ -1635,6 +1635,61 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
 
     const runtime = getRuntime()
     const sessionName = computeSessionName(agentName, sessionIndex)
+
+    // ─── Cloud (containerized) agents: stop the docker container ─────────────
+    // Mirrors wakeAgent's cloud branch (line ~1413). Without this, hibernate of
+    // a cloud agent falls into the host-tmux check below — that runtime call
+    // returns false (the agent's tmux lives inside its container, not on the
+    // host) and the function takes the early-return at "Session was already
+    // terminated", marking the agent offline while the container stays up.
+    if (agent.deployment?.type === 'cloud' && agent.deployment.cloud?.provider === 'local-container') {
+      const containerName = agent.deployment.cloud.containerName
+      if (!containerName) {
+        return invalidField('deployment.cloud.containerName', 'Cloud agent has no containerName configured')
+      }
+
+      const status = await inspectContainerStatus(containerName)
+
+      if (status === 'stopped' || status === 'missing') {
+        updateAgentSessionInRegistry(agentId, sessionIndex, 'offline')
+        const message = status === 'missing'
+          ? `Agent "${agentName}" container ${containerName} does not exist; registry updated`
+          : `Agent "${agentName}" container ${containerName} was already stopped; registry updated`
+        return {
+          data: { success: true, agentId, name: agentName, sessionName, sessionIndex, hibernated: true, message },
+          status: 200,
+        }
+      }
+
+      if (status === 'docker_down') {
+        return operationFailed(
+          `inspect container ${containerName}`,
+          'Docker daemon unreachable; cannot hibernate cloud agent'
+        )
+      }
+
+      // status is 'running', 'paused', or 'created' — stop it
+      try {
+        await stopContainer(containerName)
+        console.log(`[Hibernate] Agent ${agentName} (${agentId}) — stopped CONTAINER ${containerName}`)
+        updateAgentSessionInRegistry(agentId, sessionIndex, 'offline')
+        return {
+          data: {
+            success: true,
+            agentId,
+            name: agentName,
+            sessionName,
+            sessionIndex,
+            hibernated: true,
+            message: `Agent "${agentName}" container ${containerName} has been stopped`,
+          },
+          status: 200,
+        }
+      } catch (err) {
+        console.error(`[Hibernate] Failed to stop container ${containerName}:`, err)
+        return operationFailed(`stop container ${containerName}`, (err as Error).message)
+      }
+    }
 
     // Check if session exists
     const exists = await runtime.sessionExists(sessionName)
