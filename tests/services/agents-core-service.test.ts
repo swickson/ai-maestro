@@ -97,6 +97,7 @@ const {
     mockContainerUtils: {
       inspectContainerStatus: vi.fn().mockResolvedValue('missing' as const),
       startContainer: vi.fn().mockResolvedValue(undefined),
+      stopContainer: vi.fn().mockResolvedValue(undefined),
     },
   }
 })
@@ -163,6 +164,7 @@ beforeEach(() => {
   mockHostsConfig.isSelf.mockReturnValue(true)
   mockContainerUtils.inspectContainerStatus.mockResolvedValue('missing')
   mockContainerUtils.startContainer.mockResolvedValue(undefined)
+  mockContainerUtils.stopContainer.mockResolvedValue(undefined)
 })
 
 // ============================================================================
@@ -912,6 +914,139 @@ describe('hibernateAgent', () => {
     // Should send Ctrl-C then "exit" before kill
     expect(mockRuntime.sendKeys).toHaveBeenCalledWith('my-agent', 'C-c')
     expect(mockRuntime.sendKeys).toHaveBeenCalledWith('my-agent', '"exit"', { enter: true })
+  })
+
+  // ─── Cloud-agent (containerized) hibernate path — symmetric to wakeAgent ──
+  describe('cloud (containerized) hibernate', () => {
+    function makeCloudAgent(overrides: Record<string, unknown> = {}) {
+      return makeAgent({
+        id: 'cloud-1',
+        name: 'cloud-agent',
+        workingDirectory: '/workspace',
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            containerName: 'aim-cloud-agent',
+            websocketUrl: 'ws://localhost:23001/term',
+            healthCheckUrl: 'http://localhost:23001/health',
+            status: 'running',
+          },
+        },
+        ...overrides,
+      })
+    }
+
+    it('stops the running container and skips host tmux', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.hibernated).toBe(true)
+      expect((result.data as any)?.message).toMatch(/has been stopped/i)
+      expect(mockContainerUtils.stopContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockRuntime.killSession).not.toHaveBeenCalled()
+      expect(mockRuntime.sendKeys).not.toHaveBeenCalled()
+    })
+
+    it('also stops a paused container', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('paused')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).toHaveBeenCalledWith('aim-cloud-agent')
+    })
+
+    it('returns success without calling docker stop when container already stopped', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('stopped')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.hibernated).toBe(true)
+      expect((result.data as any)?.message).toMatch(/already stopped/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns success when container is missing (treated as already-hibernated)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.message).toMatch(/does not exist/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns success without docker stop when container is in created state', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('created')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.message).toMatch(/created but never started/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns 500 when docker daemon is down', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('docker_down')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(500)
+      expect((result.data as ServiceError)?.message).toMatch(/docker daemon/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns 500 when docker stop fails', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.stopContainer.mockRejectedValueOnce(new Error('docker stop timeout'))
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(500)
+      expect((result.data as ServiceError)?.message).toMatch(/docker stop timeout/i)
+    })
+
+    it('returns 400 when cloud agent has no containerName configured', async () => {
+      const agent = makeCloudAgent({
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            websocketUrl: 'ws://localhost:23001/term',
+            // containerName intentionally missing
+          },
+        },
+      })
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(400)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+    })
   })
 })
 
