@@ -916,6 +916,30 @@ describe('hibernateAgent', () => {
     expect(mockRuntime.sendKeys).toHaveBeenCalledWith('my-agent', '"exit"', { enter: true })
   })
 
+  it('clears the agentActivity heartbeat after hibernating an active session', async () => {
+    const agent = makeAgent({ id: 'agent-1', name: 'my-agent' })
+    mockAgentRegistry.getAgent.mockReturnValue(agent)
+    mockRuntime.sessionExists.mockResolvedValue(true)
+    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+    mockSharedState.agentActivity.set('agent-1', Date.now())
+
+    await hibernateAgent('agent-1', {})
+
+    expect(mockSharedState.agentActivity.has('agent-1')).toBe(false)
+  })
+
+  it('clears the agentActivity heartbeat when session was already terminated', async () => {
+    const agent = makeAgent({ id: 'agent-1', name: 'my-agent' })
+    mockAgentRegistry.getAgent.mockReturnValue(agent)
+    mockRuntime.sessionExists.mockResolvedValue(false)
+    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+    mockSharedState.agentActivity.set('agent-1', Date.now())
+
+    await hibernateAgent('agent-1', {})
+
+    expect(mockSharedState.agentActivity.has('agent-1')).toBe(false)
+  })
+
   // ─── Cloud-agent (containerized) hibernate path — symmetric to wakeAgent ──
   describe('cloud (containerized) hibernate', () => {
     function makeCloudAgent(overrides: Record<string, unknown> = {}) {
@@ -1027,6 +1051,50 @@ describe('hibernateAgent', () => {
 
       expect(result.status).toBe(500)
       expect((result.data as ServiceError)?.message).toMatch(/docker stop timeout/i)
+    })
+
+    it('clears the agentActivity heartbeat after stopping a running container', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockSharedState.agentActivity.set('cloud-1', Date.now())
+
+      await hibernateAgent('cloud-1', {})
+
+      expect(mockSharedState.agentActivity.has('cloud-1')).toBe(false)
+    })
+
+    it('clears the agentActivity heartbeat on the early-return paths (stopped/missing/created)', async () => {
+      for (const status of ['stopped', 'missing', 'created'] as const) {
+        const agent = makeCloudAgent()
+        mockAgentRegistry.getAgent.mockReturnValue(agent)
+        mockAgentRegistry.loadAgents.mockReturnValue([agent])
+        mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce(status)
+        mockSharedState.agentActivity.set('cloud-1', Date.now())
+
+        await hibernateAgent('cloud-1', {})
+
+        expect(
+          mockSharedState.agentActivity.has('cloud-1'),
+          `agentActivity should be cleared on ${status} branch`
+        ).toBe(false)
+      }
+    })
+
+    it('does not clear the heartbeat when docker stop fails', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.stopContainer.mockRejectedValueOnce(new Error('docker stop timeout'))
+      const heartbeatTs = Date.now()
+      mockSharedState.agentActivity.set('cloud-1', heartbeatTs)
+
+      await hibernateAgent('cloud-1', {})
+
+      // Container is still up; heartbeat should not be cleared so the agent
+      // doesn't appear offline while it's actually still running.
+      expect(mockSharedState.agentActivity.get('cloud-1')).toBe(heartbeatTs)
     })
 
     it('returns 400 when cloud agent has no containerName configured', async () => {

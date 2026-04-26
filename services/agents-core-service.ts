@@ -1655,6 +1655,7 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
       // Mirrors wake's bundling (which groups stopped+created → start) inversely.
       if (status === 'stopped' || status === 'missing' || status === 'created') {
         updateAgentSessionInRegistry(agentId, sessionIndex, 'offline')
+        agentActivity.delete(agentId)
         const message = status === 'missing'
           ? `Agent "${agentName}" container ${containerName} does not exist; registry updated`
           : status === 'created'
@@ -1678,6 +1679,7 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
         await stopContainer(containerName)
         console.log(`[Hibernate] Agent ${agentName} (${agentId}) — stopped CONTAINER ${containerName}`)
         updateAgentSessionInRegistry(agentId, sessionIndex, 'offline')
+        agentActivity.delete(agentId)
         return {
           data: {
             success: true,
@@ -1701,6 +1703,7 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
     if (!exists) {
       // Session doesn't exist, just update the status
       updateAgentSessionInRegistry(agentId, sessionIndex, 'offline')
+      agentActivity.delete(agentId)
 
       return {
         data: {
@@ -1737,6 +1740,13 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
 
     // Update agent status in registry
     updateAgentSessionInRegistry(agentId, sessionIndex, 'offline')
+
+    // Clear the in-memory heartbeat so /api/agents stops counting this agent
+    // as online via hasRecentHeartbeat (line ~597). Without this, the UI keeps
+    // the hibernate button instead of flipping to wake for up to 120s while
+    // the stale timestamp ages out — symptom Shane saw on cloud agents but
+    // the host/tmux path has the same shape so we clear it here too.
+    agentActivity.delete(agentId)
 
     console.log(`[Hibernate] Agent ${agentName} (${agentId}) session ${sessionIndex} hibernated successfully`)
 
