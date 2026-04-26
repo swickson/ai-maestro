@@ -3,6 +3,7 @@ import { notifyAgent } from '@/lib/notification-service'
 import { getRuntime } from '@/lib/agent-runtime'
 import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject, wrapAsBracketedPaste } from '@/lib/meeting-inject-queue'
 import { getAgentBySession } from '@/lib/agent-registry'
+import { sendKeysToContainer } from '@/lib/container-utils'
 
 /**
  * POST /api/agents/notify
@@ -24,23 +25,47 @@ export async function POST(request: NextRequest) {
 
     // Injection mode: send literal text into the agent's tmux session
     if (body.injection && body.agentName) {
-      const runtime = getRuntime()
       const sessionName = body.agentName
-      const exists = await runtime.sessionExists(sessionName)
-      if (!exists) {
-        return NextResponse.json({ error: `Session ${sessionName} not found` }, { status: 404 })
+      // Resolve agent up-front so we can dispatch on deployment.type. For
+      // cloud agents, the host-tmux runtime has no session — sendKeys must
+      // go via `docker exec aim-<name> tmux send-keys` against the in-
+      // container tmux instead. Same shape as PR #56's cloud branch in
+      // wakeAgent (closes #6) but for the injection path.
+      const agent = getAgentBySession(sessionName)
+      const isCloud = agent?.deployment?.type === 'cloud'
+      const containerName = isCloud ? agent?.deployment?.cloud?.containerName : undefined
+
+      if (isCloud) {
+        if (!containerName) {
+          return NextResponse.json(
+            { error: `Cloud agent ${sessionName} has no containerName configured` },
+            { status: 400 }
+          )
+        }
+      } else {
+        const runtime = getRuntime()
+        const exists = await runtime.sessionExists(sessionName)
+        if (!exists) {
+          return NextResponse.json({ error: `Session ${sessionName} not found` }, { status: 404 })
+        }
       }
 
       // Hybrid path (flag-gated per agent kind): enqueue as structured context
       // and wake-ping with "." + Enter (bare Enter was a no-op in Claude Code).
       // Hook drains on the resulting UserPromptSubmit.
-      const agent = getAgentBySession(sessionName)
       if (agent && shouldUseAdditionalContext(agent.program)) {
         enqueueForSession(sessionName, body.injection)
-        await runtime.sendKeys(sessionName, '.', { literal: true, enter: false })
-        await new Promise(r => setTimeout(r, 100))
-        await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
-        console.log(`[API] /api/agents/notify: queued + wake-pinged ${sessionName} (${agent.program})`)
+        if (isCloud && containerName) {
+          await sendKeysToContainer(containerName, sessionName, '.', { literal: true, enter: false })
+          await new Promise(r => setTimeout(r, 100))
+          await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
+        } else {
+          const runtime = getRuntime()
+          await runtime.sendKeys(sessionName, '.', { literal: true, enter: false })
+          await new Promise(r => setTimeout(r, 100))
+          await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
+        }
+        console.log(`[API] /api/agents/notify: queued + wake-pinged ${sessionName} (${agent.program}${isCloud ? ', cloud' : ''})`)
         return NextResponse.json({ success: true, queued: true })
       }
 
@@ -51,10 +76,17 @@ export async function POST(request: NextRequest) {
       // payloads and the Enter got absorbed into the paste body. 500ms still
       // covers tmux write-flush for multi-KB payloads on slow hosts.
       const safeInjection = wrapAsBracketedPaste(sanitizeForRawInject(String(body.injection)))
-      await runtime.sendKeys(sessionName, safeInjection, { literal: true, enter: false })
-      await new Promise(r => setTimeout(r, 500))
-      await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
-      console.log(`[API] /api/agents/notify: injected meeting prompt into ${sessionName}`)
+      if (isCloud && containerName) {
+        await sendKeysToContainer(containerName, sessionName, safeInjection, { literal: true, enter: false })
+        await new Promise(r => setTimeout(r, 500))
+        await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
+      } else {
+        const runtime = getRuntime()
+        await runtime.sendKeys(sessionName, safeInjection, { literal: true, enter: false })
+        await new Promise(r => setTimeout(r, 500))
+        await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
+      }
+      console.log(`[API] /api/agents/notify: injected meeting prompt into ${sessionName}${isCloud ? ' (cloud)' : ''}`)
       return NextResponse.json({ success: true, injected: true })
     }
 
