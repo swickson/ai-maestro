@@ -68,8 +68,16 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install && npm cache clean --force
 
-# Install Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
+# Install agent runtime CLIs globally. The image is multi-runtime so the
+# same `ai-maestro-agent:latest` can host Claude, Gemini, or Codex agents
+# — which one launches at first start is determined by AI_TOOL (built from
+# body.program in createDockerAgent). Without all three baked in, agents
+# whose profile.runtime is anything other than `claude` silently fall back
+# to a bare shell because tmux send-keys "${AI_TOOL}" hits command-not-found.
+RUN npm install -g \
+    @anthropic-ai/claude-code \
+    @google/gemini-cli \
+    @openai/codex
 
 # Copy agent server code
 COPY agent-server.js ./
