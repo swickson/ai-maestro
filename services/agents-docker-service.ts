@@ -135,6 +135,12 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
   ]
 }
 
+// Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
+// ahead of the standard Debian path. The base image's Dockerfile sets only
+// the standard path, so without this override `which amp-send` fails inside
+// the container even though the binary is mounted and works by full path.
+const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+
 // AMP common envs tell amp-helper.sh exactly which agent identity dir to use
 // (priority 1 of its resolution order) and where to reach the AI Maestro server
 // from inside the container (host.docker.internal is added via --add-host).
@@ -147,6 +153,7 @@ export function buildAmpCommonEnv(agentId: string, hostUrl: string): Record<stri
     CLAUDE_AGENT_ID: agentId,
     AMP_DIR: path.posix.join(CONTAINER_HOME, '.agent-messaging', 'agents', agentId),
     AMP_MAESTRO_URL: hostUrl,
+    PATH: CONTAINER_PATH,
   }
 }
 

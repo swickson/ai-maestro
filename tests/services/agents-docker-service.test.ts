@@ -248,12 +248,18 @@ describe('buildAmpCommonEnv', () => {
   const uuid = '22222222-2222-2222-2222-222222222222'
   const hostUrl = 'http://host.docker.internal:23000'
 
-  it('returns the three identity/routing envs', () => {
+  it('returns the four identity/routing/path envs', () => {
     expect(buildAmpCommonEnv(uuid, hostUrl)).toEqual({
       CLAUDE_AGENT_ID: uuid,
       AMP_DIR: `/home/claude/.agent-messaging/agents/${uuid}`,
       AMP_MAESTRO_URL: hostUrl,
+      PATH: '/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     })
+  })
+
+  it('puts the AMP CLI dir ahead of the standard path', () => {
+    const env = buildAmpCommonEnv(uuid, hostUrl)
+    expect(env.PATH.split(':')[0]).toBe('/home/claude/.local/bin')
   })
 
   it('passes the extraEnv validator', () => {
