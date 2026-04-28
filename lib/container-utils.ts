@@ -125,6 +125,46 @@ export async function tmuxHasSessionInContainer(
 }
 
 /**
+ * Exit copy-mode on a tmux pane running INSIDE a container, if it's currently
+ * in copy-mode. Mirror of the host-side `runtime.cancelCopyMode` at
+ * `lib/agent-runtime.ts:145` for cloud agents.
+ *
+ * Why this exists: when a pane is in copy-mode, `tmux send-keys -l` against
+ * it hangs the calling process indefinitely AND drops the payload on copy-
+ * mode exit (verified empirically 2026-04-28 on Holmes/Rollie controlled
+ * repro per kanban `96d317df`). Every cloud-agent send-keys callsite that
+ * doesn't first ensure the pane is out of copy-mode risks tying up the
+ * maestro request handler. Probe via `pane_in_mode`, send `q` to exit if
+ * needed, then a tiny delay so the subsequent send-keys lands in the
+ * running program rather than racing tmux's mode-exit transition.
+ *
+ * Non-fatal on any error — if the probe fails (container down, session
+ * missing, daemon unreachable), let the caller's send-keys hit the same
+ * condition and surface a clearer error there.
+ */
+export async function cancelCopyModeInContainer(
+  containerName: string,
+  sessionName: string
+): Promise<void> {
+  const target = `${sessionName}:0.0`
+  try {
+    const { stdout } = await execAsync(
+      `docker exec ${shellQuote(containerName)} tmux display-message -t ${shellQuote(target)} -p '#{pane_in_mode}'`,
+      { timeout: 5000 }
+    )
+    if (stdout.trim() === '1') {
+      await execAsync(
+        `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} q`,
+        { timeout: 5000 }
+      )
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  } catch {
+    // Non-fatal: caller's send-keys will report the real error
+  }
+}
+
+/**
  * Capture the visible pane content from a tmux session running INSIDE a
  * container, via `docker exec`. Mirrors the host-side `runtime.capturePane`
  * interface used by the wake-prompt readiness poll.
