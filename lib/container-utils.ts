@@ -100,6 +100,57 @@ export async function sendKeysToContainer(
   }
 }
 
+/**
+ * Check whether a tmux session exists INSIDE a container.
+ *
+ * Used by the cloud-wake path to gate sendKeysToContainer on the in-container
+ * tmux server actually being up — agent-server.js boots fresh on `docker start`
+ * and creates the session within ~1s, but pushing keys before that races and
+ * silently drops the input. Returns false on any error (missing session,
+ * docker exec failure, container not running).
+ */
+export async function tmuxHasSessionInContainer(
+  containerName: string,
+  sessionName: string
+): Promise<boolean> {
+  try {
+    await execAsync(
+      `docker exec ${shellQuote(containerName)} tmux has-session -t ${shellQuote(sessionName)}`,
+      { timeout: 5000 }
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Capture the visible pane content from a tmux session running INSIDE a
+ * container, via `docker exec`. Mirrors the host-side `runtime.capturePane`
+ * interface used by the wake-prompt readiness poll.
+ *
+ * `lines` controls how many lines of scrollback to include (the host runtime
+ * accepts the same parameter). Returns the empty string on any error so the
+ * caller can keep polling rather than crashing the wake flow.
+ */
+export async function capturePaneFromContainer(
+  containerName: string,
+  sessionName: string,
+  lines: number = 50
+): Promise<string> {
+  const target = `${sessionName}:0.0`
+  const startLine = Math.max(1, Math.floor(lines))
+  try {
+    const { stdout } = await execAsync(
+      `docker exec ${shellQuote(containerName)} tmux capture-pane -t ${shellQuote(target)} -p -S -${startLine}`,
+      { timeout: 5000 }
+    )
+    return stdout
+  } catch {
+    return ''
+  }
+}
+
 /** Single-quote a string for safe interpolation into a shell command. */
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
