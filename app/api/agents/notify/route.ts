@@ -3,7 +3,7 @@ import { notifyAgent } from '@/lib/notification-service'
 import { getRuntime } from '@/lib/agent-runtime'
 import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject, wrapAsBracketedPaste } from '@/lib/meeting-inject-queue'
 import { getAgentBySession } from '@/lib/agent-registry'
-import { sendKeysToContainer } from '@/lib/container-utils'
+import { sendKeysToContainer, cancelCopyModeInContainer } from '@/lib/container-utils'
 
 /**
  * POST /api/agents/notify
@@ -56,11 +56,13 @@ export async function POST(request: NextRequest) {
       if (agent && shouldUseAdditionalContext(agent.program)) {
         enqueueForSession(sessionName, body.injection)
         if (isCloud && containerName) {
+          await cancelCopyModeInContainer(containerName, sessionName)
           await sendKeysToContainer(containerName, sessionName, '.', { literal: true, enter: false })
           await new Promise(r => setTimeout(r, 100))
           await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
         } else {
           const runtime = getRuntime()
+          await runtime.cancelCopyMode(sessionName)
           await runtime.sendKeys(sessionName, '.', { literal: true, enter: false })
           await new Promise(r => setTimeout(r, 100))
           await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
@@ -77,11 +79,13 @@ export async function POST(request: NextRequest) {
       // covers tmux write-flush for multi-KB payloads on slow hosts.
       const safeInjection = wrapAsBracketedPaste(sanitizeForRawInject(String(body.injection)))
       if (isCloud && containerName) {
+        await cancelCopyModeInContainer(containerName, sessionName)
         await sendKeysToContainer(containerName, sessionName, safeInjection, { literal: true, enter: false })
         await new Promise(r => setTimeout(r, 500))
         await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
       } else {
         const runtime = getRuntime()
+        await runtime.cancelCopyMode(sessionName)
         await runtime.sendKeys(sessionName, safeInjection, { literal: true, enter: false })
         await new Promise(r => setTimeout(r, 500))
         await runtime.sendKeys(sessionName, '', { literal: false, enter: true })

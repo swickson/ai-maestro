@@ -256,6 +256,10 @@ export async function sendChatMessage(
   }
 
   const runtime = getRuntime()
+  // Exit copy-mode first — sending keys to a copy-mode pane hangs the request
+  // and drops the payload (kanban 96d317df). Mirror of the wakeAgent and
+  // sessions-service patterns.
+  await runtime.cancelCopyMode(sessionName)
   await runtime.sendKeys(sessionName, message, { literal: true, enter: true })
 
   console.log('[Chat Service] Message sent successfully')
