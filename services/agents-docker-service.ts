@@ -676,10 +676,20 @@ export const RECREATE_PRESERVED_FIELDS = [
 ] as const
 
 /**
- * Recreate an existing cloud agent atomically: stop+remove its container,
- * soft-delete the old registry entry, and provision a new container with
- * all originally-persisted config preserved (programArgs, model, mounts,
- * label, avatar, working directory, hooks, tags, etc.).
+ * Recreate an existing cloud agent: stop+remove its container, soft-delete
+ * the old registry entry, and provision a new container with all originally-
+ * persisted config preserved (programArgs, model, mounts, label, avatar,
+ * working directory, hooks, tags, etc.).
+ *
+ * Atomicity caveat: the flow is best-effort, NOT transactionally atomic. If
+ * createDockerAgent fails after the soft-delete (port exhaustion, docker
+ * daemon error, image-not-found, AMP keypair generation failure), the
+ * operator is left with the old container gone and the old agent soft-
+ * deleted but no new agent. Recovery requires manual undelete (clearing
+ * deletedAt on the old registry entry) — name-reuse forces this ordering
+ * since two live agents can't share a name. Auto-rollback is tracked as a
+ * separate followup; the failure mode is rare in practice (mirrors the
+ * exposure of today's manual delete-then-create flow).
  *
  * Why this exists: Docker bakes env vars (including AI_TOOL, which carries
  * programArgs) at `docker run` time. Hibernate→wake is `docker stop` +
@@ -713,17 +723,38 @@ export async function recreateDockerAgent(
   // if the container is already stopped/removed/never-started we still want
   // to proceed to soft-delete + create. Failures here are usually
   // already-in-target-state, not a real error condition.
+  //
+  // Wall-clock timeouts are 60s — `docker stop` issues SIGTERM with a 10s
+  // grace before SIGKILL, but a Claude Code session mid-`uv tool install`
+  // can take longer than 15s to actually exit. A 60s ceiling gives graceful
+  // shutdown room without blocking the operator indefinitely.
   const oldContainerName = oldAgent.deployment.cloud.containerName
   if (oldContainerName) {
+    const safeContainerName = oldContainerName.replace(/[^a-zA-Z0-9_-]/g, '')
     try {
-      await execAsync(`docker stop ${oldContainerName.replace(/[^a-zA-Z0-9_-]/g, '')}`, { timeout: 15000 })
+      await execAsync(`docker stop ${safeContainerName}`, { timeout: 60000 })
     } catch (err) {
       console.log(`[Recreate] stop ${oldContainerName} (non-fatal):`, err instanceof Error ? err.message : err)
     }
     try {
-      await execAsync(`docker rm ${oldContainerName.replace(/[^a-zA-Z0-9_-]/g, '')}`, { timeout: 15000 })
+      await execAsync(`docker rm ${safeContainerName}`, { timeout: 60000 })
     } catch (err) {
       console.log(`[Recreate] rm ${oldContainerName} (non-fatal):`, err instanceof Error ? err.message : err)
+    }
+    // Verify removal — `docker run --name aim-<name>` will fail with a name
+    // conflict if the prior container is still around (e.g. stop+rm wall-
+    // clock-timed-out while the daemon was still gracefully stopping). Skip
+    // the verification on inspect failure (means the container is gone, the
+    // expected case).
+    try {
+      await execAsync(`docker inspect ${safeContainerName}`, { timeout: 5000 })
+      // inspect succeeded → container still exists → name conflict will block create
+      return operationFailed(
+        'remove old container',
+        `${oldContainerName} still exists after stop+rm; createDockerAgent would fail with a name conflict. Manual cleanup required.`
+      )
+    } catch {
+      // inspect failed → container is gone, proceed
     }
   }
 
