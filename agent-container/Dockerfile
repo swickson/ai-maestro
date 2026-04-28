@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y \
     jq \
     openssl \
     locales \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Generate the en_US.UTF-8 locale. Without this, the LANG/LC_ALL envs set
@@ -57,9 +58,18 @@ RUN mkdir -p /home/claude && \
     echo "set -g status-fg colour136" >> /home/claude/.tmux.conf && \
     chown -R claude:claude /home/claude
 
-# Install Oh My Zsh for better shell experience
+# Install Oh My Zsh + uv (Python tooling) + a managed cpython 3.12 as the
+# claude user. uv lands at /home/claude/.local/bin/uv (already on PATH via
+# the ENV PATH bake further down); cpython 3.12 lands under
+# /home/claude/.local/share/uv/python/ and is invoked via `uv run --python
+# 3.12` or via a uv-managed venv. uv was chosen over pyenv per KAI: no
+# compile-from-source, no -dev header explosion in apt, single static
+# binary covering pip/venv/poetry equivalents, prebuilt python-build-
+# standalone tarballs.
 USER claude
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended && \
+    curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    /home/claude/.local/bin/uv python install 3.12
 USER root
 
 # Create app directory for server code
