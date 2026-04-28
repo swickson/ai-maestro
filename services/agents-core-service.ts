@@ -353,7 +353,7 @@ async function waitForContainerTmux(
 // theme picker. Both safe for a sandboxed cloud agent confined to its
 // workspace mount. Suppressing these modals at provision-time is the right
 // long-term fix (kanban to file post-merge).
-const FIRST_RUN_MODAL_PATTERN = /Trust folder|Trust this folder|Don'?t trust|Trust parent folder|Choose the text style|theme that looks best|Auto \(match terminal\)/i
+export const FIRST_RUN_MODAL_PATTERN = /Trust folder|Trust this folder|Don'?t trust|Trust parent folder|Choose the text style|theme that looks best|Auto \(match terminal\)/i
 
 /**
  * In-container variant of waitForPrompt: polls capturePaneFromContainer,
@@ -406,7 +406,12 @@ async function waitForPromptInContainer(
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
   }
 
-  console.warn(`[Wake/Cloud] Prompt not detected in ${containerName}/${sessionName} after ${timeoutMs}ms, proceeding anyway`)
+  console.warn(
+    `[Wake/Cloud] Prompt not detected in ${containerName}/${sessionName} after ${timeoutMs}ms ` +
+    `(modalDismissCount=${modalDismissCount}). Proceeding to dispatch hook anyway. ` +
+    `If this is a codex container, the hook may be lost — codex first-launch shows a non-Trust ` +
+    `auth picker that this handler does not dismiss; see PR #90 known-issue.`
+  )
   return false
 }
 
