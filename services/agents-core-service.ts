@@ -62,7 +62,14 @@ import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { initializeAllAgents, getStartupStatus } from '@/lib/agent-startup'
 import { sessionActivity, agentActivity } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
-import { inspectContainerStatus, startContainer, stopContainer } from '@/lib/container-utils'
+import {
+  capturePaneFromContainer,
+  inspectContainerStatus,
+  sendKeysToContainer,
+  startContainer,
+  stopContainer,
+  tmuxHasSessionInContainer,
+} from '@/lib/container-utils'
 import type { Host } from '@/types/host'
 import { type ServiceResult, missingField, notFound, invalidField, invalidRequest, operationFailed, gone, timeout } from '@/services/service-errors'
 
@@ -311,6 +318,129 @@ async function executeHook(
     const sanitized = sanitizeArgs(resolved)
     if (sanitized) {
       await runtime.sendKeys(sessionName, `"${sanitized}"`, { enter: true })
+    }
+  }
+}
+
+/**
+ * Poll until the in-container tmux server has the named session ready, or
+ * give up. agent-server.js inside the container creates the session within
+ * ~1s of `docker start`; 5s ceiling leaves headroom without slowing the
+ * happy-path wake. Returns true if the session appeared.
+ */
+async function waitForContainerTmux(
+  containerName: string,
+  sessionName: string,
+  { timeoutMs = 5000, pollIntervalMs = 250 } = {}
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await tmuxHasSessionInContainer(containerName, sessionName)) return true
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+  }
+  return false
+}
+
+// PR #87 chowns ~/.claude on every container recreate, so claude/gemini hit
+// first-launch modals on every fresh wake — the Trust-folder dialog AND the
+// theme picker (no theme set in the per-container settings.json today). The
+// default waitForPrompt regexes ignore both; without auto-dismiss the on-wake
+// hook gets typed into the menu where the first character can fire a
+// destructive choice.
+//
+// Auto-dismiss strategy: press Enter, which selects the highlighted default —
+// option 1 "Trust folder (workspace)" for Trust, option 2 "Dark mode" for
+// theme picker. Both safe for a sandboxed cloud agent confined to its
+// workspace mount. Suppressing these modals at provision-time is the right
+// long-term fix (kanban to file post-merge).
+const FIRST_RUN_MODAL_PATTERN = /Trust folder|Trust this folder|Don'?t trust|Trust parent folder|Choose the text style|theme that looks best|Auto \(match terminal\)/i
+
+/**
+ * In-container variant of waitForPrompt: polls capturePaneFromContainer,
+ * matches the same prompt indicators as the host path, AND auto-dismisses
+ * the first-launch Trust-folder modal by selecting option 1 ("Trust this
+ * folder"). Workspace-only opt-in mount makes option 1 the safe answer for
+ * a sandboxed cloud agent.
+ *
+ * initialDelayMs covers the race between agent-server.js creating the tmux
+ * session and issuing the AI_TOOL send-keys — without it the poll catches
+ * the empty bash `$` prompt and returns prematurely, sending the hook into
+ * a shell instead of the AI program.
+ */
+async function waitForPromptInContainer(
+  containerName: string,
+  sessionName: string,
+  { timeoutMs = 30000, pollIntervalMs = 500, initialDelayMs = 2000 } = {}
+): Promise<boolean> {
+  await new Promise(resolve => setTimeout(resolve, initialDelayMs))
+  const deadline = Date.now() + timeoutMs
+  const promptPattern = /[>❯$%]\s*$/m
+  const tuiReadyPattern = /\?\s*for\s*shortcuts|waiting for input|ready/i
+  let modalDismissCount = 0
+
+  while (Date.now() < deadline) {
+    const paneContent = await capturePaneFromContainer(containerName, sessionName, 50)
+    const cleaned = paneContent.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+      .replace(/─[─-╿]*/g, '')
+    const lines = cleaned.split('\n').filter((l: string) => l.trim().length > 0)
+    const tail = lines.slice(-15).join('\n')
+
+    // Cap dismisses at 3 — one per modal claude could plausibly stack
+    // (theme + trust + future). Beyond that something is wrong; bail.
+    if (modalDismissCount < 3 && FIRST_RUN_MODAL_PATTERN.test(tail)) {
+      console.log(`[Wake/Cloud] First-run modal detected in ${containerName} (dismiss #${modalDismissCount + 1}), pressing Enter to accept default`)
+      try {
+        await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
+        modalDismissCount += 1
+      } catch (err) {
+        console.warn(`[Wake/Cloud] Modal auto-dismiss failed:`, err)
+      }
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+      continue
+    }
+
+    if (promptPattern.test(tail) || tuiReadyPattern.test(tail)) {
+      console.log(`[Wake/Cloud] Prompt detected in ${containerName}/${sessionName}`)
+      return true
+    }
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+  }
+
+  console.warn(`[Wake/Cloud] Prompt not detected in ${containerName}/${sessionName} after ${timeoutMs}ms, proceeding anyway`)
+  return false
+}
+
+/**
+ * Cloud-branch counterpart of executeHook. Mirrors the host path's variable
+ * interpolation + meshPrimer prepend, but dispatches via sendKeysToContainer
+ * against the in-container tmux session instead of host runtime.sendKeys.
+ *
+ * Kept as a separate function (not a refactor of executeHook) per Watson's
+ * §E review: smaller blast radius for this PR. Post-merge follow-up tracked
+ * to unify both behind a single primitive.
+ */
+async function executeHookInContainer(
+  containerName: string,
+  sessionName: string,
+  hookValue: string,
+  variables: Record<string, string> = {},
+  meshPrimer: string = '',
+): Promise<void> {
+  let resolved = hookValue
+  for (const [key, value] of Object.entries(variables)) {
+    resolved = resolved.replaceAll(`\${${key}}`, value)
+  }
+
+  await waitForPromptInContainer(containerName, sessionName)
+
+  if (resolved.startsWith('prompt:')) {
+    const userPrompt = resolved.slice('prompt:'.length).trim()
+    const finalPrompt = meshPrimer ? `${meshPrimer}\n\n${userPrompt}` : userPrompt
+    await sendKeysToContainer(containerName, sessionName, finalPrompt, { literal: true, enter: true })
+  } else {
+    const sanitized = sanitizeArgs(resolved)
+    if (sanitized) {
+      await sendKeysToContainer(containerName, sessionName, sanitized, { literal: true, enter: true })
     }
   }
 }
@@ -1442,6 +1572,29 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
           await startContainer(containerName)
           console.log(`[Wake] Agent ${agentName} (${agentId}) — running in CONTAINER ${containerName} (started)`)
           updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory, true)
+
+          // Dispatch on-wake hook into the in-container tmux session. agent-server.js
+          // re-launches AI_TOOL from baked env on every container start; we only
+          // need to push the hook prompt (program is restored by the container's
+          // own boot path). Non-blocking + non-fatal — wake reports success even
+          // if the hook can't be delivered, matching the host path's lifecycle.
+          if (agent.hooks?.['on-wake']) {
+            const { projectDirectory } = params
+            const hookVars: Record<string, string> = {
+              projectDirectory: projectDirectory || workingDirectory,
+              agentName: agentName,
+            }
+            const meshPrimer = loadMeshPrimer(agent)
+            ;(async () => {
+              const tmuxReady = await waitForContainerTmux(containerName, sessionName)
+              if (!tmuxReady) {
+                console.warn(`[Wake/Cloud] tmux session ${sessionName} not ready in ${containerName} after timeout — skipping on-wake hook`)
+                return
+              }
+              await executeHookInContainer(containerName, sessionName, agent.hooks!['on-wake']!, hookVars, meshPrimer)
+            })().catch(err => console.warn(`[Wake/Cloud] on-wake hook failed for ${agentName}:`, err))
+          }
+
           return {
             data: {
               success: true,
@@ -1452,6 +1605,7 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
               workingDirectory,
               woken: true,
               programStarted: true,
+              hooksExecuted: !!agent.hooks?.['on-wake'],
               message: `Agent "${agentName}" container ${containerName} has been started`,
             },
             status: 200,

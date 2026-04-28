@@ -27,6 +27,7 @@ export interface DockerCreateRequest {
   program?: string
   yolo?: boolean
   model?: string
+  programArgs?: string
   prompt?: string
   timeout?: number
   githubToken?: string
@@ -467,6 +468,10 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   if (body.yolo) {
     aiTool += ' --dangerously-skip-permissions'
   }
+  if (body.programArgs) {
+    const sanitizedArgs = body.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+    if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
+  }
   if (body.model) {
     aiTool += ` --model ${body.model}`
   }
@@ -573,6 +578,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       avatar: body.avatar,
       program,
       model: body.model,
+      programArgs: body.programArgs,
       taskDescription: body.prompt || '',
       workingDirectory: workDir,
       createSession: true,
