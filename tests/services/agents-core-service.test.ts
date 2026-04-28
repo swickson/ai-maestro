@@ -144,6 +144,7 @@ import {
   proxyHealthCheck,
   MESH_PRIMER,
   loadMeshPrimer,
+  FIRST_RUN_MODAL_PATTERN,
 } from '@/services/agents-core-service'
 
 // ============================================================================
@@ -1430,5 +1431,75 @@ describe('proxyHealthCheck', () => {
     const result = await proxyHealthCheck(null as any)
 
     expect(result.status).toBe(400)
+  })
+})
+
+// ============================================================================
+// Cloud-wake first-run modal pattern (FIRST_RUN_MODAL_PATTERN)
+// ============================================================================
+//
+// Regression guards for the cloud-wake auto-dismiss heuristic in
+// waitForPromptInContainer. Pane snippets here are captured from real
+// fresh-recreate cloud agents on the v0.30.30 image (2026-04-28). If a CLI
+// upgrades and changes its first-launch UX, these tests will tell us before
+// the on-wake hook starts disappearing into a menu in production.
+//
+// Important non-coverage: codex's first-launch screen is an OAuth account
+// picker, NOT a workspace-trust modal. Pressing Enter on it triggers a
+// non-completable sign-in flow. We INTENTIONALLY do not match codex —
+// dismissal would make things worse, not better. The codex case is handled
+// by provision-time auth bootstrap (separate kanban), not run-time dismissal.
+describe('FIRST_RUN_MODAL_PATTERN', () => {
+  it('matches the claude Trust-folder modal', () => {
+    const pane = [
+      'Do you trust the files in this folder?',
+      '/workspace',
+      '❯ 1. Trust folder (workspace)',
+      '  2. Trust parent folder ()',
+      "  3. Don't trust",
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(true)
+  })
+
+  it("matches the claude theme picker modal", () => {
+    const pane = [
+      "Let's get started.",
+      'Choose the text style that looks best with your terminal',
+      'To change this later, run /theme',
+      '  1. Auto (match terminal)',
+      '❯ 2. Dark mode ✔',
+      '  3. Light mode',
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(true)
+  })
+
+  it('does NOT match the codex auth picker (would push container into broken sign-in)', () => {
+    const pane = [
+      "Welcome to Codex, OpenAI's command-line coding agent",
+      'Sign in with ChatGPT to use Codex as part of your paid plan',
+      'or connect an API key for usage-based billing',
+      '> 1. Sign in with ChatGPT',
+      '     Usage included with Plus, Pro, Business, and Enterprise plans',
+      '  2. Sign in with Device Code',
+      '  3. Provide your own API key',
+      'Press Enter to continue',
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(false)
+  })
+
+  it('does not match a normal claude prompt (so the dismiss path stays out of the way)', () => {
+    const pane = [
+      'Welcome back to /workspace',
+      '',
+      '  How can I help today?',
+      '',
+      '> ',
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(false)
+  })
+
+  it('does not match an empty bash shell prompt', () => {
+    const pane = 'claude@aim-test:/workspace$ '
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(false)
   })
 })
