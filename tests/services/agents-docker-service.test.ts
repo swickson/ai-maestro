@@ -21,8 +21,10 @@ import {
   provisionCloudClaudeConfig,
   mergeMounts,
   mergeEnv,
+  buildRecreateBody,
+  RECREATE_PRESERVED_FIELDS,
 } from '@/services/agents-docker-service'
-import type { SandboxMount } from '@/types/agent'
+import type { Agent, SandboxMount } from '@/types/agent'
 
 describe('validateMounts', () => {
   it('returns null for undefined mounts', () => {
@@ -410,5 +412,149 @@ describe('mergeEnv', () => {
     const merged = mergeEnv(auto, operator)
     expect(merged.AMP_MAESTRO_URL).toBe('http://operator-override:9999')
     expect(merged.CLAUDE_AGENT_ID).toBe(uuid) // un-overridden auto values stay
+  })
+})
+
+// ─── buildRecreateBody — registry → DockerCreateRequest field mapping ───
+//
+// This is the unit that closes the cluster surfaced 2026-04-28 (kanban
+// 5e4ebdd5): post-recreate cloud agents had `programArgs: --yolo` in their
+// registry profile but no --yolo in the container's AI_TOOL env. Root cause
+// was the operator-assembled docker-create body dropping fields the operator
+// didn't remember to forward. The recreate endpoint now builds the body
+// server-side via this helper, so the registry → container mapping is
+// exhaustive by construction.
+describe('buildRecreateBody', () => {
+  function makeCloudAgent(overrides: Partial<Agent> = {}): Agent {
+    return {
+      id: 'old-uuid-aaaaaaaa',
+      name: 'ops-exec-test',
+      label: 'TestAgent',
+      avatar: '🧪',
+      sessions: [],
+      hostId: 'test-host',
+      program: 'claude',
+      taskDescription: 'test',
+      tools: { claude: true },
+      status: 'online',
+      createdAt: '2026-04-28T00:00:00Z',
+      lastActive: '2026-04-28T00:00:00Z',
+      deployment: {
+        type: 'cloud',
+        cloud: {
+          provider: 'local-container',
+          containerName: 'aim-ops-exec-test',
+          status: 'running',
+        },
+      },
+      ...overrides,
+    } as Agent
+  }
+
+  it('maps programArgs from registry into the create body', () => {
+    const agent = makeCloudAgent({ programArgs: '--yolo' })
+    expect(buildRecreateBody(agent).programArgs).toBe('--yolo')
+  })
+
+  it('maps model from registry into the create body', () => {
+    const agent = makeCloudAgent({ model: 'claude-sonnet-4-6' })
+    expect(buildRecreateBody(agent).model).toBe('claude-sonnet-4-6')
+  })
+
+  it('maps workingDirectory from registry', () => {
+    const agent = makeCloudAgent({ workingDirectory: '/home/gosub/distill' })
+    expect(buildRecreateBody(agent).workingDirectory).toBe('/home/gosub/distill')
+  })
+
+  it('maps sandbox.mounts from deployment into top-level body.mounts', () => {
+    const mounts: SandboxMount[] = [
+      { hostPath: '/mnt/agents/hardin', containerPath: '/mnt/agents/hardin' },
+    ]
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        sandbox: { mounts },
+      },
+    })
+    expect(buildRecreateBody(agent).mounts).toEqual(mounts)
+  })
+
+  it('preserves identity fields (name, label, avatar, hostId, program)', () => {
+    const agent = makeCloudAgent()
+    const body = buildRecreateBody(agent)
+    expect(body.name).toBe('ops-exec-test')
+    expect(body.label).toBe('TestAgent')
+    expect(body.avatar).toBe('🧪')
+    expect(body.hostId).toBe('test-host')
+    expect(body.program).toBe('claude')
+  })
+
+  it('omits container-derived fields (containerName/port/websocketUrl regenerate at create)', () => {
+    const agent = makeCloudAgent()
+    const body = buildRecreateBody(agent)
+    // No keys at the top of DockerCreateRequest carry container-state — they're
+    // recomputed by createDockerAgent from `name` + auto-allocated port.
+    expect(body).not.toHaveProperty('containerName')
+    expect(body).not.toHaveProperty('port')
+    expect(body).not.toHaveProperty('websocketUrl')
+  })
+
+  it('handles missing optional fields cleanly', () => {
+    const agent = makeCloudAgent({
+      label: undefined,
+      avatar: undefined,
+      programArgs: undefined,
+      model: undefined,
+      workingDirectory: undefined,
+    })
+    const body = buildRecreateBody(agent)
+    // Required fields stay; optional fields are undefined (createDockerAgent
+    // applies its own defaults — workDir → /tmp, program → 'claude' etc.)
+    expect(body.name).toBe('ops-exec-test')
+    expect(body.programArgs).toBeUndefined()
+    expect(body.model).toBeUndefined()
+    expect(body.workingDirectory).toBeUndefined()
+  })
+
+  it('handles missing deployment.sandbox without throwing', () => {
+    const agent = makeCloudAgent() // no sandbox key at all
+    expect(buildRecreateBody(agent).mounts).toBeUndefined()
+  })
+})
+
+describe('RECREATE_PRESERVED_FIELDS', () => {
+  it('lists agent-record fields that are NOT part of DockerCreateRequest', () => {
+    // Pin the contract: these fields live on Agent but not DockerCreateRequest,
+    // so recreate must patch them onto the new agent post-create. Adding to
+    // this list = adding a preservation; removing = an explicit drop.
+    expect(RECREATE_PRESERVED_FIELDS).toEqual([
+      'hooks',
+      'taskDescription',
+      'tags',
+      'capabilities',
+      'role',
+      'team',
+      'documentation',
+      'metadata',
+      'skills',
+      'preferences',
+      'meshAware',
+      'owner',
+    ])
+  })
+
+  it('does not include fields that re-derive at create time', () => {
+    // Container/host-state fields must NOT be in this list. If any of these
+    // appear, recreate would copy stale values from the dead agent onto the
+    // new one (e.g. old containerName, old AMP fingerprint).
+    const mustNotInclude = [
+      'id', 'sessions', 'createdAt', 'lastActive', 'status',
+      'deployment', 'ampIdentity', 'launchCount',
+      'hostName', 'hostUrl', 'isSelf',
+    ]
+    for (const field of mustNotInclude) {
+      expect(RECREATE_PRESERVED_FIELDS).not.toContain(field)
+    }
   })
 })
