@@ -11,12 +11,12 @@ import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { v4 as uuidv4 } from 'uuid'
-import { createAgent, loadAgents, saveAgents } from '@/lib/agent-registry'
+import { createAgent, deleteAgent, getAgent, loadAgents, saveAgents, updateAgent } from '@/lib/agent-registry'
 import { getHosts, isSelf, getOrganization } from '@/lib/hosts-config'
 import { generateKeyPair, saveKeyPair } from '@/lib/amp-keys'
 import { registerAgent } from '@/services/amp-service'
-import { type ServiceResult, missingField, operationFailed, invalidRequest, serviceError } from '@/services/service-errors'
-import type { SandboxMount } from '@/types/agent'
+import { type ServiceResult, missingField, operationFailed, invalidRequest, invalidState, notFound, gone, serviceError } from '@/services/service-errors'
+import type { Agent, SandboxMount } from '@/types/agent'
 
 const execAsync = promisify(exec)
 
@@ -625,5 +625,152 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       containerName,
     },
     status: 200
+  }
+}
+
+/**
+ * Build a DockerCreateRequest body from an existing agent's persisted
+ * registry fields. Used by recreateDockerAgent to forward all create-time
+ * config (programArgs, model, mounts, label, avatar, working directory)
+ * to the new container so hibernate→wake-stable AI_TOOL contains everything
+ * that was originally specified. Exported for unit testing of the field
+ * mapping.
+ *
+ * Container-derived fields (containerName/port/websocketUrl) deliberately
+ * NOT included — they regenerate inside createDockerAgent.
+ */
+export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
+  return {
+    name: oldAgent.name,
+    label: oldAgent.label,
+    avatar: oldAgent.avatar,
+    hostId: oldAgent.hostId,
+    program: oldAgent.program,
+    programArgs: oldAgent.programArgs,
+    model: oldAgent.model,
+    workingDirectory: oldAgent.workingDirectory,
+    mounts: oldAgent.deployment?.sandbox?.mounts,
+  }
+}
+
+// Fields that live on the agent record but are NOT part of DockerCreateRequest.
+// After createDockerAgent provisions the new container/registry entry, recreate
+// patches these onto the new agent so post-create config (hooks, tags, role, etc.)
+// survives the swap. Keep in sync with types/agent.ts Agent interface — fields
+// derived from container state (containerName/port/websocketUrl, ampIdentity,
+// sessions, status, createdAt, lastActive, deployment) are intentionally NOT
+// preserved; they re-derive at create time.
+export const RECREATE_PRESERVED_FIELDS = [
+  'hooks',
+  'taskDescription',
+  'tags',
+  'capabilities',
+  'role',
+  'team',
+  'documentation',
+  'metadata',
+  'skills',
+  'preferences',
+  'meshAware',
+  'owner',
+] as const
+
+/**
+ * Recreate an existing cloud agent atomically: stop+remove its container,
+ * soft-delete the old registry entry, and provision a new container with
+ * all originally-persisted config preserved (programArgs, model, mounts,
+ * label, avatar, working directory, hooks, tags, etc.).
+ *
+ * Why this exists: Docker bakes env vars (including AI_TOOL, which carries
+ * programArgs) at `docker run` time. Hibernate→wake is `docker stop` +
+ * `docker start` and faithfully preserves whatever env was originally baked
+ * — so any registry-side mutation (UI edit, manual --keep-data delete +
+ * curl POST recreate) silently fails to reach the running container until
+ * a full container swap. Today's flow makes that swap manually (operator
+ * assembles the create body), which drops fields the operator didn't
+ * remember to forward — programArgs and hooks being the worst offenders.
+ *
+ * The new UUID + AMP keypair generation matches the existing recreate
+ * pattern (containerName/port/websocketUrl re-derive from createDockerAgent,
+ * same as today). Caller-side tooling (UI delete-and-recreate, CLI
+ * recreate, ops scripts) should migrate to this endpoint so the preserve-
+ * fields contract is enforced server-side.
+ */
+export async function recreateDockerAgent(
+  agentId: string
+): Promise<ServiceResult<Record<string, unknown>>> {
+  const oldAgent = getAgent(agentId, true) // include soft-deleted to distinguish 404 vs 410
+  if (!oldAgent) return notFound('Agent', agentId)
+  if (oldAgent.deletedAt) return gone('Agent')
+
+  if (oldAgent.deployment?.type !== 'cloud' || oldAgent.deployment.cloud?.provider !== 'local-container') {
+    return invalidState(
+      `recreate is only supported for cloud agents with provider 'local-container' (agent ${agentId} is type=${oldAgent.deployment?.type ?? 'unset'}, provider=${oldAgent.deployment?.cloud?.provider ?? 'unset'})`
+    )
+  }
+
+  // Stop + remove the old container if present. Both calls are non-fatal:
+  // if the container is already stopped/removed/never-started we still want
+  // to proceed to soft-delete + create. Failures here are usually
+  // already-in-target-state, not a real error condition.
+  const oldContainerName = oldAgent.deployment.cloud.containerName
+  if (oldContainerName) {
+    try {
+      await execAsync(`docker stop ${oldContainerName.replace(/[^a-zA-Z0-9_-]/g, '')}`, { timeout: 15000 })
+    } catch (err) {
+      console.log(`[Recreate] stop ${oldContainerName} (non-fatal):`, err instanceof Error ? err.message : err)
+    }
+    try {
+      await execAsync(`docker rm ${oldContainerName.replace(/[^a-zA-Z0-9_-]/g, '')}`, { timeout: 15000 })
+    } catch (err) {
+      console.log(`[Recreate] rm ${oldContainerName} (non-fatal):`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  // Soft-delete the old agent so the new one can take the same `name`
+  // (getAgentByName excludes deletedAt entries). Soft-delete also removes
+  // ~/.agent-messaging/agents/<old-UUID> to free the AMP index for the new
+  // agent's registration; ~/.aimaestro/agents/<old-UUID> stays per the
+  // audit-trail convention (centralized cleanup tracked separately).
+  if (!deleteAgent(agentId, false)) {
+    return operationFailed('soft-delete prior agent', `agent ${agentId} could not be marked as deleted`)
+  }
+
+  // Build the create body from the old agent's persisted fields. Container-
+  // derived fields (containerName/port/websocketUrl) intentionally regenerate
+  // inside createDockerAgent. AMP keypair regenerates per existing pattern.
+  const body = buildRecreateBody(oldAgent)
+
+  const result = await createDockerAgent(body)
+  if (result.status !== 200 || !result.data) return result
+
+  // Patch the agent-record-but-not-DockerCreateRequest fields onto the new
+  // agent. Done after createDockerAgent so the new agent's UUID is known.
+  const newAgentId = (result.data as Record<string, unknown>).agentId
+  if (typeof newAgentId === 'string' && newAgentId) {
+    const patches: Partial<Agent> = {}
+    for (const field of RECREATE_PRESERVED_FIELDS) {
+      const value = (oldAgent as unknown as Record<string, unknown>)[field]
+      if (value !== undefined) {
+        ;(patches as unknown as Record<string, unknown>)[field] = value
+      }
+    }
+    if (Object.keys(patches).length > 0) {
+      try {
+        updateAgent(newAgentId, patches as Parameters<typeof updateAgent>[1])
+      } catch (err) {
+        console.warn(`[Recreate] Could not patch preserved fields onto ${newAgentId}:`, err instanceof Error ? err.message : err)
+      }
+    }
+  }
+
+  return {
+    data: {
+      ...result.data,
+      recreatedFromAgentId: agentId,
+      recreatedFromContainerName: oldContainerName,
+      preservedFields: RECREATE_PRESERVED_FIELDS.filter(f => (oldAgent as unknown as Record<string, unknown>)[f] !== undefined),
+    },
+    status: result.status,
   }
 }
