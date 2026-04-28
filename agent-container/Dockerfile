@@ -58,18 +58,27 @@ RUN mkdir -p /home/claude && \
     echo "set -g status-fg colour136" >> /home/claude/.tmux.conf && \
     chown -R claude:claude /home/claude
 
-# Install Oh My Zsh + uv (Python tooling) + a managed cpython 3.12 as the
-# claude user. uv lands at /home/claude/.local/bin/uv (already on PATH via
-# the ENV PATH bake further down); cpython 3.12 lands under
-# /home/claude/.local/share/uv/python/ and is invoked via `uv run --python
-# 3.12` or via a uv-managed venv. uv was chosen over pyenv per KAI: no
-# compile-from-source, no -dev header explosion in apt, single static
-# binary covering pip/venv/poetry equivalents, prebuilt python-build-
-# standalone tarballs.
+# Install uv (Astral's Python tooling) as root so the binary lands at
+# /usr/local/bin/uv. The naive path /home/claude/.local/bin/uv is overlaid
+# at runtime by the AMP CLI bind-mount that buildAmpCommonMounts injects
+# into every cloud-agent container (host's ~/.local/bin → /home/claude/
+# .local/bin RO), which COMPLETELY shadows binaries placed there. Discovered
+# post-PR #91 deploy by CelestIA on bananajr Hardin recreate; cross-host
+# repro on Holmes Mason. /usr/local/bin is not a bind-mount target and
+# survives the overlay.
+RUN XDG_BIN_HOME=/usr/local/bin sh -c "$(curl -LsSf https://astral.sh/uv/install.sh)"
+
+# Install Oh My Zsh + uv-managed cpython 3.12 as the claude user. uv binary
+# now lives at /usr/local/bin/uv (system PATH); cpython 3.12 lands under
+# /home/claude/.local/share/uv/python/ via uv's default install-dir logic
+# (path is NOT shadowed — only ~/.local/bin is bind-mounted, not the deeper
+# share/ tree). Invoked via `uv run --python 3.12` or a uv-managed venv.
+# uv was chosen over pyenv per KAI: no compile-from-source, no -dev header
+# explosion in apt, single static binary covering pip/venv/poetry
+# equivalents, prebuilt python-build-standalone tarballs.
 USER claude
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended && \
-    curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    /home/claude/.local/bin/uv python install 3.12
+    uv python install 3.12
 USER root
 
 # Create app directory for server code
