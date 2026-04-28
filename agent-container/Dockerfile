@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     build-essential \
     python3 \
+    python3-venv \
     jq \
     openssl \
     locales \
