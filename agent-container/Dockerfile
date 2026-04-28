@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y \
     jq \
     openssl \
     locales \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Generate the en_US.UTF-8 locale. Without this, the LANG/LC_ALL envs set
