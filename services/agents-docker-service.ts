@@ -38,6 +38,13 @@ export interface DockerCreateRequest {
   avatar?: string
   mounts?: SandboxMount[]
   extraEnv?: Record<string, string>
+  // Internal — set by recreateDockerAgent to migrate persisted claude/gh state
+  // from the soft-deleted predecessor's per-UUID dir into the new agent's dir
+  // BEFORE the container starts. Without this, /recreate's UUID rotation
+  // forces every operator through the bypass-accept + claude OAuth + gh login
+  // dance on every recreate — the bind mounts are per-UUID, so a fresh dir
+  // means no preserved state. Not exposed in the dashboard create flow.
+  persistFromAgentId?: string
 }
 
 // Reject paths that could break out of the quoted `-v "..."` shell argument.
@@ -117,12 +124,12 @@ export function buildEnvFlags(env: Record<string, string> | undefined): string[]
 // All three mounts are derived deterministically from the agent UUID, so they
 // can be reproduced on container redeploy without operator input.
 //
-// Note: ~/.claude is intentionally NOT mounted — wholesale-mounting the host
+// Note: ~/.claude is intentionally NOT mounted wholesale — mounting the host
 // operator's claude state into the container leaked host-absolute hook paths
 // (every Stop/UserPromptSubmit fired MODULE_NOT_FOUND inside the container)
 // and exposed the operator's full session history/projects/credentials read-
 // write to the cloud agent. Per-container claude config is provisioned in
-// provisionCloudClaudeConfig + buildCloudClaudeSettingsMount instead.
+// provisionCloudClaudeConfig + buildCloudClaudeSettingsMount + buildCloudClaudePersistMounts.
 export function buildAmpCommonMounts(agentId: string, hostHome: string = os.homedir()): SandboxMount[] {
   return [
     {
@@ -138,13 +145,27 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
       containerPath: path.posix.join(CONTAINER_HOME, '.local', 'bin'),
       readOnly: true,
     },
+    // Shared shell-helpers dir (host-wide, not per-agent) — agent-helper.sh
+    // sources `${HOME}/.local/share/aimaestro/shell-helpers/common.sh` at
+    // line ~50; without this mount, every cloud agent hits "common.sh not
+    // found" the moment it touches aimaestro-agent.sh. RO because the helper
+    // scripts are identity-of-host-side state, not per-agent. Filed as
+    // kanban 9c40609b 2026-04-28 by CelestIA after Luke (allianceos) repro.
+    {
+      hostPath: path.join(hostHome, '.local', 'share', 'aimaestro', 'shell-helpers'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.local', 'share', 'aimaestro', 'shell-helpers'),
+      readOnly: true,
+    },
   ]
 }
 
 // Provision per-container Claude Code config: copies the hook script and
 // writes a settings.json into the agent's per-UUID dir, with hook paths
-// pointing at the container-side mount of that hook script. Returns the
-// generated paths for use by buildCloudClaudeSettingsMount.
+// pointing at the container-side mount of that hook script. Also seeds the
+// per-agent persistence files (claude-home.json, claude-credentials.json,
+// gh-config/) so they exist before docker create — otherwise Docker
+// auto-creates them as root-owned dirs at the bind-mount targets, blocking
+// the in-container claude user from writing them.
 //
 // The hook script is snapshotted into the per-UUID dir at create time so
 // each cloud agent has a stable, independent copy. To refresh, re-run the
@@ -181,6 +202,24 @@ export function provisionCloudClaudeConfig(
   }
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
 
+  // Seed per-agent persistence files with valid empty contents. Docker file-
+  // level bind mounts require the host source to exist as a file (not a
+  // directory) before container create; otherwise Docker materializes the
+  // target as a directory and the application errors. `{}` is safe-empty for
+  // both files: claude-code rewrites both with real state on first run / login.
+  const claudeHomePath = path.join(agentDir, 'claude-home.json')
+  if (!fs.existsSync(claudeHomePath)) {
+    fs.writeFileSync(claudeHomePath, '{}\n', { mode: 0o600 })
+  }
+  const claudeCredsPath = path.join(agentDir, 'claude-credentials.json')
+  if (!fs.existsSync(claudeCredsPath)) {
+    fs.writeFileSync(claudeCredsPath, '{}\n', { mode: 0o600 })
+  }
+  // gh stores config in a directory (config.yml, hosts.yml). Just ensure the
+  // dir exists; gh creates its own files on first `gh auth login`.
+  const ghConfigDir = path.join(agentDir, 'gh-config')
+  fs.mkdirSync(ghConfigDir, { recursive: true, mode: 0o700 })
+
   return { settingsPath, hookPath }
 }
 
@@ -198,6 +237,98 @@ export function buildCloudClaudeSettingsMount(
     containerPath: path.posix.join(CONTAINER_HOME, '.claude', 'settings.json'),
     readOnly: true,
   }
+}
+
+// Migrate per-agent persisted claude/gh state from a predecessor UUID dir to
+// a new agent's dir. Used by recreateDockerAgent to bridge the UUID rotation:
+// /recreate soft-deletes the old agent (rotating to a fresh UUID per audit-
+// trail policy) and the new container's bind mounts point at the new UUID's
+// dir, which would otherwise start empty. Copying the persistence assets
+// across before container start preserves bypass-accept, claude OAuth, and
+// gh auth across recreates.
+//
+// Best-effort: missing source files are skipped (predecessor was created
+// before this feature shipped, or the operator never logged in). Failures
+// are logged, not thrown — recreate must still succeed even if migration
+// can't run cleanly. provisionCloudClaudeConfig's existsSync guards then
+// no-op on the migrated files so claude/gh see the preserved state.
+export function migrateAgentPersistence(
+  fromAgentId: string,
+  toAgentId: string,
+  hostHome: string = os.homedir()
+): void {
+  if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) return
+  const fromDir = path.join(hostHome, '.aimaestro', 'agents', fromAgentId)
+  const toDir = path.join(hostHome, '.aimaestro', 'agents', toAgentId)
+  if (!fs.existsSync(fromDir)) return
+  fs.mkdirSync(toDir, { recursive: true })
+
+  const fileAssets = ['claude-home.json', 'claude-credentials.json']
+  for (const name of fileAssets) {
+    const src = path.join(fromDir, name)
+    const dst = path.join(toDir, name)
+    try {
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dst)
+        fs.chmodSync(dst, 0o600)
+      }
+    } catch (err) {
+      console.warn(`[migrateAgentPersistence] copy ${name}:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  // gh-config is a directory tree (config.yml + hosts.yml at minimum). Use
+  // fs.cpSync recursively so any nested gh state (extensions/, etc.) carries
+  // forward without us having to enumerate every gh-internal layout choice.
+  const ghSrc = path.join(fromDir, 'gh-config')
+  const ghDst = path.join(toDir, 'gh-config')
+  try {
+    if (fs.existsSync(ghSrc) && fs.statSync(ghSrc).isDirectory()) {
+      fs.cpSync(ghSrc, ghDst, { recursive: true })
+    }
+  } catch (err) {
+    console.warn('[migrateAgentPersistence] copy gh-config:', err instanceof Error ? err.message : err)
+  }
+}
+
+// Per-agent state-persistence mounts that survive /recreate. Without these,
+// every cloud-agent recreate destroys:
+//   - ~/.claude.json (bypass-permissions accept flag, onboarding state,
+//     project-keyed cache, oauthAccount metadata) — forces the operator
+//     through the "Yes, I accept" prompt every single recreate, which is
+//     incompatible with --dangerously-skip-permissions autonomous agents.
+//   - ~/.claude/.credentials.json (claude-code OAuth tokens) — forces the
+//     login URL → browser → paste-code dance every recreate.
+//   - ~/.config/gh (gh CLI auth) — forces `gh auth login` every recreate.
+//
+// Each is mounted RW from a per-agent dir under ~/.aimaestro/agents/<id>/,
+// isolated from host operator state and from other agents on the host.
+// Provisioned in provisionCloudClaudeConfig so docker-create finds files
+// (not auto-materialized root-owned directories) at the bind targets.
+//
+// Compatible with non-claude programs (gemini, codex): the mounts overlay
+// claude-specific paths; gemini/codex ignore them. Codex has its own
+// per-agent state under ~/.codex which a follow-up pass can persist using
+// the same pattern (filed as a kanban candidate).
+export function buildCloudClaudePersistMounts(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount[] {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  return [
+    {
+      hostPath: path.join(agentDir, 'claude-home.json'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.claude.json'),
+    },
+    {
+      hostPath: path.join(agentDir, 'claude-credentials.json'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.claude', '.credentials.json'),
+    },
+    {
+      hostPath: path.join(agentDir, 'gh-config'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.config', 'gh'),
+    },
+  ]
 }
 
 // Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
@@ -526,6 +657,22 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     }
   }
 
+  // If this create is the back half of a recreate flow, copy the predecessor's
+  // persisted claude/gh state into the new UUID dir BEFORE provisioning runs
+  // so the empty-{} seeds in provisionCloudClaudeConfig no-op (they only
+  // create when missing). Net effect: bypass-accept, claude OAuth, and gh
+  // auth all carry across recreates despite the audit-trail UUID rotation.
+  if (body.persistFromAgentId) {
+    try {
+      migrateAgentPersistence(body.persistFromAgentId, agentId)
+    } catch (err) {
+      console.warn(
+        '[Docker Service] persistence migration failed (non-fatal — new agent will start with empty state):',
+        err instanceof Error ? err.message : err
+      )
+    }
+  }
+
   // Provision the per-container Claude Code settings.json + hook snapshot in
   // the agent's per-UUID dir, then add a file-level bind mount that overlays
   // /home/claude/.claude/settings.json without leaking the rest of the host's
@@ -538,7 +685,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     console.warn('[Docker Service] Could not provision cloud claude config:', err instanceof Error ? err.message : err)
   }
   const mergedMounts = mergeMounts(
-    [...ampMounts, buildCloudClaudeSettingsMount(agentId)],
+    [
+      ...ampMounts,
+      buildCloudClaudeSettingsMount(agentId),
+      ...buildCloudClaudePersistMounts(agentId),
+    ],
     body.mounts
   )
 
@@ -770,7 +921,9 @@ export async function recreateDockerAgent(
   // Build the create body from the old agent's persisted fields. Container-
   // derived fields (containerName/port/websocketUrl) intentionally regenerate
   // inside createDockerAgent. AMP keypair regenerates per existing pattern.
-  const body = buildRecreateBody(oldAgent)
+  // persistFromAgentId carries the predecessor's UUID into createDockerAgent
+  // so it can migrate claude/gh state across the audit-trail UUID rotation.
+  const body: DockerCreateRequest = { ...buildRecreateBody(oldAgent), persistFromAgentId: agentId }
 
   const result = await createDockerAgent(body)
   if (result.status !== 200 || !result.data) return result
