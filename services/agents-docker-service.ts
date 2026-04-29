@@ -187,7 +187,20 @@ export function provisionCloudClaudeConfig(
   const containerHook = path.posix.join(
     CONTAINER_HOME, '.aimaestro', 'agents', agentId, 'claude-hook.cjs'
   )
+  // Pre-accept the --dangerously-skip-permissions warning prompt for the cloud
+  // agent. Without this, claude-code re-shows the "Yes, I accept" warning on
+  // EVERY container start when launched with --dangerously-skip-permissions,
+  // because the container is treated as a fresh machine and there's no
+  // persisted accept state. The accept-state field is `skipDangerousModePermissionPrompt`
+  // (verified: 9 occurrences in the claude binary; confirmed by official
+  // claude.ai docs guidance for containerized claude). Cloud-agent containers
+  // are the documented "isolated environment" use case for bypass-permissions
+  // mode — the docs explicitly endorse pre-accepting it for containers.
+  // Combined with the RW mount below, this also lets claude write OTHER
+  // settings.json keys (allowedTools, model preferences) and have them
+  // persist across the container's lifetime.
   const settings = {
+    skipDangerousModePermissionPrompt: true,
     hooks: {
       Notification: [
         {
@@ -228,6 +241,16 @@ export function provisionCloudClaudeConfig(
 // ~/.claude tree. Mount target's parent (/home/claude/.claude) must pre-exist
 // in the image as claude-owned — see agent-container/Dockerfile — otherwise
 // Docker auto-creates it as root and blocks claude from writing siblings.
+//
+// RW (was RO before v0.30.37): claude-code writes settings.json on a few
+// flows — notably the --dangerously-skip-permissions accept (sets
+// skipDangerousModePermissionPrompt) but also allowedTools and model
+// preferences. With a RO mount, those writes silently fail and the bypass
+// warning re-prompts on every container start. Provisioning seeds
+// skipDangerousModePermissionPrompt: true upfront so the prompt never fires
+// in the first place; RW lets any subsequent claude writes also persist.
+// Per-agent isolation is unchanged — host's own ~/.claude/settings.json is
+// never touched.
 export function buildCloudClaudeSettingsMount(
   agentId: string,
   hostHome: string = os.homedir()
@@ -235,7 +258,6 @@ export function buildCloudClaudeSettingsMount(
   return {
     hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'claude-settings.json'),
     containerPath: path.posix.join(CONTAINER_HOME, '.claude', 'settings.json'),
-    readOnly: true,
   }
 }
 
