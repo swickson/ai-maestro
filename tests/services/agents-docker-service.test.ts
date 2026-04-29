@@ -18,6 +18,8 @@ import {
   buildAmpCommonMounts,
   buildAmpCommonEnv,
   buildCloudClaudeSettingsMount,
+  buildCloudClaudePersistMounts,
+  migrateAgentPersistence,
   provisionCloudClaudeConfig,
   mergeMounts,
   mergeEnv,
@@ -208,13 +210,14 @@ describe('buildAmpCommonMounts', () => {
   const uuid = '11111111-1111-1111-1111-111111111111'
   const home = '/home/gosub'
 
-  it('returns three mounts derived from the agent UUID', () => {
+  it('returns four mounts derived from the agent UUID + host shared paths', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
-    expect(mounts).toHaveLength(3)
+    expect(mounts).toHaveLength(4)
     expect(mounts.map(m => m.containerPath)).toEqual([
       `/home/claude/.agent-messaging/agents/${uuid}`,
       `/home/claude/.aimaestro/agents/${uuid}`,
       '/home/claude/.local/bin',
+      '/home/claude/.local/share/aimaestro/shell-helpers',
     ])
   })
 
@@ -224,6 +227,7 @@ describe('buildAmpCommonMounts', () => {
       `${home}/.agent-messaging/agents/${uuid}`,
       `${home}/.aimaestro/agents/${uuid}`,
       `${home}/.local/bin`,
+      `${home}/.local/share/aimaestro/shell-helpers`,
     ])
   })
 
@@ -231,6 +235,12 @@ describe('buildAmpCommonMounts', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
     const cli = mounts.find(m => m.containerPath === '/home/claude/.local/bin')
     expect(cli?.readOnly).toBe(true)
+  })
+
+  it('marks the shell-helpers mount read-only', () => {
+    const mounts = buildAmpCommonMounts(uuid, home)
+    const helpers = mounts.find(m => m.containerPath === '/home/claude/.local/share/aimaestro/shell-helpers')
+    expect(helpers?.readOnly).toBe(true)
   })
 
   it('leaves identity mounts read-write', () => {
@@ -269,6 +279,60 @@ describe('buildCloudClaudeSettingsMount', () => {
 
   it('passes the SandboxMount validator', () => {
     expect(validateMounts([buildCloudClaudeSettingsMount(uuid, home)])).toBeNull()
+  })
+})
+
+describe('buildCloudClaudePersistMounts', () => {
+  const uuid = '55555555-5555-5555-5555-555555555555'
+  const home = '/home/gosub'
+
+  it('returns three mounts under the per-agent state dir', () => {
+    const mounts = buildCloudClaudePersistMounts(uuid, home)
+    expect(mounts).toHaveLength(3)
+    expect(mounts.map(m => m.containerPath)).toEqual([
+      '/home/claude/.claude.json',
+      '/home/claude/.claude/.credentials.json',
+      '/home/claude/.config/gh',
+    ])
+  })
+
+  it('sources every mount from ~/.aimaestro/agents/<id>/', () => {
+    const mounts = buildCloudClaudePersistMounts(uuid, home)
+    const agentDir = `${home}/.aimaestro/agents/${uuid}`
+    expect(mounts.map(m => m.hostPath)).toEqual([
+      `${agentDir}/claude-home.json`,
+      `${agentDir}/claude-credentials.json`,
+      `${agentDir}/gh-config`,
+    ])
+  })
+
+  it('keeps all persistence mounts read-write (claude/gh need to write state back)', () => {
+    const mounts = buildCloudClaudePersistMounts(uuid, home)
+    for (const m of mounts) {
+      expect(m.readOnly).toBeFalsy()
+    }
+  })
+
+  it('does not leak host operator state — paths are per-agent, not host ~/.claude or ~/.config', () => {
+    const mounts = buildCloudClaudePersistMounts(uuid, home)
+    for (const m of mounts) {
+      expect(m.hostPath.startsWith(`${home}/.aimaestro/agents/${uuid}/`)).toBe(true)
+      expect(m.hostPath).not.toBe(`${home}/.claude.json`)
+      expect(m.hostPath).not.toBe(`${home}/.claude/.credentials.json`)
+      expect(m.hostPath).not.toBe(`${home}/.config/gh`)
+    }
+  })
+
+  it('isolates per-agent state across UUIDs', () => {
+    const a = buildCloudClaudePersistMounts('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', home)
+    const b = buildCloudClaudePersistMounts('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', home)
+    for (let i = 0; i < a.length; i++) {
+      expect(a[i].hostPath).not.toBe(b[i].hostPath)
+    }
+  })
+
+  it('passes the SandboxMount validator', () => {
+    expect(validateMounts(buildCloudClaudePersistMounts(uuid, home))).toBeNull()
   })
 })
 
@@ -324,6 +388,142 @@ describe('provisionCloudClaudeConfig', () => {
     expect(fs.existsSync(agentDir)).toBe(false)
     provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
     expect(fs.existsSync(agentDir)).toBe(true)
+  })
+
+  it('seeds claude-home.json with valid empty JSON so docker-create finds a file (not auto-mat dir) at the bind target', () => {
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const homeJsonPath = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'claude-home.json')
+    expect(fs.statSync(homeJsonPath).isFile()).toBe(true)
+    expect(() => JSON.parse(fs.readFileSync(homeJsonPath, 'utf8'))).not.toThrow()
+  })
+
+  it('seeds claude-credentials.json with valid empty JSON', () => {
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const credsPath = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'claude-credentials.json')
+    expect(fs.statSync(credsPath).isFile()).toBe(true)
+    expect(() => JSON.parse(fs.readFileSync(credsPath, 'utf8'))).not.toThrow()
+  })
+
+  it('creates the gh-config directory for the gh auth bind mount', () => {
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const ghDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'gh-config')
+    expect(fs.statSync(ghDir).isDirectory()).toBe(true)
+  })
+
+  it('preserves existing claude-home.json content across re-runs (state persistence intent)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const homeJsonPath = path.join(agentDir, 'claude-home.json')
+    const existing = '{"bypassPermissionsModeAccepted":true,"hasCompletedOnboarding":true}\n'
+    fs.writeFileSync(homeJsonPath, existing)
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    expect(fs.readFileSync(homeJsonPath, 'utf8')).toBe(existing)
+  })
+
+  it('preserves existing claude-credentials.json content across re-runs (login persistence intent)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const credsPath = path.join(agentDir, 'claude-credentials.json')
+    const existing = '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-stub"}}\n'
+    fs.writeFileSync(credsPath, existing)
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    expect(fs.readFileSync(credsPath, 'utf8')).toBe(existing)
+  })
+
+  it('writes seeded persistence files with restrictive 0600 perms', () => {
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    const homeMode = fs.statSync(path.join(agentDir, 'claude-home.json')).mode & 0o777
+    const credsMode = fs.statSync(path.join(agentDir, 'claude-credentials.json')).mode & 0o777
+    expect(homeMode).toBe(0o600)
+    expect(credsMode).toBe(0o600)
+  })
+})
+
+describe('migrateAgentPersistence', () => {
+  let tmpHome: string
+  const fromId = '77777777-7777-7777-7777-777777777777'
+  const toId = '88888888-8888-8888-8888-888888888888'
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-mig-'))
+    const fromDir = path.join(tmpHome, '.aimaestro', 'agents', fromId)
+    fs.mkdirSync(path.join(fromDir, 'gh-config'), { recursive: true })
+    fs.writeFileSync(path.join(fromDir, 'claude-home.json'),
+      '{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'claude-credentials.json'),
+      '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-from-pred"}}\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'gh-config', 'hosts.yml'),
+      'github.com:\n    user: test\n', { mode: 0o600 })
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('copies claude-home.json content from predecessor', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'claude-home.json')
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.hasCompletedOnboarding).toBe(true)
+    expect(body.projects['/workspace'].hasTrustDialogAccepted).toBe(true)
+  })
+
+  it('copies claude-credentials.json content from predecessor', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'claude-credentials.json')
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.claudeAiOauth.accessToken).toBe('sk-ant-oat01-from-pred')
+  })
+
+  it('migrates gh-config recursively (hosts.yml etc.)', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'gh-config', 'hosts.yml')
+    expect(fs.existsSync(dst)).toBe(true)
+    expect(fs.readFileSync(dst, 'utf8')).toContain('github.com:')
+  })
+
+  it('preserves restrictive 0600 mode on copied JSON files', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const home = path.join(tmpHome, '.aimaestro', 'agents', toId, 'claude-home.json')
+    const creds = path.join(tmpHome, '.aimaestro', 'agents', toId, 'claude-credentials.json')
+    expect(fs.statSync(home).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(creds).mode & 0o777).toBe(0o600)
+  })
+
+  it('no-ops when fromAgentId is empty', () => {
+    migrateAgentPersistence('', toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId)
+    expect(fs.existsSync(dst)).toBe(false)
+  })
+
+  it('no-ops when fromAgentId equals toAgentId', () => {
+    expect(() => migrateAgentPersistence(fromId, fromId, tmpHome)).not.toThrow()
+    // Source files unchanged
+    const home = path.join(tmpHome, '.aimaestro', 'agents', fromId, 'claude-home.json')
+    expect(fs.readFileSync(home, 'utf8')).toContain('hasCompletedOnboarding')
+  })
+
+  it('no-ops gracefully when predecessor dir is absent (legacy agent recreate)', () => {
+    expect(() => migrateAgentPersistence('00000000-0000-0000-0000-000000000000', toId, tmpHome)).not.toThrow()
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId)
+    // Migration short-circuits before mkdir when source is missing — new dir
+    // will be (re-)created later by provisionCloudClaudeConfig.
+    expect(fs.existsSync(dst)).toBe(false)
+  })
+
+  it('skips individual asset copies that error without aborting the whole migration', () => {
+    // Predecessor has only claude-home.json; credentials + gh missing
+    const partialFromId = 'aaaaaaaa-1111-1111-1111-111111111111'
+    const partialDir = path.join(tmpHome, '.aimaestro', 'agents', partialFromId)
+    fs.mkdirSync(partialDir, { recursive: true })
+    fs.writeFileSync(path.join(partialDir, 'claude-home.json'), '{"keep":true}\n', { mode: 0o600 })
+
+    migrateAgentPersistence(partialFromId, toId, tmpHome)
+    const newDir = path.join(tmpHome, '.aimaestro', 'agents', toId)
+    expect(fs.existsSync(path.join(newDir, 'claude-home.json'))).toBe(true)
+    expect(fs.existsSync(path.join(newDir, 'claude-credentials.json'))).toBe(false)
+    expect(fs.existsSync(path.join(newDir, 'gh-config'))).toBe(false)
   })
 })
 
