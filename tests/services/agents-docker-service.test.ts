@@ -273,8 +273,8 @@ describe('buildCloudClaudeSettingsMount', () => {
     expect(m.containerPath).toBe('/home/claude/.claude/settings.json')
   })
 
-  it('is read-only', () => {
-    expect(buildCloudClaudeSettingsMount(uuid, home).readOnly).toBe(true)
+  it('is read-write — claude writes settings.json on bypass-accept and tool config flows', () => {
+    expect(buildCloudClaudeSettingsMount(uuid, home).readOnly).toBeFalsy()
   })
 
   it('passes the SandboxMount validator', () => {
@@ -374,6 +374,12 @@ describe('provisionCloudClaudeConfig', () => {
       const cfg = settings.hooks[event][0]
       expect(cfg.hooks[0].command).toBe(`node ${containerHook}`)
     }
+  })
+
+  it('seeds skipDangerousModePermissionPrompt: true so cloud agents do not re-prompt the bypass warning on every recreate', () => {
+    const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(settings.skipDangerousModePermissionPrompt).toBe(true)
   })
 
   it('does not reference the host repo path in the generated settings', () => {
