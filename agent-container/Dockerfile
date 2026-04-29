@@ -68,6 +68,22 @@ RUN mkdir -p /home/claude && \
 # survives the overlay.
 RUN XDG_BIN_HOME=/usr/local/bin sh -c "$(curl -LsSf https://astral.sh/uv/install.sh)"
 
+# Install GitHub CLI (gh) from the upstream apt repo. Debian's stock `gh`
+# package is unreliably available across mirrors; the canonical install
+# (https://github.com/cli/cli/blob/trunk/docs/install_linux.md) is keyring
+# + dedicated apt source + apt install. Lands at /usr/bin/gh, system PATH,
+# not bind-mount-shadowed (per the same /usr/local/bin reasoning above —
+# only /home/claude/.local/bin gets overlaid). gh auth state lives in
+# /home/claude/.config/gh and is bind-mounted per-agent at runtime so
+# `gh auth login` survives /recreate.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && wget -nv -O /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Oh My Zsh + uv-managed cpython 3.12 as the claude user. uv binary
 # now lives at /usr/local/bin/uv (system PATH); cpython 3.12 lands under
 # /home/claude/.local/share/uv/python/ via uv's default install-dir logic
@@ -112,11 +128,22 @@ RUN mkdir -p /workspace && \
 # the claude user inside the container (uid 1000) hits EPERM trying to write
 # siblings (e.g. ~/.aimaestro/chat-state for hook debug logs, ~/.claude for
 # claude-code's first-run state). Same trap documented in PR #86.
+#
+# ~/.config/gh and ~/.local/share/aimaestro/shell-helpers are bind-mount
+# targets added in the cloud-agent state-persistence pass: gh auth state
+# (per-agent, RW) and the host's shell-helpers dir (shared, RO) respectively.
+# Pre-creating them with claude ownership keeps Docker from racing in as root.
 RUN mkdir -p /home/claude/.claude \
              /home/claude/.aimaestro/agents \
              /home/claude/.aimaestro/chat-state \
-             /home/claude/.agent-messaging/agents && \
-    chown -R claude:claude /home/claude/.claude /home/claude/.aimaestro /home/claude/.agent-messaging
+             /home/claude/.agent-messaging/agents \
+             /home/claude/.config/gh \
+             /home/claude/.local/share/aimaestro/shell-helpers && \
+    chown -R claude:claude /home/claude/.claude \
+                           /home/claude/.aimaestro \
+                           /home/claude/.agent-messaging \
+                           /home/claude/.config \
+                           /home/claude/.local
 
 # Switch to non-root user
 USER claude
