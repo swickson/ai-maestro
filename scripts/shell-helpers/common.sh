@@ -20,9 +20,16 @@ _init_self_host() {
         return 0
     fi
 
-    # Try identity API first (most reliable)
+    # Probe URL: cloud-agent containers have AIMAESTRO_HOST_URL set by
+    # createDockerAgent (services/agents-docker-service.ts) pointing at the
+    # parent host's ai-maestro server (host.docker.internal:23000). Without
+    # respecting it, this probe hits the container's OWN agent-server.js on
+    # localhost:23000 — that's a PTY/websocket server, not the dashboard, so
+    # /api/hosts/identity 404s and aimaestro-agent.sh wedges. Filed by Luke
+    # (dev-allianceos-luke) 2026-04-29 in allianceos/ai-team/ORCHESTRATOR_PLAN.md.
+    local probe_url="${AIMAESTRO_HOST_URL:-http://127.0.0.1:23000}"
     local identity
-    identity=$(curl -s --max-time 5 "http://127.0.0.1:23000/api/hosts/identity" 2>/dev/null)
+    identity=$(curl -s --max-time 5 "${probe_url}/api/hosts/identity" 2>/dev/null)
     if [ -n "$identity" ]; then
         _SELF_HOST_ID=$(echo "$identity" | jq -r '.host.id // empty' 2>/dev/null)
         _SELF_HOST_URL=$(echo "$identity" | jq -r '.host.url // empty' 2>/dev/null)
@@ -63,6 +70,12 @@ get_self_host_url() {
 get_api_base() {
     if [ -n "$AIMAESTRO_API_BASE" ]; then
         echo "$AIMAESTRO_API_BASE"
+    elif [ -n "$AIMAESTRO_HOST_URL" ]; then
+        # Cloud-agent container fallback: createDockerAgent sets this to the
+        # parent host's ai-maestro server. Mirrors Luke's manual workaround
+        # (AIMAESTRO_API_BASE="$AIMAESTRO_HOST_URL" prefix) so the next layer
+        # of scripts works out of the box.
+        echo "$AIMAESTRO_HOST_URL"
     else
         get_self_host_url
     fi
