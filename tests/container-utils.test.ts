@@ -50,7 +50,37 @@ describe('cancelCopyModeInContainer', () => {
     vi.clearAllMocks()
   })
 
-  it('sends q to exit copy-mode when pane_in_mode=1', async () => {
+  it('Stage-1 Escape clears plain copy-mode (no overlay) — no q follow-up', async () => {
+    // probe=1 → Escape → re-probe=0 → return without q.
+    const calls: string[] = []
+    let probeCount = 0
+    mockExec.mockImplementation((cmd: string, cb: Function) => {
+      calls.push(cmd)
+      if (cmd.includes('display-message')) {
+        probeCount += 1
+        cb(null, probeCount === 1 ? '1\n' : '0\n', '')
+      } else {
+        cb(null, '', '')
+      }
+    })
+
+    await cancelCopyModeInContainer('aim-test', 'test-session')
+
+    expect(calls.length).toBe(3)
+    expect(calls[0]).toContain('display-message')
+    expect(calls[0]).toContain('pane_in_mode')
+    expect(calls[0]).toContain("'aim-test'")
+    expect(calls[0]).toContain("'test-session:0.0'")
+    expect(calls[1]).toContain('send-keys')
+    expect(calls[1]).toContain(' Escape')
+    expect(calls[2]).toContain('display-message')
+  })
+
+  it('Stage-2 q fires when an overlay (jump-backward et al.) was on top of copy-mode', async () => {
+    // probe=1 → Escape closes overlay only → re-probe=1 → q forces exit.
+    // This is the bug class PR #94 left open: bare `q` against a copy-mode
+    // pane with active command-prompt is consumed as the prompt's argument
+    // and silently drops the next sendKeys.
     const calls: string[] = []
     mockExec.mockImplementation((cmd: string, cb: Function) => {
       calls.push(cmd)
@@ -63,16 +93,16 @@ describe('cancelCopyModeInContainer', () => {
 
     await cancelCopyModeInContainer('aim-test', 'test-session')
 
-    expect(calls.length).toBe(2)
+    expect(calls.length).toBe(4)
     expect(calls[0]).toContain('display-message')
-    expect(calls[0]).toContain('pane_in_mode')
-    expect(calls[0]).toContain("'aim-test'")
-    expect(calls[0]).toContain("'test-session:0.0'")
     expect(calls[1]).toContain('send-keys')
-    expect(calls[1]).toContain(' q')
+    expect(calls[1]).toContain(' Escape')
+    expect(calls[2]).toContain('display-message')
+    expect(calls[3]).toContain('send-keys')
+    expect(calls[3]).toContain(' q')
   })
 
-  it('does NOT send q when pane_in_mode=0', async () => {
+  it('does NOT touch the pane when initial pane_in_mode=0', async () => {
     const calls: string[] = []
     mockExec.mockImplementation((cmd: string, cb: Function) => {
       calls.push(cmd)

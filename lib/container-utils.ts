@@ -134,9 +134,16 @@ export async function tmuxHasSessionInContainer(
  * mode exit (verified empirically 2026-04-28 on Holmes/Rollie controlled
  * repro per kanban `96d317df`). Every cloud-agent send-keys callsite that
  * doesn't first ensure the pane is out of copy-mode risks tying up the
- * maestro request handler. Probe via `pane_in_mode`, send `q` to exit if
- * needed, then a tiny delay so the subsequent send-keys lands in the
- * running program rather than racing tmux's mode-exit transition.
+ * maestro request handler.
+ *
+ * Two-stage exit: probe `pane_in_mode`, then Escape to dismiss any active
+ * command-prompt overlay (e.g. (jump backward) from F, (search forward) from
+ * /, (paste buffer) from =), re-probe, and only then fall back to `q` for
+ * plain copy-mode without an overlay. A bare `q` against a copy-mode pane
+ * with an active command-prompt is consumed as the prompt's argument
+ * character, leaving the pane in copy-mode and silently dropping the next
+ * sendKeys (verified 2026-04-29 on Holmes/Rollie — Shane's "I have to hit
+ * Escape a bunch and Enter" recovery confirms the overlay state).
  *
  * Non-fatal on any error — if the probe fails (container down, session
  * missing, daemon unreachable), let the caller's send-keys hit the same
@@ -152,7 +159,23 @@ export async function cancelCopyModeInContainer(
       `docker exec ${shellQuote(containerName)} tmux display-message -t ${shellQuote(target)} -p '#{pane_in_mode}'`,
       { timeout: 5000 }
     )
-    if (stdout.trim() === '1') {
+    if (stdout.trim() !== '1') return
+
+    // Stage 1: Escape clears any command-prompt overlay AND exits plain
+    // copy-mode via the default vi/emacs key bindings.
+    await execAsync(
+      `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} Escape`,
+      { timeout: 5000 }
+    )
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    // Stage 2: belt-and-suspenders. If only the overlay closed and the pane
+    // is still in copy-mode, force-exit with q.
+    const { stdout: stillInMode } = await execAsync(
+      `docker exec ${shellQuote(containerName)} tmux display-message -t ${shellQuote(target)} -p '#{pane_in_mode}'`,
+      { timeout: 5000 }
+    )
+    if (stillInMode.trim() === '1') {
       await execAsync(
         `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} q`,
         { timeout: 5000 }

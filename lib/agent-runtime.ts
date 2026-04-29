@@ -145,12 +145,26 @@ export class TmuxRuntime implements AgentRuntime {
   async cancelCopyMode(name: string): Promise<void> {
     try {
       const inCopyMode = await this.isInCopyMode(name)
-      if (inCopyMode) {
+      if (!inCopyMode) return
+
+      // Stage 1: Escape dismisses any command-prompt overlay sitting on top
+      // of copy-mode (e.g. (jump backward) from F, (search forward) from /,
+      // (paste buffer) from =). A bare `q` won't clear those — it gets
+      // consumed as the prompt's argument character, leaving the pane in
+      // copy-mode and silently dropping the next sendKeys. Escape also exits
+      // plain copy-mode via the default vi/emacs key bindings.
+      await execAsync(`tmux send-keys -t "${name}" Escape`)
+      await new Promise(resolve => setTimeout(resolve, 30))
+
+      // Stage 2: belt-and-suspenders. If Stage 1 only dismissed the overlay
+      // and the pane is still in copy-mode, force-exit with q.
+      const stillInCopyMode = await this.isInCopyMode(name)
+      if (stillInCopyMode) {
         await execAsync(`tmux send-keys -t "${name}" q`)
         await new Promise(resolve => setTimeout(resolve, 50))
       }
     } catch {
-      // Ignore
+      // Non-fatal: caller's send-keys will surface the underlying tmux error.
     }
   }
 
