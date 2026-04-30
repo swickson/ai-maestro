@@ -178,6 +178,17 @@ ENV SHELL=/bin/zsh
 # for operator-customized PATHs; this is the long-term default.
 ENV PATH=/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# CI=true — preempts the watch-mode trap class. Cloud-agent containers run
+# automated agent code (vitest, nodemon, webpack-dev-server, vite preview,
+# Playwright, etc.) where bare `vitest <file>` defaults to watch mode,
+# never returns, and traps Gemini-class agents in a false-completion loop
+# (Han stuck 16min before manual intervention 2026-04-29). vitest and most
+# other watch-mode-defaulting tools auto-disable watch when CI is set;
+# closes the entire trap class at the platform layer regardless of how
+# the agent invokes the tool. Filed by Luke (dev-allianceos-luke), Iron
+# Syndicate kanban 376265b9.
+ENV CI=true
+
 # Git configuration (will use token at runtime)
 # Note: GITHUB_TOKEN should be passed as environment variable at runtime, not baked into image
 ENV GIT_USER_NAME="AI Maestro Agent"
