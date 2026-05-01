@@ -215,14 +215,20 @@ export function provisionCloudClaudeConfig(
   }
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
 
-  // Seed per-agent persistence files with valid empty contents. Docker file-
-  // level bind mounts require the host source to exist as a file (not a
-  // directory) before container create; otherwise Docker materializes the
-  // target as a directory and the application errors. `{}` is safe-empty for
-  // both files: claude-code rewrites both with real state on first run / login.
+  // Seed per-agent persistence files with valid contents. Docker file-level
+  // bind mounts require the host source to exist as a file (not a directory)
+  // before container create; otherwise Docker materializes the target as a
+  // directory and the application errors.
+  //
+  // claude-home.json (mounts to /home/claude/.claude.json) is seeded with
+  // theme="dark" to skip the theme picker on first launch — without it, fresh
+  // cloud agents land on the picker and the on-wake hook gets typed into a
+  // menu (kanban 41dd54b9). Other claude-home fields are written by claude on
+  // first run / login. claude-credentials.json (OAuth tokens) is seeded empty
+  // since claude rewrites it on first login.
   const claudeHomePath = path.join(agentDir, 'claude-home.json')
   if (!fs.existsSync(claudeHomePath)) {
-    fs.writeFileSync(claudeHomePath, '{}\n', { mode: 0o600 })
+    fs.writeFileSync(claudeHomePath, JSON.stringify({ theme: 'dark' }) + '\n', { mode: 0o600 })
   }
   const claudeCredsPath = path.join(agentDir, 'claude-credentials.json')
   if (!fs.existsSync(claudeCredsPath)) {
@@ -261,6 +267,117 @@ export function buildCloudClaudeSettingsMount(
   }
 }
 
+// Provision per-container Gemini CLI config: writes a settings.json into the
+// agent's per-UUID dir that suppresses the gemini self-update fetch on
+// container start. The trust-folder dialog is handled separately by the
+// GEMINI_CLI_TRUST_WORKSPACE=true env (set in buildAmpCommonEnv) — that path
+// is the gemini-supported in-binary fast path that returns isTrusted=true
+// without a file lookup, see @google/gemini-cli util/trust.ts checkPathTrust.
+//
+// Without enableAutoUpdate=false, freshly-recreated gemini cloud agents show
+// "✕ Automatic update failed. Please try updating manually." on every cold
+// launch (the in-container env can't reach npm to self-update). The error
+// itself is non-blocking but adds modal noise above the on-wake prompt and
+// confuses operators reading the pane (kanban cd2d7377).
+//
+// Per-agent isolation: the seed file lives under ~/.aimaestro/agents/<id>/,
+// bind-mounted RW at /home/claude/.gemini/settings.json by
+// buildCloudGeminiSettingsMount. Host operator's ~/.gemini is never touched.
+// Existsync guard makes this idempotent across recreate cycles —
+// migrateAgentPersistence copies the predecessor's seed into the new UUID
+// dir first, so the seed is preserved if an operator hand-edits it.
+export function provisionCloudGeminiConfig(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { settingsPath: string } {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  fs.mkdirSync(agentDir, { recursive: true })
+  const settingsPath = path.join(agentDir, 'gemini-settings.json')
+  if (!fs.existsSync(settingsPath)) {
+    const settings = {
+      general: {
+        enableAutoUpdate: false,
+      },
+    }
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
+  }
+  return { settingsPath }
+}
+
+// File-level bind mount for the per-agent gemini settings.json. Mount target
+// parent (/home/claude/.gemini) must pre-exist in the image as claude-owned
+// — see agent-container/Dockerfile — otherwise Docker auto-creates it as
+// root and blocks gemini from writing siblings (history, sessions, oauth).
+//
+// RW: gemini may write back to settings.json on /settings UI flows. Per-agent
+// isolation is unchanged — host's own ~/.gemini/settings.json is never touched.
+// Mount is harmless for non-gemini programs (claude/codex ignore the path).
+export function buildCloudGeminiSettingsMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'gemini-settings.json'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.gemini', 'settings.json'),
+  }
+}
+
+// Provision per-container Codex CLI config: writes a version.json into the
+// agent's per-UUID dir that pre-dismisses any future codex update modal.
+//
+// Codex auto-checks for updates on every interactive launch and shows a
+// blocking modal when latest_version > dismissed_version. Without this seed,
+// the modal eats the head of the on-wake hook (verified empirically on R2D2
+// 2026-04-30 after codex 0.128.0 dropped — first 25 chars of the prompt
+// silently consumed; kanban 22f4af86). The wake-handler's modal-dismiss
+// regex (FIRST_RUN_MODAL_PATTERN) only catches claude Trust-folder + theme
+// picker, not codex Update-available.
+//
+// Strategy: pre-dismiss with a sentinel version far above any plausible
+// real codex release (999.0.0 — codex semvers are 0.x today; Anthropic's
+// Sonnet/Opus model numbers are unrelated). last_checked_at set far in the
+// future suppresses codex's own re-check loop. If codex ever reaches 999.0.0,
+// bump this seed and recreate agents — the seed is per-agent so individual
+// agents can override by editing version.json directly via the RW mount.
+//
+// Per-agent isolation: file lives under ~/.aimaestro/agents/<id>/,
+// bind-mounted RW at /home/claude/.codex/version.json by
+// buildCloudCodexVersionMount. Host operator's ~/.codex is never touched.
+export function provisionCloudCodexConfig(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { versionPath: string } {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  fs.mkdirSync(agentDir, { recursive: true })
+  const versionPath = path.join(agentDir, 'codex-version.json')
+  if (!fs.existsSync(versionPath)) {
+    const versionState = {
+      latest_version: '999.0.0',
+      last_checked_at: '2099-01-01T00:00:00.000Z',
+      dismissed_version: '999.0.0',
+    }
+    fs.writeFileSync(versionPath, JSON.stringify(versionState) + '\n', { mode: 0o600 })
+  }
+  return { versionPath }
+}
+
+// File-level bind mount for the per-agent codex version.json. Mount target
+// parent (/home/claude/.codex) must pre-exist in the image as claude-owned
+// — see agent-container/Dockerfile — otherwise Docker auto-creates it as
+// root and blocks codex from writing siblings (auth, sessions, history).
+//
+// RW: codex rewrites version.json on every update-check refresh. Per-agent
+// isolation unchanged. Mount is harmless for non-codex programs.
+export function buildCloudCodexVersionMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-version.json'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'version.json'),
+  }
+}
+
 // Migrate per-agent persisted claude/gh state from a predecessor UUID dir to
 // a new agent's dir. Used by recreateDockerAgent to bridge the UUID rotation:
 // /recreate soft-deletes the old agent (rotating to a fresh UUID per audit-
@@ -285,7 +402,16 @@ export function migrateAgentPersistence(
   if (!fs.existsSync(fromDir)) return
   fs.mkdirSync(toDir, { recursive: true })
 
-  const fileAssets = ['claude-home.json', 'claude-credentials.json']
+  const fileAssets = [
+    'claude-home.json',
+    'claude-credentials.json',
+    // Gemini settings (general.enableAutoUpdate=false seed) — survive recreate
+    // so operator hand-edits to ~/.gemini/settings.json carry forward.
+    'gemini-settings.json',
+    // Codex version.json (dismissed_version sentinel) — survive recreate so
+    // a per-agent override of the sentinel carries forward.
+    'codex-version.json',
+  ]
   for (const name of fileAssets) {
     const src = path.join(fromDir, name)
     const dst = path.join(toDir, name)
@@ -377,6 +503,11 @@ export function buildAmpCommonEnv(agentId: string, agentName: string, hostUrl: s
     AMP_DIR: path.posix.join(CONTAINER_HOME, '.agent-messaging', 'agents', agentId),
     AMP_MAESTRO_URL: hostUrl,
     PATH: CONTAINER_PATH,
+    // Pre-trust the workspace for gemini-program agents — bypasses the trust
+    // dialog (kanban cd2d7377) without needing a trustedFolders.json mount.
+    // Honored by gemini's util/trust.ts checkPathTrust before the file lookup.
+    // Harmless for non-gemini programs (claude/codex don't read this var).
+    GEMINI_CLI_TRUST_WORKSPACE: 'true',
   }
 }
 
@@ -695,22 +826,35 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     }
   }
 
-  // Provision the per-container Claude Code settings.json + hook snapshot in
-  // the agent's per-UUID dir, then add a file-level bind mount that overlays
-  // /home/claude/.claude/settings.json without leaking the rest of the host's
-  // ~/.claude tree (history, projects, credentials) into the container. The
-  // mount only takes effect for claude-program agents but is harmless for
-  // gemini/codex (they ignore claude settings).
+  // Provision per-container Claude/Gemini/Codex CLI configs in the agent's
+  // per-UUID dir, then add file-level bind mounts that overlay the program-
+  // specific config paths inside the container without leaking the host
+  // operator's full state tree. Each program's seed + mount runs unconditionally
+  // — mounts targeting unused programs are harmless because the other CLIs
+  // never read those paths. Provisioning is wrapped per-program so a failure
+  // in one (e.g. disk full at the gemini seed) doesn't drop the others.
   try {
     provisionCloudClaudeConfig(agentId)
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud claude config:', err instanceof Error ? err.message : err)
+  }
+  try {
+    provisionCloudGeminiConfig(agentId)
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud gemini config:', err instanceof Error ? err.message : err)
+  }
+  try {
+    provisionCloudCodexConfig(agentId)
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud codex config:', err instanceof Error ? err.message : err)
   }
   const mergedMounts = mergeMounts(
     [
       ...ampMounts,
       buildCloudClaudeSettingsMount(agentId),
       ...buildCloudClaudePersistMounts(agentId),
+      buildCloudGeminiSettingsMount(agentId),
+      buildCloudCodexVersionMount(agentId),
     ],
     body.mounts
   )

@@ -138,12 +138,16 @@ RUN mkdir -p /home/claude/.claude \
              /home/claude/.aimaestro/chat-state \
              /home/claude/.agent-messaging/agents \
              /home/claude/.config/gh \
-             /home/claude/.local/share/aimaestro/shell-helpers && \
+             /home/claude/.local/share/aimaestro/shell-helpers \
+             /home/claude/.gemini \
+             /home/claude/.codex && \
     chown -R claude:claude /home/claude/.claude \
                            /home/claude/.aimaestro \
                            /home/claude/.agent-messaging \
                            /home/claude/.config \
-                           /home/claude/.local
+                           /home/claude/.local \
+                           /home/claude/.gemini \
+                           /home/claude/.codex
 
 # Switch to non-root user
 USER claude
