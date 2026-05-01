@@ -159,6 +159,37 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
   ]
 }
 
+// Copy a host-operator-owned source file into a per-agent destination path,
+// preserving the operator's authentication state into the new agent's
+// per-UUID dir. Used by the auth-bootstrap path (kanbans 354a5174 codex +
+// 8aa61a60 claude) so freshly-created cloud agents inherit a valid login on
+// first launch instead of forcing the operator through an in-container OAuth
+// dance per agent.
+//
+// Returns true on a successful copy, false on any reason the seed didn't
+// happen (dest already exists — preserve existing per-agent state; source
+// missing — operator hasn't run the relevant `<cli> login` yet; copy
+// failed — perm error logged non-fatal). Caller decides whether to fall
+// back to an empty seed.
+//
+// Mode 0o600 on the destination matches the source's typical perms (CLI
+// credential files are operator-private). Per-agent file is written into
+// ~/.aimaestro/agents/<id>/, isolated from the host operator's tree —
+// future writes by the in-container CLI go to the per-agent file via the
+// bind mount, not back to the host source.
+export function seedFromHostFile(hostSourcePath: string, perAgentDestPath: string): boolean {
+  if (fs.existsSync(perAgentDestPath)) return false
+  if (!fs.existsSync(hostSourcePath)) return false
+  try {
+    fs.copyFileSync(hostSourcePath, perAgentDestPath)
+    fs.chmodSync(perAgentDestPath, 0o600)
+    return true
+  } catch (err) {
+    console.warn(`[seedFromHostFile] copy ${hostSourcePath} -> ${perAgentDestPath}:`, err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
 // Provision per-container Claude Code config: copies the hook script and
 // writes a settings.json into the agent's per-UUID dir, with hook paths
 // pointing at the container-side mount of that hook script. Also seeds the
@@ -224,15 +255,30 @@ export function provisionCloudClaudeConfig(
   // theme="dark" to skip the theme picker on first launch — without it, fresh
   // cloud agents land on the picker and the on-wake hook gets typed into a
   // menu (kanban 41dd54b9). Other claude-home fields are written by claude on
-  // first run / login. claude-credentials.json (OAuth tokens) is seeded empty
-  // since claude rewrites it on first login.
+  // first run / login.
   const claudeHomePath = path.join(agentDir, 'claude-home.json')
   if (!fs.existsSync(claudeHomePath)) {
     fs.writeFileSync(claudeHomePath, JSON.stringify({ theme: 'dark' }) + '\n', { mode: 0o600 })
   }
+  // claude-credentials.json (OAuth tokens) — operator-driven bootstrap
+  // (kanban 8aa61a60). At provision time, copy the host operator's
+  // ~/.claude/.credentials.json into the per-agent dir if it exists, so the
+  // fresh agent inherits a valid auth on first launch and skips the browser
+  // sign-in dance. Operator runs `claude /login` once on the host, every
+  // future cloud-agent create inherits. After bootstrap, each agent's claude
+  // rewrites this file on its own refresh cycle — per-agent isolation
+  // (independent rotation, isolated revoke radius) is preserved. Falls back
+  // to '{}' if the host has no credentials yet (first-time setup case).
+  // Shane's preference was "single shared host file mounted into all
+  // containers"; chose per-agent-copy override per his explicit invitation
+  // to override if isolation makes more sense — same shape as PR #96 +
+  // codex-auth.json (kanban 354a5174) for protocol consistency.
   const claudeCredsPath = path.join(agentDir, 'claude-credentials.json')
   if (!fs.existsSync(claudeCredsPath)) {
-    fs.writeFileSync(claudeCredsPath, '{}\n', { mode: 0o600 })
+    seedFromHostFile(
+      path.join(hostHome, '.claude', '.credentials.json'),
+      claudeCredsPath,
+    ) || fs.writeFileSync(claudeCredsPath, '{}\n', { mode: 0o600 })
   }
   // gh stores config in a directory (config.yml, hosts.yml). Just ensure the
   // dir exists; gh creates its own files on first `gh auth login`.
@@ -322,31 +368,35 @@ export function buildCloudGeminiSettingsMount(
   }
 }
 
-// Provision per-container Codex CLI config: writes a version.json into the
-// agent's per-UUID dir that pre-dismisses any future codex update modal.
+// Provision per-container Codex CLI config: writes a version.json + a
+// config.toml into the agent's per-UUID dir to suppress two distinct
+// first-launch blockers:
 //
-// Codex auto-checks for updates on every interactive launch and shows a
-// blocking modal when latest_version > dismissed_version. Without this seed,
-// the modal eats the head of the on-wake hook (verified empirically on R2D2
-// 2026-04-30 after codex 0.128.0 dropped — first 25 chars of the prompt
-// silently consumed; kanban 22f4af86). The wake-handler's modal-dismiss
-// regex (FIRST_RUN_MODAL_PATTERN) only catches claude Trust-folder + theme
-// picker, not codex Update-available.
+// 1. version.json — pre-dismisses the "Update available!" modal that codex
+//    auto-checks on every interactive launch. Without this seed, the modal
+//    eats the head of the on-wake hook (verified on R2D2 2026-04-30 after
+//    codex 0.128.0 dropped — first 25 chars silently consumed; kanban
+//    22f4af86). FIRST_RUN_MODAL_PATTERN doesn't match codex Update-available.
+//    Strategy: dismissed_version sentinel "999.0.0" + last_checked_at far in
+//    the future. Suppresses re-check loops indefinitely until codex tags
+//    >= 999.0.0 (then bump this seed).
 //
-// Strategy: pre-dismiss with a sentinel version far above any plausible
-// real codex release (999.0.0 — codex semvers are 0.x today; Anthropic's
-// Sonnet/Opus model numbers are unrelated). last_checked_at set far in the
-// future suppresses codex's own re-check loop. If codex ever reaches 999.0.0,
-// bump this seed and recreate agents — the seed is per-agent so individual
-// agents can override by editing version.json directly via the RW mount.
+// 2. config.toml — pre-trusts /workspace so codex skips its
+//    "Do you trust the contents of this directory?" modal on first launch
+//    (kanban 354a5174 trust-modal sibling, surfaced empirically tonight).
+//    /workspace is the per-agent operator-declared working directory —
+//    cloud agents are sandboxed to that mount only, so trust is the safe
+//    default. Codex's config.toml schema accepts per-project trust_level
+//    blocks; "trusted" is the documented value.
 //
-// Per-agent isolation: file lives under ~/.aimaestro/agents/<id>/,
-// bind-mounted RW at /home/claude/.codex/version.json by
-// buildCloudCodexVersionMount. Host operator's ~/.codex is never touched.
+// Per-agent isolation: both files live under ~/.aimaestro/agents/<id>/,
+// bind-mounted RW at /home/claude/.codex/version.json + config.toml by
+// the corresponding mount builders. Host operator's ~/.codex is never
+// touched.
 export function provisionCloudCodexConfig(
   agentId: string,
   hostHome: string = os.homedir()
-): { versionPath: string } {
+): { versionPath: string; configTomlPath: string } {
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
   fs.mkdirSync(agentDir, { recursive: true })
   const versionPath = path.join(agentDir, 'codex-version.json')
@@ -358,7 +408,29 @@ export function provisionCloudCodexConfig(
     }
     fs.writeFileSync(versionPath, JSON.stringify(versionState) + '\n', { mode: 0o600 })
   }
-  return { versionPath }
+  const configTomlPath = path.join(agentDir, 'codex-config.toml')
+  if (!fs.existsSync(configTomlPath)) {
+    const configToml =
+      '[projects."/workspace"]\n' +
+      'trust_level = "trusted"\n'
+    fs.writeFileSync(configTomlPath, configToml, { mode: 0o600 })
+  }
+  return { versionPath, configTomlPath }
+}
+
+// File-level bind mount for the per-agent codex config.toml. Mount target
+// parent (/home/claude/.codex) is pre-created in agent-container/Dockerfile.
+//
+// RW: codex rewrites config.toml when the operator runs /config or similar
+// in-CLI commands. Per-agent isolation unchanged.
+export function buildCloudCodexConfigTomlMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-config.toml'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'config.toml'),
+  }
 }
 
 // File-level bind mount for the per-agent codex version.json. Mount target
@@ -375,6 +447,58 @@ export function buildCloudCodexVersionMount(
   return {
     hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-version.json'),
     containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'version.json'),
+  }
+}
+
+// Provision per-container Codex CLI auth: at agent-create time, copy the
+// host operator's ~/.codex/auth.json into the per-agent dir so the fresh
+// cloud agent inherits a valid OpenAI/ChatGPT login and skips the
+// "Welcome to Codex / Sign in" picker on first launch (kanban 354a5174,
+// Option A operator-driven Device Code per Shane 2026-05-01).
+//
+// Operator workflow: run `codex login` once on the host, every subsequent
+// cloud-agent create inherits the credentials. Codex rewrites auth.json on
+// its own refresh cycle (token rotation, re-login), and those writes go to
+// the per-agent file via the bind mount — never back to the host source —
+// so per-agent rotation is independent + revoke radius is per-agent.
+//
+// If the host has no auth.json yet (first-time setup), seed empty {}.
+// Codex will then show its sign-in picker on first launch in the container,
+// matching pre-PR behavior.
+export function provisionCloudCodexAuth(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { authPath: string; bootstrapped: boolean } {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  fs.mkdirSync(agentDir, { recursive: true })
+  const authPath = path.join(agentDir, 'codex-auth.json')
+  let bootstrapped = false
+  if (!fs.existsSync(authPath)) {
+    bootstrapped = seedFromHostFile(
+      path.join(hostHome, '.codex', 'auth.json'),
+      authPath,
+    )
+    if (!bootstrapped) {
+      fs.writeFileSync(authPath, '{}\n', { mode: 0o600 })
+    }
+  }
+  return { authPath, bootstrapped }
+}
+
+// File-level bind mount for the per-agent codex auth.json. Mount target
+// parent (/home/claude/.codex) is pre-created in agent-container/Dockerfile
+// alongside the .gemini sibling.
+//
+// RW: codex writes auth.json on token refresh + re-login. Per-agent
+// isolation unchanged — host operator's ~/.codex/auth.json is read at
+// provision time and never touched again.
+export function buildCloudCodexAuthMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-auth.json'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'auth.json'),
   }
 }
 
@@ -411,6 +535,14 @@ export function migrateAgentPersistence(
     // Codex version.json (dismissed_version sentinel) — survive recreate so
     // a per-agent override of the sentinel carries forward.
     'codex-version.json',
+    // Codex auth.json (kanban 354a5174 Option A operator-driven Device Code)
+    // — survive recreate so codex stays logged in across UUID rotation.
+    // Mirrors the claude-credentials.json carry-forward behavior from PR #96.
+    'codex-auth.json',
+    // Codex config.toml (per-project trust_level + future config flags)
+    // — survive recreate so /workspace stays trusted across UUID rotation
+    // and any operator /config edits inside the running agent persist.
+    'codex-config.toml',
   ]
   for (const name of fileAssets) {
     const src = path.join(fromDir, name)
@@ -848,6 +980,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud codex config:', err instanceof Error ? err.message : err)
   }
+  try {
+    provisionCloudCodexAuth(agentId)
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud codex auth:', err instanceof Error ? err.message : err)
+  }
   const mergedMounts = mergeMounts(
     [
       ...ampMounts,
@@ -855,6 +992,8 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       ...buildCloudClaudePersistMounts(agentId),
       buildCloudGeminiSettingsMount(agentId),
       buildCloudCodexVersionMount(agentId),
+      buildCloudCodexAuthMount(agentId),
+      buildCloudCodexConfigTomlMount(agentId),
     ],
     body.mounts
   )
