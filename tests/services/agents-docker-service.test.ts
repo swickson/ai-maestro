@@ -19,8 +19,12 @@ import {
   buildAmpCommonEnv,
   buildCloudClaudeSettingsMount,
   buildCloudClaudePersistMounts,
+  buildCloudGeminiSettingsMount,
+  buildCloudCodexVersionMount,
   migrateAgentPersistence,
   provisionCloudClaudeConfig,
+  provisionCloudGeminiConfig,
+  provisionCloudCodexConfig,
   mergeMounts,
   mergeEnv,
   buildRecreateBody,
@@ -444,6 +448,132 @@ describe('provisionCloudClaudeConfig', () => {
     expect(homeMode).toBe(0o600)
     expect(credsMode).toBe(0o600)
   })
+
+  it('seeds claude-home.json with theme=dark so fresh-create agents skip the theme picker (kanban 41dd54b9)', () => {
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const homeJsonPath = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'claude-home.json')
+    const body = JSON.parse(fs.readFileSync(homeJsonPath, 'utf8'))
+    expect(body.theme).toBe('dark')
+  })
+})
+
+describe('provisionCloudGeminiConfig', () => {
+  const uuid = '55555555-5555-5555-5555-555555555555'
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-gem-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('writes gemini-settings.json with general.enableAutoUpdate=false to suppress self-update fetch (kanban cd2d7377)', () => {
+    const { settingsPath } = provisionCloudGeminiConfig(uuid, tmpHome)
+    expect(settingsPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'gemini-settings.json'))
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.general.enableAutoUpdate).toBe(false)
+  })
+
+  it('seeds the file with restrictive 0600 perms', () => {
+    const { settingsPath } = provisionCloudGeminiConfig(uuid, tmpHome)
+    expect(fs.statSync(settingsPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('creates the per-UUID dir if missing', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    expect(fs.existsSync(agentDir)).toBe(false)
+    provisionCloudGeminiConfig(uuid, tmpHome)
+    expect(fs.existsSync(agentDir)).toBe(true)
+  })
+
+  it('preserves existing gemini-settings.json content across re-runs (operator hand-edit intent)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    const existing = '{"general":{"enableAutoUpdate":true,"customField":"keep-me"}}\n'
+    fs.writeFileSync(settingsPath, existing)
+    provisionCloudGeminiConfig(uuid, tmpHome)
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(existing)
+  })
+})
+
+describe('provisionCloudCodexConfig', () => {
+  const uuid = '66666666-6666-6666-6666-666666666666'
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-codex-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('writes codex-version.json with dismissed_version sentinel suppressing the update modal (kanban 22f4af86)', () => {
+    const { versionPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(versionPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-version.json'))
+    const body = JSON.parse(fs.readFileSync(versionPath, 'utf8'))
+    expect(body.dismissed_version).toBe('999.0.0')
+    expect(body.latest_version).toBe('999.0.0')
+  })
+
+  it('seeds the file with restrictive 0600 perms', () => {
+    const { versionPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.statSync(versionPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('creates the per-UUID dir if missing', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    expect(fs.existsSync(agentDir)).toBe(false)
+    provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.existsSync(agentDir)).toBe(true)
+  })
+
+  it('preserves existing codex-version.json content across re-runs (operator override intent)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const versionPath = path.join(agentDir, 'codex-version.json')
+    const existing = '{"latest_version":"0.130.0","last_checked_at":"2026-05-15T00:00:00Z","dismissed_version":"0.130.0"}\n'
+    fs.writeFileSync(versionPath, existing)
+    provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.readFileSync(versionPath, 'utf8')).toBe(existing)
+  })
+})
+
+describe('buildCloudGeminiSettingsMount', () => {
+  it('returns a file-level bind mount for /home/claude/.gemini/settings.json', () => {
+    const uuid = '77777777-aaaa-7777-aaaa-777777777777'
+    const home = '/home/operator'
+    const m = buildCloudGeminiSettingsMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/gemini-settings.json`)
+    expect(m.containerPath).toBe('/home/claude/.gemini/settings.json')
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+    const uuid = '77777777-aaaa-7777-aaaa-777777777777'
+    const home = '/home/operator'
+    expect(validateMounts([buildCloudGeminiSettingsMount(uuid, home)])).toBeNull()
+  })
+})
+
+describe('buildCloudCodexVersionMount', () => {
+  it('returns a file-level bind mount for /home/claude/.codex/version.json', () => {
+    const uuid = '88888888-bbbb-8888-bbbb-888888888888'
+    const home = '/home/operator'
+    const m = buildCloudCodexVersionMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-version.json`)
+    expect(m.containerPath).toBe('/home/claude/.codex/version.json')
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+    const uuid = '88888888-bbbb-8888-bbbb-888888888888'
+    const home = '/home/operator'
+    expect(validateMounts([buildCloudCodexVersionMount(uuid, home)])).toBeNull()
+  })
 })
 
 describe('migrateAgentPersistence', () => {
@@ -461,6 +591,10 @@ describe('migrateAgentPersistence', () => {
       '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-from-pred"}}\n', { mode: 0o600 })
     fs.writeFileSync(path.join(fromDir, 'gh-config', 'hosts.yml'),
       'github.com:\n    user: test\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'gemini-settings.json'),
+      '{"general":{"enableAutoUpdate":false,"customField":"keep-me"}}\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'codex-version.json'),
+      '{"latest_version":"0.130.0","last_checked_at":"2026-05-15T00:00:00Z","dismissed_version":"0.130.0"}\n', { mode: 0o600 })
   })
 
   afterEach(() => {
@@ -495,6 +629,24 @@ describe('migrateAgentPersistence', () => {
     const creds = path.join(tmpHome, '.aimaestro', 'agents', toId, 'claude-credentials.json')
     expect(fs.statSync(home).mode & 0o777).toBe(0o600)
     expect(fs.statSync(creds).mode & 0o777).toBe(0o600)
+  })
+
+  it('copies gemini-settings.json content from predecessor (kanban cd2d7377 carry-forward)', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'gemini-settings.json')
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.general.enableAutoUpdate).toBe(false)
+    expect(body.general.customField).toBe('keep-me')
+    expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
+  })
+
+  it('copies codex-version.json content from predecessor (kanban 22f4af86 carry-forward)', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'codex-version.json')
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.dismissed_version).toBe('0.130.0')
+    expect(body.latest_version).toBe('0.130.0')
+    expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
   })
 
   it('no-ops when fromAgentId is empty', () => {
@@ -538,19 +690,25 @@ describe('buildAmpCommonEnv', () => {
   const name = 'ops-exec-test'
   const hostUrl = 'http://host.docker.internal:23000'
 
-  it('returns the five identity/name/routing/path envs', () => {
+  it('returns the identity/name/routing/path/gemini-trust envs', () => {
     expect(buildAmpCommonEnv(uuid, name, hostUrl)).toEqual({
       CLAUDE_AGENT_ID: uuid,
       CLAUDE_AGENT_NAME: name,
       AMP_DIR: `/home/claude/.agent-messaging/agents/${uuid}`,
       AMP_MAESTRO_URL: hostUrl,
       PATH: '/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      GEMINI_CLI_TRUST_WORKSPACE: 'true',
     })
   })
 
   it('puts the AMP CLI dir ahead of the standard path', () => {
     const env = buildAmpCommonEnv(uuid, name, hostUrl)
     expect(env.PATH.split(':')[0]).toBe('/home/claude/.local/bin')
+  })
+
+  it('sets GEMINI_CLI_TRUST_WORKSPACE=true so gemini-program agents skip the trust modal (kanban cd2d7377)', () => {
+    const env = buildAmpCommonEnv(uuid, name, hostUrl)
+    expect(env.GEMINI_CLI_TRUST_WORKSPACE).toBe('true')
   })
 
   it('passes the extraEnv validator', () => {
