@@ -680,6 +680,37 @@ describe('seedFromHostFile', () => {
     expect(seedFromHostFile(src, dst)).toBe(false)
     expect(fs.existsSync(dst)).toBe(false)
   })
+
+  it('re-bootstraps when dest holds the empty {} placeholder and host source becomes available (kanban 02a8ebda — post-hoc host login propagates on recreate)', () => {
+    const src = path.join(tmpHome, 'src.json')
+    const dst = path.join(tmpHome, 'dst.json')
+    fs.writeFileSync(src, '{"OPENAI_API_KEY":"sk-host-real"}\n')
+    fs.writeFileSync(dst, '{}\n')
+    expect(seedFromHostFile(src, dst)).toBe(true)
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.OPENAI_API_KEY).toBe('sk-host-real')
+  })
+
+  it('re-bootstraps when dest is bare empty string (defensive against zero-byte placeholder writes)', () => {
+    const src = path.join(tmpHome, 'src.json')
+    const dst = path.join(tmpHome, 'dst.json')
+    fs.writeFileSync(src, '{"claudeAiOauth":{"accessToken":"sk-ant-host"}}\n')
+    fs.writeFileSync(dst, '')
+    expect(seedFromHostFile(src, dst)).toBe(true)
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.claudeAiOauth.accessToken).toBe('sk-ant-host')
+  })
+
+  it('preserves real rotated credentials at dest even when host source has older content (per-agent rotation independence)', () => {
+    const src = path.join(tmpHome, 'src.json')
+    const dst = path.join(tmpHome, 'dst.json')
+    fs.writeFileSync(src, '{"OPENAI_API_KEY":"sk-host-old"}\n')
+    fs.writeFileSync(dst, '{"OPENAI_API_KEY":"sk-rotated-by-agent","tokens":{"refresh":"r-rot"}}\n')
+    expect(seedFromHostFile(src, dst)).toBe(false)
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.OPENAI_API_KEY).toBe('sk-rotated-by-agent')
+    expect(body.tokens.refresh).toBe('r-rot')
+  })
 })
 
 describe('provisionCloudCodexAuth', () => {
