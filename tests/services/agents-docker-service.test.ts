@@ -21,10 +21,14 @@ import {
   buildCloudClaudePersistMounts,
   buildCloudGeminiSettingsMount,
   buildCloudCodexVersionMount,
+  buildCloudCodexAuthMount,
+  buildCloudCodexConfigTomlMount,
   migrateAgentPersistence,
   provisionCloudClaudeConfig,
   provisionCloudGeminiConfig,
   provisionCloudCodexConfig,
+  provisionCloudCodexAuth,
+  seedFromHostFile,
   mergeMounts,
   mergeEnv,
   buildRecreateBody,
@@ -455,6 +459,24 @@ describe('provisionCloudClaudeConfig', () => {
     const body = JSON.parse(fs.readFileSync(homeJsonPath, 'utf8'))
     expect(body.theme).toBe('dark')
   })
+
+  it('bootstraps claude-credentials.json from host ~/.claude/.credentials.json when present (kanban 8aa61a60 OAuth bootstrap)', () => {
+    const hostClaudeDir = path.join(tmpHome, '.claude')
+    fs.mkdirSync(hostClaudeDir, { recursive: true })
+    fs.writeFileSync(path.join(hostClaudeDir, '.credentials.json'),
+      '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-host-bootstrapped"}}\n', { mode: 0o600 })
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const credsPath = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'claude-credentials.json')
+    const body = JSON.parse(fs.readFileSync(credsPath, 'utf8'))
+    expect(body.claudeAiOauth.accessToken).toBe('sk-ant-oat01-host-bootstrapped')
+  })
+
+  it('falls back to empty {} when host has no claude credentials (first-time setup case)', () => {
+    // tmpHome is fresh; no host ~/.claude/.credentials.json
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const credsPath = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'claude-credentials.json')
+    expect(JSON.parse(fs.readFileSync(credsPath, 'utf8'))).toEqual({})
+  })
 })
 
 describe('provisionCloudGeminiConfig', () => {
@@ -540,6 +562,46 @@ describe('provisionCloudCodexConfig', () => {
     provisionCloudCodexConfig(uuid, tmpHome)
     expect(fs.readFileSync(versionPath, 'utf8')).toBe(existing)
   })
+
+  it('writes codex-config.toml pre-trusting /workspace so codex skips the trust modal on first launch (kanban 354a5174 trust-modal sibling)', () => {
+    const { configTomlPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(configTomlPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-config.toml'))
+    const body = fs.readFileSync(configTomlPath, 'utf8')
+    expect(body).toContain('[projects."/workspace"]')
+    expect(body).toContain('trust_level = "trusted"')
+  })
+
+  it('seeds config.toml with restrictive 0600 perms', () => {
+    const { configTomlPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.statSync(configTomlPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('preserves existing codex-config.toml across re-runs (operator hand-edit intent)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const configTomlPath = path.join(agentDir, 'codex-config.toml')
+    const existing = '[projects."/workspace"]\ntrust_level = "trusted"\n\n[other]\nfoo = "bar"\n'
+    fs.writeFileSync(configTomlPath, existing)
+    provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.readFileSync(configTomlPath, 'utf8')).toBe(existing)
+  })
+})
+
+describe('buildCloudCodexConfigTomlMount', () => {
+  it('returns a file-level bind mount for /home/claude/.codex/config.toml', () => {
+    const uuid = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+    const home = '/home/operator'
+    const m = buildCloudCodexConfigTomlMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-config.toml`)
+    expect(m.containerPath).toBe('/home/claude/.codex/config.toml')
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+    const uuid = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+    const home = '/home/operator'
+    expect(validateMounts([buildCloudCodexConfigTomlMount(uuid, home)])).toBeNull()
+  })
 })
 
 describe('buildCloudGeminiSettingsMount', () => {
@@ -576,6 +638,127 @@ describe('buildCloudCodexVersionMount', () => {
   })
 })
 
+describe('seedFromHostFile', () => {
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-seed-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('returns true and copies content when source exists and dest is missing', () => {
+    const src = path.join(tmpHome, 'src.json')
+    const dst = path.join(tmpHome, 'dst.json')
+    fs.writeFileSync(src, '{"hostFile":"hello"}\n')
+    expect(seedFromHostFile(src, dst)).toBe(true)
+    expect(JSON.parse(fs.readFileSync(dst, 'utf8')).hostFile).toBe('hello')
+  })
+
+  it('writes the destination with restrictive 0600 perms', () => {
+    const src = path.join(tmpHome, 'src.json')
+    const dst = path.join(tmpHome, 'dst.json')
+    fs.writeFileSync(src, '{}\n')
+    seedFromHostFile(src, dst)
+    expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
+  })
+
+  it('returns false and does not overwrite when dest already exists (operator hand-edit / pre-seeded)', () => {
+    const src = path.join(tmpHome, 'src.json')
+    const dst = path.join(tmpHome, 'dst.json')
+    fs.writeFileSync(src, '{"new":"value"}\n')
+    fs.writeFileSync(dst, '{"existing":"value"}\n')
+    expect(seedFromHostFile(src, dst)).toBe(false)
+    expect(fs.readFileSync(dst, 'utf8')).toBe('{"existing":"value"}\n')
+  })
+
+  it('returns false when source is missing (operator has not run cli login yet)', () => {
+    const src = path.join(tmpHome, 'absent.json')
+    const dst = path.join(tmpHome, 'dst.json')
+    expect(seedFromHostFile(src, dst)).toBe(false)
+    expect(fs.existsSync(dst)).toBe(false)
+  })
+})
+
+describe('provisionCloudCodexAuth', () => {
+  const uuid = '99999999-9999-9999-9999-999999999999'
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-codex-auth-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('bootstraps codex-auth.json from host ~/.codex/auth.json when present (kanban 354a5174 Option A)', () => {
+    const hostCodexDir = path.join(tmpHome, '.codex')
+    fs.mkdirSync(hostCodexDir, { recursive: true })
+    fs.writeFileSync(path.join(hostCodexDir, 'auth.json'),
+      '{"OPENAI_API_KEY":"sk-test-from-host","tokens":{"access":"abc"}}\n', { mode: 0o600 })
+
+    const { authPath, bootstrapped } = provisionCloudCodexAuth(uuid, tmpHome)
+    expect(authPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-auth.json'))
+    expect(bootstrapped).toBe(true)
+    const body = JSON.parse(fs.readFileSync(authPath, 'utf8'))
+    expect(body.OPENAI_API_KEY).toBe('sk-test-from-host')
+    expect(body.tokens.access).toBe('abc')
+  })
+
+  it('seeds empty {} when host has no auth.json (first-time setup case)', () => {
+    const { authPath, bootstrapped } = provisionCloudCodexAuth(uuid, tmpHome)
+    expect(bootstrapped).toBe(false)
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toEqual({})
+  })
+
+  it('writes the seeded file with restrictive 0600 perms', () => {
+    const { authPath } = provisionCloudCodexAuth(uuid, tmpHome)
+    expect(fs.statSync(authPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('preserves existing per-agent codex-auth.json across re-runs (per-agent rotation independence)', () => {
+    const hostCodexDir = path.join(tmpHome, '.codex')
+    fs.mkdirSync(hostCodexDir, { recursive: true })
+    fs.writeFileSync(path.join(hostCodexDir, 'auth.json'),
+      '{"OPENAI_API_KEY":"sk-host-NEW"}\n', { mode: 0o600 })
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const authPath = path.join(agentDir, 'codex-auth.json')
+    const existing = '{"OPENAI_API_KEY":"sk-rotated-by-codex-runtime"}\n'
+    fs.writeFileSync(authPath, existing)
+    const result = provisionCloudCodexAuth(uuid, tmpHome)
+    expect(result.bootstrapped).toBe(false)
+    expect(fs.readFileSync(authPath, 'utf8')).toBe(existing)
+  })
+
+  it('creates the per-UUID dir if missing', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    expect(fs.existsSync(agentDir)).toBe(false)
+    provisionCloudCodexAuth(uuid, tmpHome)
+    expect(fs.existsSync(agentDir)).toBe(true)
+  })
+})
+
+describe('buildCloudCodexAuthMount', () => {
+  it('returns a file-level bind mount for /home/claude/.codex/auth.json', () => {
+    const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    const home = '/home/operator'
+    const m = buildCloudCodexAuthMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-auth.json`)
+    expect(m.containerPath).toBe('/home/claude/.codex/auth.json')
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+    const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    const home = '/home/operator'
+    expect(validateMounts([buildCloudCodexAuthMount(uuid, home)])).toBeNull()
+  })
+})
+
 describe('migrateAgentPersistence', () => {
   let tmpHome: string
   const fromId = '77777777-7777-7777-7777-777777777777'
@@ -595,6 +778,10 @@ describe('migrateAgentPersistence', () => {
       '{"general":{"enableAutoUpdate":false,"customField":"keep-me"}}\n', { mode: 0o600 })
     fs.writeFileSync(path.join(fromDir, 'codex-version.json'),
       '{"latest_version":"0.130.0","last_checked_at":"2026-05-15T00:00:00Z","dismissed_version":"0.130.0"}\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'codex-auth.json'),
+      '{"OPENAI_API_KEY":"sk-rotated-by-codex","tokens":{"refresh":"r-pred"}}\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'codex-config.toml'),
+      '[projects."/workspace"]\ntrust_level = "trusted"\n', { mode: 0o600 })
   })
 
   afterEach(() => {
@@ -646,6 +833,24 @@ describe('migrateAgentPersistence', () => {
     const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
     expect(body.dismissed_version).toBe('0.130.0')
     expect(body.latest_version).toBe('0.130.0')
+    expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
+  })
+
+  it('copies codex-auth.json content from predecessor (kanban 354a5174 carry-forward across UUID rotation)', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'codex-auth.json')
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.OPENAI_API_KEY).toBe('sk-rotated-by-codex')
+    expect(body.tokens.refresh).toBe('r-pred')
+    expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
+  })
+
+  it('copies codex-config.toml content from predecessor (trust modal seed survives recreate)', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'codex-config.toml')
+    const body = fs.readFileSync(dst, 'utf8')
+    expect(body).toContain('[projects."/workspace"]')
+    expect(body).toContain('trust_level = "trusted"')
     expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
   })
 
