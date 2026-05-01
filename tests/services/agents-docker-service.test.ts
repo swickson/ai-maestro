@@ -477,6 +477,41 @@ describe('provisionCloudClaudeConfig', () => {
     const credsPath = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'claude-credentials.json')
     expect(JSON.parse(fs.readFileSync(credsPath, 'utf8'))).toEqual({})
   })
+
+  it('re-bootstraps claude-credentials.json when migrated predecessor placeholder is empty {} and host now has creds (kanban 02a8ebda recreate-path, Watson Mason finding)', () => {
+    // Simulate the recreate flow: migrateAgentPersistence has already copied
+    // the predecessor's empty {} into the new UUID dir BEFORE provisioning runs.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'claude-credentials.json'), '{}\n', { mode: 0o600 })
+    // Operator has since run claude /login on the host
+    const hostClaudeDir = path.join(tmpHome, '.claude')
+    fs.mkdirSync(hostClaudeDir, { recursive: true })
+    fs.writeFileSync(path.join(hostClaudeDir, '.credentials.json'),
+      '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-post-hoc-login"}}\n', { mode: 0o600 })
+
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+
+    const credsPath = path.join(agentDir, 'claude-credentials.json')
+    const body = JSON.parse(fs.readFileSync(credsPath, 'utf8'))
+    expect(body.claudeAiOauth.accessToken).toBe('sk-ant-oat01-post-hoc-login')
+  })
+
+  it('preserves real rotated claude-credentials at dest across re-runs even when host source has older content', () => {
+    // Simulate a healthy long-running agent whose claude has rotated its OAuth.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const rotated = '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-rotated-by-agent","refreshToken":"r-r"}}\n'
+    fs.writeFileSync(path.join(agentDir, 'claude-credentials.json'), rotated, { mode: 0o600 })
+    const hostClaudeDir = path.join(tmpHome, '.claude')
+    fs.mkdirSync(hostClaudeDir, { recursive: true })
+    fs.writeFileSync(path.join(hostClaudeDir, '.credentials.json'),
+      '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-host-OLD"}}\n', { mode: 0o600 })
+
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+
+    expect(fs.readFileSync(path.join(agentDir, 'claude-credentials.json'), 'utf8')).toBe(rotated)
+  })
 })
 
 describe('provisionCloudGeminiConfig', () => {
@@ -770,6 +805,40 @@ describe('provisionCloudCodexAuth', () => {
     expect(fs.existsSync(agentDir)).toBe(false)
     provisionCloudCodexAuth(uuid, tmpHome)
     expect(fs.existsSync(agentDir)).toBe(true)
+  })
+
+  it('re-bootstraps codex-auth.json when migrated predecessor placeholder is empty {} and host now has auth (kanban 02a8ebda recreate-path)', () => {
+    // Simulate the /recreate flow: migrateAgentPersistence has copied the
+    // predecessor's empty {} into the new UUID dir BEFORE provisioning runs.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'codex-auth.json'), '{}\n', { mode: 0o600 })
+    const hostCodexDir = path.join(tmpHome, '.codex')
+    fs.mkdirSync(hostCodexDir, { recursive: true })
+    fs.writeFileSync(path.join(hostCodexDir, 'auth.json'),
+      '{"OPENAI_API_KEY":"sk-host-post-hoc-login"}\n', { mode: 0o600 })
+
+    const result = provisionCloudCodexAuth(uuid, tmpHome)
+
+    expect(result.bootstrapped).toBe(true)
+    const body = JSON.parse(fs.readFileSync(result.authPath, 'utf8'))
+    expect(body.OPENAI_API_KEY).toBe('sk-host-post-hoc-login')
+  })
+
+  it('preserves real rotated codex-auth across re-runs even when migrated empty placeholder would not block (rotation independence)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const rotated = '{"OPENAI_API_KEY":"sk-rotated-by-codex","tokens":{"refresh":"r-r"}}\n'
+    fs.writeFileSync(path.join(agentDir, 'codex-auth.json'), rotated, { mode: 0o600 })
+    const hostCodexDir = path.join(tmpHome, '.codex')
+    fs.mkdirSync(hostCodexDir, { recursive: true })
+    fs.writeFileSync(path.join(hostCodexDir, 'auth.json'),
+      '{"OPENAI_API_KEY":"sk-host-OLD"}\n', { mode: 0o600 })
+
+    const result = provisionCloudCodexAuth(uuid, tmpHome)
+
+    expect(result.bootstrapped).toBe(false)
+    expect(fs.readFileSync(result.authPath, 'utf8')).toBe(rotated)
   })
 })
 
