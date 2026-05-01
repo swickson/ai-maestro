@@ -33,10 +33,13 @@ import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
 
+// Tailscale IPs everywhere — never `localhost`. When this script runs from
+// any of the three hosts, `localhost` resolves to the running host, causing
+// false-positive cross-host duplicate findings (Watson empirical PR #106).
 const HOSTS = [
-  { name: 'milo',     url: 'http://localhost:23000' },
+  { name: 'milo',     url: 'http://100.83.160.34:23000' },
   { name: 'bananajr', url: 'http://100.112.62.82:23000' },
-  { name: 'holmes',   url: 'http://holmes:23000' },
+  { name: 'holmes',   url: 'http://100.81.151.18:23000' },
 ]
 
 const ALLIANCEOS_PREFIX = 'dev-allianceos-'
@@ -60,8 +63,16 @@ const SOFT_DELETED_CUTOFF_MS = NOW.getTime() - SOFT_DELETED_RETENTION_DAYS * 864
 const stamp = NOW.toISOString().replace(/[:.]/g, '-').replace('Z', '')
 const OUT_DIR = getFlag('out') || `./sweep-audit-${stamp}`
 
+// Structural fingerprint — only fields whose change implies a delete-safety state shift.
+// Excludes lastActive (heartbeat-volatile, would drift every tick) and other transient
+// fields. Sorted by id for determinism. Phase 3 drift-check compares this fingerprint
+// against the snapshot before each delete and aborts on mismatch (Watson catch PR #106).
 function fingerprint(data) {
-  return crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex').slice(0, 16)
+  const agents = Array.isArray(data) ? data : (data.agents || [])
+  const structural = agents
+    .map((a) => ({ id: a.id || null, name: a.name || null, deletedAt: a.deletedAt || null }))
+    .sort((x, y) => (x.id || '').localeCompare(y.id || ''))
+  return crypto.createHash('sha256').update(JSON.stringify(structural)).digest('hex').slice(0, 16)
 }
 
 function daysAgo(iso) {
