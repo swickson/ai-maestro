@@ -286,23 +286,32 @@ export function provisionCloudClaudeConfig(
   }
   // claude-credentials.json (OAuth tokens) — operator-driven bootstrap
   // (kanban 8aa61a60). At provision time, copy the host operator's
-  // ~/.claude/.credentials.json into the per-agent dir if it exists, so the
-  // fresh agent inherits a valid auth on first launch and skips the browser
-  // sign-in dance. Operator runs `claude /login` once on the host, every
-  // future cloud-agent create inherits. After bootstrap, each agent's claude
+  // ~/.claude/.credentials.json into the per-agent dir, so the fresh agent
+  // inherits a valid auth on first launch and skips the browser sign-in
+  // dance. Operator runs `claude /login` once on the host, every future
+  // cloud-agent create inherits. After bootstrap, each agent's claude
   // rewrites this file on its own refresh cycle — per-agent isolation
-  // (independent rotation, isolated revoke radius) is preserved. Falls back
-  // to '{}' if the host has no credentials yet (first-time setup case).
+  // (independent rotation, isolated revoke radius) is preserved.
+  //
+  // Falls back to '{}' if the host has no credentials yet (first-time
+  // setup case) AND no migrated predecessor file is present.
+  //
+  // seedFromHostFile fully owns dest-existence semantics (kanban 02a8ebda
+  // + Watson Mason post-#104 finding): real rotated creds at dest are
+  // preserved, but an empty `{}` placeholder migrated forward from a
+  // pre-bootstrap predecessor IS re-seeded from the (now-populated) host
+  // source. This restores the post-hoc-host-login → recreate propagation
+  // path that the previous outer existsSync guard short-circuited.
+  //
   // Shane's preference was "single shared host file mounted into all
   // containers"; chose per-agent-copy override per his explicit invitation
   // to override if isolation makes more sense — same shape as PR #96 +
   // codex-auth.json (kanban 354a5174) for protocol consistency.
   const claudeCredsPath = path.join(agentDir, 'claude-credentials.json')
-  if (!fs.existsSync(claudeCredsPath)) {
-    seedFromHostFile(
-      path.join(hostHome, '.claude', '.credentials.json'),
-      claudeCredsPath,
-    ) || fs.writeFileSync(claudeCredsPath, '{}\n', { mode: 0o600 })
+  if (!seedFromHostFile(path.join(hostHome, '.claude', '.credentials.json'), claudeCredsPath)) {
+    if (!fs.existsSync(claudeCredsPath)) {
+      fs.writeFileSync(claudeCredsPath, '{}\n', { mode: 0o600 })
+    }
   }
   // gh stores config in a directory (config.yml, hosts.yml). Just ensure the
   // dir exists; gh creates its own files on first `gh auth login`.
@@ -486,9 +495,13 @@ export function buildCloudCodexVersionMount(
 // the per-agent file via the bind mount — never back to the host source —
 // so per-agent rotation is independent + revoke radius is per-agent.
 //
-// If the host has no auth.json yet (first-time setup), seed empty {}.
-// Codex will then show its sign-in picker on first launch in the container,
-// matching pre-PR behavior.
+// If the host has no auth.json yet (first-time setup) AND no migrated
+// predecessor file is present, seed empty {}. Codex will then show its
+// sign-in picker on first launch in the container, matching pre-PR
+// behavior. seedFromHostFile fully owns dest-existence semantics — see
+// the function docstring for the empty-{}-re-seed contract that lets
+// post-hoc host login propagate via /recreate (Watson Mason post-#104
+// finding, kanban 02a8ebda follow-up).
 export function provisionCloudCodexAuth(
   agentId: string,
   hostHome: string = os.homedir()
@@ -496,15 +509,12 @@ export function provisionCloudCodexAuth(
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
   fs.mkdirSync(agentDir, { recursive: true })
   const authPath = path.join(agentDir, 'codex-auth.json')
-  let bootstrapped = false
-  if (!fs.existsSync(authPath)) {
-    bootstrapped = seedFromHostFile(
-      path.join(hostHome, '.codex', 'auth.json'),
-      authPath,
-    )
-    if (!bootstrapped) {
-      fs.writeFileSync(authPath, '{}\n', { mode: 0o600 })
-    }
+  const bootstrapped = seedFromHostFile(
+    path.join(hostHome, '.codex', 'auth.json'),
+    authPath,
+  )
+  if (!bootstrapped && !fs.existsSync(authPath)) {
+    fs.writeFileSync(authPath, '{}\n', { mode: 0o600 })
   }
   return { authPath, bootstrapped }
 }
