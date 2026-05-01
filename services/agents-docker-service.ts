@@ -167,10 +167,19 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
 // dance per agent.
 //
 // Returns true on a successful copy, false on any reason the seed didn't
-// happen (dest already exists — preserve existing per-agent state; source
-// missing — operator hasn't run the relevant `<cli> login` yet; copy
-// failed — perm error logged non-fatal). Caller decides whether to fall
-// back to an empty seed.
+// happen (dest already populated with real content — preserve existing
+// per-agent rotation state; source missing — operator hasn't run the
+// relevant `<cli> login` yet; copy failed — perm error logged non-fatal).
+// Caller decides whether to fall back to an empty seed.
+//
+// Empty-placeholder semantics (kanban 02a8ebda): if the dest exists but
+// holds only an empty seed (`{}` / `{}\n` / empty string), treat it as
+// "not yet bootstrapped" and proceed with the host copy. Without this,
+// agents created BEFORE the operator ran `<cli> login` would carry their
+// `{}` placeholder forward across /recreate (migrateAgentPersistence copies
+// it; this guard then short-circuited the re-bootstrap), forcing operators
+// to manually `rm` the per-agent file before recreate. Watson surfaced
+// during PR #103 Mason cross-test 2026-05-01.
 //
 // Mode 0o600 on the destination matches the source's typical perms (CLI
 // credential files are operator-private). Per-agent file is written into
@@ -178,7 +187,7 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
 // future writes by the in-container CLI go to the per-agent file via the
 // bind mount, not back to the host source.
 export function seedFromHostFile(hostSourcePath: string, perAgentDestPath: string): boolean {
-  if (fs.existsSync(perAgentDestPath)) return false
+  if (fs.existsSync(perAgentDestPath) && !isEmptyJsonSeed(perAgentDestPath)) return false
   if (!fs.existsSync(hostSourcePath)) return false
   try {
     fs.copyFileSync(hostSourcePath, perAgentDestPath)
@@ -186,6 +195,21 @@ export function seedFromHostFile(hostSourcePath: string, perAgentDestPath: strin
     return true
   } catch (err) {
     console.warn(`[seedFromHostFile] copy ${hostSourcePath} -> ${perAgentDestPath}:`, err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+// Detect the empty-placeholder content that provisionCloudClaudeConfig +
+// provisionCloudCodexAuth write when the host has no credentials yet
+// (`{}\n` or an empty file). Used by seedFromHostFile to tell apart
+// "intentionally empty placeholder, please re-bootstrap" from "operator's
+// real rotated credentials, do not overwrite". Read failures fall through
+// as "not empty" (conservative — preserve unknown content).
+function isEmptyJsonSeed(filePath: string): boolean {
+  try {
+    const trimmed = fs.readFileSync(filePath, 'utf8').trim()
+    return trimmed === '' || trimmed === '{}'
+  } catch {
     return false
   }
 }
