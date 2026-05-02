@@ -348,7 +348,8 @@ export function buildCloudClaudeSettingsMount(
 
 // Provision per-container Gemini CLI config: writes a settings.json into the
 // agent's per-UUID dir that suppresses the gemini self-update fetch on
-// container start. The trust-folder dialog is handled separately by the
+// container start AND pre-selects the operator's OAuth personal auth method.
+// The trust-folder dialog is handled separately by the
 // GEMINI_CLI_TRUST_WORKSPACE=true env (set in buildAmpCommonEnv) — that path
 // is the gemini-supported in-binary fast path that returns isTrusted=true
 // without a file lookup, see @google/gemini-cli util/trust.ts checkPathTrust.
@@ -358,6 +359,18 @@ export function buildCloudClaudeSettingsMount(
 // launch (the in-container env can't reach npm to self-update). The error
 // itself is non-blocking but adds modal noise above the on-wake prompt and
 // confuses operators reading the pane (kanban cd2d7377).
+//
+// Without security.auth.selectedType="oauth-personal", gemini falls through
+// to "Please set an Auth method in your /home/claude/.gemini/settings.json
+// or specify one of the following environment variables before running:
+// GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA" on every
+// launch — even when oauth_creds.json is present. Setting selectedType is
+// what tells gemini "use the OAuth path" and consume oauth_creds.json. The
+// canonical "oauth-personal" string is verified in @google/gemini-cli
+// bundle (8 occurrences across chunk-EA775AOR, chunk-GOUPAQ35, etc.) and
+// matches the value the gemini interactive auth-picker writes when an
+// operator selects "Login with Google" (kanban 1f911653 Hardin empirical
+// 2026-05-01: oauth_creds bootstrap alone was necessary-but-not-sufficient).
 //
 // Per-agent isolation: the seed file lives under ~/.aimaestro/agents/<id>/,
 // bind-mounted RW at /home/claude/.gemini/settings.json by
@@ -376,6 +389,11 @@ export function provisionCloudGeminiConfig(
     const settings = {
       general: {
         enableAutoUpdate: false,
+      },
+      security: {
+        auth: {
+          selectedType: 'oauth-personal',
+        },
       },
     }
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })

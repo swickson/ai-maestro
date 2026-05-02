@@ -535,6 +535,12 @@ describe('provisionCloudGeminiConfig', () => {
     expect(body.general.enableAutoUpdate).toBe(false)
   })
 
+  it('writes gemini-settings.json with security.auth.selectedType="oauth-personal" to skip the auth picker (kanban 1f911653 Hardin empirical)', () => {
+    const { settingsPath } = provisionCloudGeminiConfig(uuid, tmpHome)
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.security.auth.selectedType).toBe('oauth-personal')
+  })
+
   it('seeds the file with restrictive 0600 perms', () => {
     const { settingsPath } = provisionCloudGeminiConfig(uuid, tmpHome)
     expect(fs.statSync(settingsPath).mode & 0o777).toBe(0o600)
