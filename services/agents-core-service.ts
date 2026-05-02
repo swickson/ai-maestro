@@ -65,6 +65,7 @@ import { getRuntime } from '@/lib/agent-runtime'
 import {
   capturePaneFromContainer,
   inspectContainerStatus,
+  removeContainer,
   sendKeysToContainer,
   startContainer,
   stopContainer,
@@ -933,7 +934,7 @@ export function updateAgentById(id: string, body: UpdateAgentRequest): ServiceRe
 // DELETE /api/agents/[id] -- delete agent (soft or hard)
 // ---------------------------------------------------------------------------
 
-export function deleteAgentById(id: string, hard: boolean): ServiceResult<{ success: boolean; hard: boolean }> {
+export async function deleteAgentById(id: string, hard: boolean): Promise<ServiceResult<{ success: boolean; hard: boolean }>> {
   try {
     const agent = getAgent(id, true) // include deleted to distinguish 404 vs 410
     if (!agent) {
@@ -941,6 +942,34 @@ export function deleteAgentById(id: string, hard: boolean): ServiceResult<{ succ
     }
     if (agent.deletedAt && !hard) {
       return gone('Agent')
+    }
+
+    // ─── Cloud (containerized) agents: tear down the docker container ────────
+    // Fixes issue #84 — without this, hard-delete clears the registry + AMP
+    // keystore but leaves `aim-<name>` running, which both leaks resources and
+    // blocks recreate-with-same-name (the `aim-<name>` slot stays occupied).
+    // Mirrors hibernateAgent's cloud branch shape (line ~1804); soft-delete is
+    // intentionally skipped — it's recoverable, and nuking the container would
+    // defeat that.
+    if (hard && agent.deployment?.type === 'cloud' && agent.deployment.cloud?.provider === 'local-container') {
+      const containerName = agent.deployment.cloud.containerName
+      if (containerName) {
+        const status = await inspectContainerStatus(containerName)
+        if (status === 'running' || status === 'paused') {
+          await stopContainer(containerName).catch(err =>
+            console.warn(`[Delete] stop ${containerName} failed: ${(err as Error).message}`)
+          )
+        }
+        // Skip rm when container doesn't exist or daemon is unreachable. Other
+        // states ('stopped', 'created') still need rm to free the name slot for
+        // recreate-with-same-name. Failures are non-fatal so registry/keystore
+        // cleanup proceeds — the operator already chose to nuke the agent.
+        if (status !== 'missing' && status !== 'docker_down') {
+          await removeContainer(containerName).catch(err =>
+            console.warn(`[Delete] rm ${containerName} failed: ${(err as Error).message}`)
+          )
+        }
+      }
     }
 
     const success = deleteAgent(id, hard)

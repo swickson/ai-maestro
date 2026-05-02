@@ -43,7 +43,7 @@ vi.mock('util', async () => {
   }
 })
 
-import { cancelCopyModeInContainer } from '@/lib/container-utils'
+import { cancelCopyModeInContainer, removeContainer } from '@/lib/container-utils'
 
 describe('cancelCopyModeInContainer', () => {
   beforeEach(() => {
@@ -138,5 +138,58 @@ describe('cancelCopyModeInContainer', () => {
     expect(calls[0]).toContain(`'aim-evil'\\''; rm -rf /; echo '\\'''`)
     // Probe still issued — the helper trusts shellQuote, doesn't reject.
     expect(calls[0]).toContain('display-message')
+  })
+})
+
+// ============================================================================
+// removeContainer (kanban 1282efc4 / issue #84 — hard-delete cloud-agent
+// teardown). Tested separately from the deleteAgentById cloud branch which
+// owns the inspect→stop→rm sequencing — this suite covers the helper itself.
+// ============================================================================
+
+describe('removeContainer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('issues `docker rm` with the shellQuoted container name', async () => {
+    const calls: string[] = []
+    mockExec.mockImplementation((cmd: string, cb: Function) => {
+      calls.push(cmd)
+      cb(null, '', '')
+    })
+
+    await removeContainer('aim-cloud-agent')
+
+    expect(calls.length).toBe(1)
+    expect(calls[0]).toContain('docker rm')
+    expect(calls[0]).toContain("'aim-cloud-agent'")
+  })
+
+  it('escapes container names with shell metacharacters via single-quote quoting', async () => {
+    const calls: string[] = []
+    mockExec.mockImplementation((cmd: string, cb: Function) => {
+      calls.push(cmd)
+      cb(null, '', '')
+    })
+
+    await removeContainer("aim-evil'; rm -rf /; echo '")
+
+    // Single quote in the container name must be escaped so the command
+    // can't break out of the quoted shell argument.
+    expect(calls[0]).toContain(`'aim-evil'\\''; rm -rf /; echo '\\'''`)
+    expect(calls[0]).toContain('docker rm')
+  })
+
+  it('propagates daemon errors so the caller can decide whether to swallow them', async () => {
+    // The delete-path caller wraps removeContainer in `.catch(warn)` to make
+    // it non-fatal. The helper itself must surface errors — swallowing here
+    // would hide "container in use" / "no such container" / daemon-down from
+    // any future caller that actually needs to react.
+    mockExec.mockImplementation((_cmd: string, cb: Function) => {
+      cb(new Error('Error response from daemon: No such container: aim-missing'), '', '')
+    })
+
+    await expect(removeContainer('aim-missing')).rejects.toThrow(/no such container/i)
   })
 })

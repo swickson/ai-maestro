@@ -98,6 +98,7 @@ const {
       inspectContainerStatus: vi.fn().mockResolvedValue('missing' as const),
       startContainer: vi.fn().mockResolvedValue(undefined),
       stopContainer: vi.fn().mockResolvedValue(undefined),
+      removeContainer: vi.fn().mockResolvedValue(undefined),
     },
   }
 })
@@ -166,6 +167,7 @@ beforeEach(() => {
   mockContainerUtils.inspectContainerStatus.mockResolvedValue('missing')
   mockContainerUtils.startContainer.mockResolvedValue(undefined)
   mockContainerUtils.stopContainer.mockResolvedValue(undefined)
+  mockContainerUtils.removeContainer.mockResolvedValue(undefined)
 })
 
 // ============================================================================
@@ -411,55 +413,219 @@ describe('updateAgentById', () => {
 // ============================================================================
 
 describe('deleteAgentById', () => {
-  it('soft deletes agent', () => {
+  it('soft deletes agent', async () => {
     const agent = makeAgent({ id: 'agent-1' })
     mockAgentRegistry.getAgent.mockReturnValue(agent)
     mockAgentRegistry.deleteAgent.mockReturnValue(true)
 
-    const result = deleteAgentById('agent-1', false)
+    const result = await deleteAgentById('agent-1', false)
 
     expect(result.status).toBe(200)
     expect((result.data as any)?.success).toBe(true)
     expect((result.data as any)?.hard).toBe(false)
   })
 
-  it('hard deletes agent', () => {
+  it('hard deletes agent', async () => {
     const agent = makeAgent({ id: 'agent-1' })
     mockAgentRegistry.getAgent.mockReturnValue(agent)
     mockAgentRegistry.deleteAgent.mockReturnValue(true)
 
-    const result = deleteAgentById('agent-1', true)
+    const result = await deleteAgentById('agent-1', true)
 
     expect(result.status).toBe(200)
     expect((result.data as any)?.hard).toBe(true)
   })
 
-  it('returns 404 when agent not found', () => {
+  it('returns 404 when agent not found', async () => {
     mockAgentRegistry.getAgent.mockReturnValue(null)
 
-    const result = deleteAgentById('nonexistent', false)
+    const result = await deleteAgentById('nonexistent', false)
 
     expect(result.status).toBe(404)
   })
 
-  it('returns 410 when already soft-deleted and not hard deleting', () => {
+  it('returns 410 when already soft-deleted and not hard deleting', async () => {
     const deleted = makeAgent({ id: 'agent-1', deletedAt: '2025-01-01T00:00:00Z' })
     mockAgentRegistry.getAgent.mockReturnValue(deleted)
 
-    const result = deleteAgentById('agent-1', false)
+    const result = await deleteAgentById('agent-1', false)
 
     expect(result.status).toBe(410)
     expect((result.data as ServiceError).message).toMatch(/deleted/i)
   })
 
-  it('allows hard delete of already soft-deleted agent', () => {
+  it('allows hard delete of already soft-deleted agent', async () => {
     const deleted = makeAgent({ id: 'agent-1', deletedAt: '2025-01-01T00:00:00Z' })
     mockAgentRegistry.getAgent.mockReturnValue(deleted)
     mockAgentRegistry.deleteAgent.mockReturnValue(true)
 
-    const result = deleteAgentById('agent-1', true)
+    const result = await deleteAgentById('agent-1', true)
 
     expect(result.status).toBe(200)
+  })
+
+  // ─── Cloud-agent (containerized) hard-delete teardown — fix for #84 ──────
+  // Hard-delete must stop + remove the docker container before clearing the
+  // registry record, otherwise `aim-<name>` leaks (resource waste + blocks
+  // recreate-with-same-name at `docker run`). Soft-delete intentionally
+  // skips teardown — soft-delete is recoverable.
+  describe('cloud (containerized) hard-delete', () => {
+    function makeCloudAgent(overrides: Record<string, unknown> = {}) {
+      return makeAgent({
+        id: 'cloud-1',
+        name: 'cloud-agent',
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            containerName: 'aim-cloud-agent',
+            websocketUrl: 'ws://localhost:23001/term',
+            healthCheckUrl: 'http://localhost:23001/health',
+            status: 'running',
+          },
+        },
+        ...overrides,
+      })
+    }
+
+    it('stops + removes the container before registry delete when running', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+
+      const callOrder: string[] = []
+      mockContainerUtils.stopContainer.mockImplementationOnce(async () => {
+        callOrder.push('stop')
+      })
+      mockContainerUtils.removeContainer.mockImplementationOnce(async () => {
+        callOrder.push('rm')
+      })
+      mockAgentRegistry.deleteAgent.mockImplementationOnce(() => {
+        callOrder.push('registryDelete')
+        return true
+      })
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockContainerUtils.removeContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      // Ordering is load-bearing: registry delete must run AFTER docker teardown.
+      expect(callOrder).toEqual(['stop', 'rm', 'registryDelete'])
+    })
+
+    it('skips stop but still removes the container when stopped (frees the name slot)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('stopped')
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).toHaveBeenCalledWith('aim-cloud-agent')
+    })
+
+    it('skips both stop and rm when container is missing (no slot to free)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).not.toHaveBeenCalled()
+    })
+
+    it('skips rm when docker daemon is down but still completes registry delete', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('docker_down')
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).not.toHaveBeenCalled()
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('treats stopContainer failures as non-fatal — registry delete still runs', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.stopContainer.mockRejectedValueOnce(new Error('docker stop timed out'))
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.removeContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('treats removeContainer failures as non-fatal — registry delete still runs', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.removeContainer.mockRejectedValueOnce(new Error('container in use'))
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('does NOT touch docker on soft-delete (recoverable; container preserved)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+
+      const result = await deleteAgentById('cloud-1', false)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).not.toHaveBeenCalled()
+    })
+
+    it('does NOT touch docker when cloud agent has no containerName configured', async () => {
+      const agent = makeCloudAgent({
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            websocketUrl: 'ws://localhost:23001/term',
+            // containerName intentionally missing
+          },
+        },
+      })
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('does NOT touch docker on hard-delete of host (non-cloud) agent', async () => {
+      const hostAgent = makeAgent({ id: 'host-1', name: 'host-agent' })
+      mockAgentRegistry.getAgent.mockReturnValue(hostAgent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+
+      const result = await deleteAgentById('host-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+    })
   })
 })
 
