@@ -348,7 +348,8 @@ export function buildCloudClaudeSettingsMount(
 
 // Provision per-container Gemini CLI config: writes a settings.json into the
 // agent's per-UUID dir that suppresses the gemini self-update fetch on
-// container start. The trust-folder dialog is handled separately by the
+// container start AND pre-selects the operator's OAuth personal auth method.
+// The trust-folder dialog is handled separately by the
 // GEMINI_CLI_TRUST_WORKSPACE=true env (set in buildAmpCommonEnv) — that path
 // is the gemini-supported in-binary fast path that returns isTrusted=true
 // without a file lookup, see @google/gemini-cli util/trust.ts checkPathTrust.
@@ -358,6 +359,18 @@ export function buildCloudClaudeSettingsMount(
 // launch (the in-container env can't reach npm to self-update). The error
 // itself is non-blocking but adds modal noise above the on-wake prompt and
 // confuses operators reading the pane (kanban cd2d7377).
+//
+// Without security.auth.selectedType="oauth-personal", gemini falls through
+// to "Please set an Auth method in your /home/claude/.gemini/settings.json
+// or specify one of the following environment variables before running:
+// GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA" on every
+// launch — even when oauth_creds.json is present. Setting selectedType is
+// what tells gemini "use the OAuth path" and consume oauth_creds.json. The
+// canonical "oauth-personal" string is verified in @google/gemini-cli
+// bundle (8 occurrences across chunk-EA775AOR, chunk-GOUPAQ35, etc.) and
+// matches the value the gemini interactive auth-picker writes when an
+// operator selects "Login with Google" (kanban 1f911653 Hardin empirical
+// 2026-05-01: oauth_creds bootstrap alone was necessary-but-not-sufficient).
 //
 // Per-agent isolation: the seed file lives under ~/.aimaestro/agents/<id>/,
 // bind-mounted RW at /home/claude/.gemini/settings.json by
@@ -376,6 +389,11 @@ export function provisionCloudGeminiConfig(
     const settings = {
       general: {
         enableAutoUpdate: false,
+      },
+      security: {
+        auth: {
+          selectedType: 'oauth-personal',
+        },
       },
     }
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
@@ -536,6 +554,67 @@ export function buildCloudCodexAuthMount(
   }
 }
 
+// Provision per-container Gemini CLI auth: at agent-create time, copy the
+// host operator's ~/.gemini/oauth_creds.json into the per-agent dir so the
+// fresh cloud agent inherits a valid Google OAuth login and skips the
+// "Please set an Auth method" picker on first launch (kanban 1f911653,
+// sibling to PR #103 codex Device Code + claude OAuth — three programs,
+// one Option A operator-driven shape).
+//
+// Operator workflow: run `gemini` once on the host and complete the OAuth
+// flow, every subsequent cloud-agent create inherits the credentials.
+// Gemini rewrites oauth_creds.json on its own refresh cycle (token
+// rotation, re-login), and those writes go to the per-agent file via the
+// bind mount — never back to the host source — so per-agent rotation is
+// independent + revoke radius is per-agent.
+//
+// If the host has no oauth_creds.json yet (first-time setup) AND no
+// migrated predecessor file is present, seed empty {}. Gemini will then
+// show its auth picker on first launch in the container, matching pre-PR
+// behavior. seedFromHostFile fully owns dest-existence semantics — see
+// the function docstring for the empty-{}-re-seed contract that lets
+// post-hoc host login propagate via /recreate (kanban 02a8ebda
+// + Watson Mason finding from PR #105).
+//
+// Refresh-token tradeoff: same as codex-auth + claude-credentials — once
+// the per-agent copy diverges from the host source via in-container
+// rotation, host refresh-token rotations no longer propagate (the per-
+// agent file is now the live source). Accepted as the consistent shape
+// across all three programs; revoke is per-agent.
+export function provisionCloudGeminiAuth(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { authPath: string; bootstrapped: boolean } {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  fs.mkdirSync(agentDir, { recursive: true })
+  const authPath = path.join(agentDir, 'gemini-oauth-creds.json')
+  const bootstrapped = seedFromHostFile(
+    path.join(hostHome, '.gemini', 'oauth_creds.json'),
+    authPath,
+  )
+  if (!bootstrapped && !fs.existsSync(authPath)) {
+    fs.writeFileSync(authPath, '{}\n', { mode: 0o600 })
+  }
+  return { authPath, bootstrapped }
+}
+
+// File-level bind mount for the per-agent gemini oauth_creds.json. Mount
+// target parent (/home/claude/.gemini) is pre-created in agent-container/
+// Dockerfile alongside the .codex sibling.
+//
+// RW: gemini writes oauth_creds.json on token refresh + re-login. Per-
+// agent isolation unchanged — host operator's ~/.gemini/oauth_creds.json
+// is read at provision time and never touched again.
+export function buildCloudGeminiOAuthMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'gemini-oauth-creds.json'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.gemini', 'oauth_creds.json'),
+  }
+}
+
 // Migrate per-agent persisted claude/gh state from a predecessor UUID dir to
 // a new agent's dir. Used by recreateDockerAgent to bridge the UUID rotation:
 // /recreate soft-deletes the old agent (rotating to a fresh UUID per audit-
@@ -577,6 +656,10 @@ export function migrateAgentPersistence(
     // — survive recreate so /workspace stays trusted across UUID rotation
     // and any operator /config edits inside the running agent persist.
     'codex-config.toml',
+    // Gemini oauth_creds.json (kanban 1f911653 Option A operator-driven OAuth)
+    // — survive recreate so gemini stays logged in across UUID rotation.
+    // Mirrors codex-auth.json + claude-credentials.json carry-forward shape.
+    'gemini-oauth-creds.json',
   ]
   for (const name of fileAssets) {
     const src = path.join(fromDir, name)
@@ -1010,6 +1093,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     console.warn('[Docker Service] Could not provision cloud gemini config:', err instanceof Error ? err.message : err)
   }
   try {
+    provisionCloudGeminiAuth(agentId)
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud gemini auth:', err instanceof Error ? err.message : err)
+  }
+  try {
     provisionCloudCodexConfig(agentId)
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud codex config:', err instanceof Error ? err.message : err)
@@ -1025,6 +1113,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       buildCloudClaudeSettingsMount(agentId),
       ...buildCloudClaudePersistMounts(agentId),
       buildCloudGeminiSettingsMount(agentId),
+      buildCloudGeminiOAuthMount(agentId),
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
