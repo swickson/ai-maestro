@@ -20,12 +20,14 @@ import {
   buildCloudClaudeSettingsMount,
   buildCloudClaudePersistMounts,
   buildCloudGeminiSettingsMount,
+  buildCloudGeminiOAuthMount,
   buildCloudCodexVersionMount,
   buildCloudCodexAuthMount,
   buildCloudCodexConfigTomlMount,
   migrateAgentPersistence,
   provisionCloudClaudeConfig,
   provisionCloudGeminiConfig,
+  provisionCloudGeminiAuth,
   provisionCloudCodexConfig,
   provisionCloudCodexAuth,
   seedFromHostFile,
@@ -533,6 +535,12 @@ describe('provisionCloudGeminiConfig', () => {
     expect(body.general.enableAutoUpdate).toBe(false)
   })
 
+  it('writes gemini-settings.json with security.auth.selectedType="oauth-personal" to skip the auth picker (kanban 1f911653 Hardin empirical)', () => {
+    const { settingsPath } = provisionCloudGeminiConfig(uuid, tmpHome)
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.security.auth.selectedType).toBe('oauth-personal')
+  })
+
   it('seeds the file with restrictive 0600 perms', () => {
     const { settingsPath } = provisionCloudGeminiConfig(uuid, tmpHome)
     expect(fs.statSync(settingsPath).mode & 0o777).toBe(0o600)
@@ -859,6 +867,118 @@ describe('buildCloudCodexAuthMount', () => {
   })
 })
 
+describe('provisionCloudGeminiAuth', () => {
+  const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-gemini-auth-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('bootstraps gemini-oauth-creds.json from host ~/.gemini/oauth_creds.json when present (kanban 1f911653 Option A)', () => {
+    const hostGeminiDir = path.join(tmpHome, '.gemini')
+    fs.mkdirSync(hostGeminiDir, { recursive: true })
+    fs.writeFileSync(path.join(hostGeminiDir, 'oauth_creds.json'),
+      '{"access_token":"ya29.host","refresh_token":"r-host","token_type":"Bearer"}\n', { mode: 0o600 })
+
+    const { authPath, bootstrapped } = provisionCloudGeminiAuth(uuid, tmpHome)
+    expect(authPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'gemini-oauth-creds.json'))
+    expect(bootstrapped).toBe(true)
+    const body = JSON.parse(fs.readFileSync(authPath, 'utf8'))
+    expect(body.access_token).toBe('ya29.host')
+    expect(body.refresh_token).toBe('r-host')
+    expect(body.token_type).toBe('Bearer')
+  })
+
+  it('seeds empty {} when host has no oauth_creds.json (first-time setup case)', () => {
+    const { authPath, bootstrapped } = provisionCloudGeminiAuth(uuid, tmpHome)
+    expect(bootstrapped).toBe(false)
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toEqual({})
+  })
+
+  it('writes the seeded file with restrictive 0600 perms', () => {
+    const { authPath } = provisionCloudGeminiAuth(uuid, tmpHome)
+    expect(fs.statSync(authPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('preserves existing per-agent gemini-oauth-creds.json across re-runs (per-agent rotation independence)', () => {
+    const hostGeminiDir = path.join(tmpHome, '.gemini')
+    fs.mkdirSync(hostGeminiDir, { recursive: true })
+    fs.writeFileSync(path.join(hostGeminiDir, 'oauth_creds.json'),
+      '{"access_token":"ya29.host-NEW"}\n', { mode: 0o600 })
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const authPath = path.join(agentDir, 'gemini-oauth-creds.json')
+    const existing = '{"access_token":"ya29.rotated-by-gemini-runtime"}\n'
+    fs.writeFileSync(authPath, existing)
+    const result = provisionCloudGeminiAuth(uuid, tmpHome)
+    expect(result.bootstrapped).toBe(false)
+    expect(fs.readFileSync(authPath, 'utf8')).toBe(existing)
+  })
+
+  it('creates the per-UUID dir if missing', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    expect(fs.existsSync(agentDir)).toBe(false)
+    provisionCloudGeminiAuth(uuid, tmpHome)
+    expect(fs.existsSync(agentDir)).toBe(true)
+  })
+
+  it('re-bootstraps gemini-oauth-creds.json when migrated predecessor placeholder is empty {} and host now has creds (kanban 02a8ebda recreate-path)', () => {
+    // Simulate the /recreate flow: migrateAgentPersistence has copied the
+    // predecessor's empty {} into the new UUID dir BEFORE provisioning runs.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'gemini-oauth-creds.json'), '{}\n', { mode: 0o600 })
+    const hostGeminiDir = path.join(tmpHome, '.gemini')
+    fs.mkdirSync(hostGeminiDir, { recursive: true })
+    fs.writeFileSync(path.join(hostGeminiDir, 'oauth_creds.json'),
+      '{"access_token":"ya29.host-post-hoc-login"}\n', { mode: 0o600 })
+
+    const result = provisionCloudGeminiAuth(uuid, tmpHome)
+
+    expect(result.bootstrapped).toBe(true)
+    const body = JSON.parse(fs.readFileSync(result.authPath, 'utf8'))
+    expect(body.access_token).toBe('ya29.host-post-hoc-login')
+  })
+
+  it('preserves real rotated gemini-oauth-creds across re-runs even when migrated empty placeholder would not block (rotation independence)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const rotated = '{"access_token":"ya29.rotated-by-gemini","refresh_token":"r-r"}\n'
+    fs.writeFileSync(path.join(agentDir, 'gemini-oauth-creds.json'), rotated, { mode: 0o600 })
+    const hostGeminiDir = path.join(tmpHome, '.gemini')
+    fs.mkdirSync(hostGeminiDir, { recursive: true })
+    fs.writeFileSync(path.join(hostGeminiDir, 'oauth_creds.json'),
+      '{"access_token":"ya29.host-OLD"}\n', { mode: 0o600 })
+
+    const result = provisionCloudGeminiAuth(uuid, tmpHome)
+
+    expect(result.bootstrapped).toBe(false)
+    expect(fs.readFileSync(result.authPath, 'utf8')).toBe(rotated)
+  })
+})
+
+describe('buildCloudGeminiOAuthMount', () => {
+  it('returns a file-level bind mount for /home/claude/.gemini/oauth_creds.json', () => {
+    const uuid = 'gggggggg-gggg-gggg-gggg-gggggggggggg'
+    const home = '/home/operator'
+    const m = buildCloudGeminiOAuthMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/gemini-oauth-creds.json`)
+    expect(m.containerPath).toBe('/home/claude/.gemini/oauth_creds.json')
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+    const uuid = 'gggggggg-gggg-gggg-gggg-gggggggggggg'
+    const home = '/home/operator'
+    expect(validateMounts([buildCloudGeminiOAuthMount(uuid, home)])).toBeNull()
+  })
+})
+
 describe('migrateAgentPersistence', () => {
   let tmpHome: string
   const fromId = '77777777-7777-7777-7777-777777777777'
@@ -882,6 +1002,8 @@ describe('migrateAgentPersistence', () => {
       '{"OPENAI_API_KEY":"sk-rotated-by-codex","tokens":{"refresh":"r-pred"}}\n', { mode: 0o600 })
     fs.writeFileSync(path.join(fromDir, 'codex-config.toml'),
       '[projects."/workspace"]\ntrust_level = "trusted"\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'gemini-oauth-creds.json'),
+      '{"access_token":"ya29.rotated-by-gemini","refresh_token":"r-pred","token_type":"Bearer"}\n', { mode: 0o600 })
   })
 
   afterEach(() => {
@@ -951,6 +1073,15 @@ describe('migrateAgentPersistence', () => {
     const body = fs.readFileSync(dst, 'utf8')
     expect(body).toContain('[projects."/workspace"]')
     expect(body).toContain('trust_level = "trusted"')
+    expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
+  })
+
+  it('copies gemini-oauth-creds.json content from predecessor (kanban 1f911653 carry-forward across UUID rotation)', () => {
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'gemini-oauth-creds.json')
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.access_token).toBe('ya29.rotated-by-gemini')
+    expect(body.refresh_token).toBe('r-pred')
     expect(fs.statSync(dst).mode & 0o777).toBe(0o600)
   })
 
