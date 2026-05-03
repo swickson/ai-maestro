@@ -375,9 +375,24 @@ export function buildCloudClaudeSettingsMount(
 // Per-agent isolation: the seed file lives under ~/.aimaestro/agents/<id>/,
 // bind-mounted RW at /home/claude/.gemini/settings.json by
 // buildCloudGeminiSettingsMount. Host operator's ~/.gemini is never touched.
-// Existsync guard makes this idempotent across recreate cycles —
-// migrateAgentPersistence copies the predecessor's seed into the new UUID
-// dir first, so the seed is preserved if an operator hand-edits it.
+//
+// Shape-aware staleness detection (kanban 61aac9db, Watson Mason empirical
+// 2026-05-02): on /recreate of a pre-PR-#108 cloud agent, migrateAgentPersistence
+// carries the predecessor's stale-shape gemini-settings.json forward into the
+// new UUID dir BEFORE this function runs. The previous `if (!existsSync) seed`
+// guard saw the file present and short-circuited, leaving the migrated stale
+// shape (no security.auth.selectedType) in place. Result: gemini in the
+// recreated container fell through to the auth picker even though oauth_creds
+// was correctly bootstrapped, because settings.json told gemini "no auth path
+// selected". Sister-class to PR #104 empty-{} re-bootstrap but with a
+// "missing field within otherwise-valid JSON" signal instead of "empty
+// placeholder" — so we minimal-merge (inject just the missing field, preserve
+// every other operator hand-edit) rather than full-re-seed. This respects
+// PR #102's "preserves existing content across re-runs (operator hand-edit
+// intent)" contract.
+//
+// Unparseable JSON falls through to a fresh seed (same-shape as no-file).
+// Logged so production traces capture the rare event if it ever fires.
 export function provisionCloudGeminiConfig(
   agentId: string,
   hostHome: string = os.homedir()
@@ -385,17 +400,39 @@ export function provisionCloudGeminiConfig(
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
   fs.mkdirSync(agentDir, { recursive: true })
   const settingsPath = path.join(agentDir, 'gemini-settings.json')
-  if (!fs.existsSync(settingsPath)) {
-    const settings = {
-      general: {
-        enableAutoUpdate: false,
-      },
-      security: {
-        auth: {
-          selectedType: 'oauth-personal',
-        },
-      },
+
+  let needWrite = !fs.existsSync(settingsPath)
+  let settings: Record<string, unknown>
+  if (needWrite) {
+    settings = {
+      general: { enableAutoUpdate: false },
+      security: { auth: { selectedType: 'oauth-personal' } },
     }
+  } else {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+      const security = (settings.security as Record<string, unknown> | undefined) ?? {}
+      const auth = (security.auth as Record<string, unknown> | undefined) ?? {}
+      if (typeof auth.selectedType !== 'string') {
+        // Stale-shape signal: migrated pre-PR-#108 settings lacks the auth
+        // selector. Inject just the missing piece; preserve everything else
+        // the operator may have set (mcp servers, custom keys, hand-edits).
+        settings.security = { ...security, auth: { ...auth, selectedType: 'oauth-personal' } }
+        needWrite = true
+      }
+    } catch (err) {
+      console.warn(
+        `[provisionCloudGeminiConfig] unparseable settings.json at ${settingsPath} — re-seeding from scratch:`,
+        err instanceof Error ? err.message : err,
+      )
+      settings = {
+        general: { enableAutoUpdate: false },
+        security: { auth: { selectedType: 'oauth-personal' } },
+      }
+      needWrite = true
+    }
+  }
+  if (needWrite) {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
   }
   return { settingsPath }
