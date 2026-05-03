@@ -60,6 +60,20 @@ export async function stopContainer(name: string, timeoutSec: number = 10): Prom
 }
 
 /**
+ * Remove a container by name. Used by the hard-delete cloud-agent branch — without
+ * it, the `aim-<name>` slot stays occupied even after the registry record is gone,
+ * and recreating an agent with the same name fails at `docker run` with "container
+ * name already in use" (issue #84).
+ *
+ * Caller is responsible for stopping a running container first; `docker rm` on a
+ * running container without `--force` is rejected by the daemon. The delete path
+ * inspects + stops before calling this helper.
+ */
+export async function removeContainer(name: string): Promise<void> {
+  await execAsync(`docker rm ${shellQuote(name)}`, { timeout: 10000 })
+}
+
+/**
  * Send keys to a tmux session running INSIDE a container, via `docker exec`.
  *
  * Mirrors the host-side `runtime.sendKeys` interface used by the notify route
