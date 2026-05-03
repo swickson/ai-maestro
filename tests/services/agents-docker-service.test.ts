@@ -557,10 +557,123 @@ describe('provisionCloudGeminiConfig', () => {
     const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
     fs.mkdirSync(agentDir, { recursive: true })
     const settingsPath = path.join(agentDir, 'gemini-settings.json')
-    const existing = '{"general":{"enableAutoUpdate":true,"customField":"keep-me"}}\n'
+    // Fixture includes security.auth.selectedType so the staleness guard
+    // (kanban 61aac9db) treats it as already-shaped and the byte-equal
+    // preservation contract holds. Without selectedType, the guard would
+    // inject the missing field and rewrite — exercised by the staleness
+    // tests below.
+    const existing = '{"general":{"enableAutoUpdate":true,"customField":"keep-me"},"security":{"auth":{"selectedType":"oauth-personal"}}}\n'
     fs.writeFileSync(settingsPath, existing)
     provisionCloudGeminiConfig(uuid, tmpHome)
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(existing)
+  })
+
+  it('re-seeds gemini-settings.json by injecting security.auth.selectedType when migrated predecessor lacks the field (kanban 61aac9db stale-shape signal, sister-class to PR #104 empty-{} re-bootstrap)', () => {
+    // Simulate the /recreate flow: migrateAgentPersistence has copied the
+    // predecessor's pre-PR-#108 gemini-settings.json (which lacks
+    // security.auth.selectedType) into the new UUID dir BEFORE provisioning
+    // runs. Without the staleness guard, the existsSync check short-circuits
+    // and the picker-bypass field never gets injected.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    fs.writeFileSync(settingsPath, '{"general":{"enableAutoUpdate":false}}\n', { mode: 0o600 })
+
+    provisionCloudGeminiConfig(uuid, tmpHome)
+
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.general.enableAutoUpdate).toBe(false) // pre-existing field preserved
+    expect(body.security.auth.selectedType).toBe('oauth-personal') // missing field injected
+  })
+
+  it('preserves operator hand-edits to OTHER fields when injecting missing security.auth.selectedType (Option D minimal-merge contract)', () => {
+    // Stale-shape file PLUS operator hand-edits (custom keys, mcp section
+    // unrelated to auth). Staleness guard must inject ONLY the missing
+    // selectedType — operator additions to other parts of the file survive.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    const handEdited = JSON.stringify({
+      general: { enableAutoUpdate: true, customField: 'operator-set' },
+      mcp: { servers: [{ name: 'op-tool', url: 'http://x' }] },
+    })
+    fs.writeFileSync(settingsPath, handEdited + '\n', { mode: 0o600 })
+
+    provisionCloudGeminiConfig(uuid, tmpHome)
+
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    // Operator value preserved (operator turned auto-update back on, even though seed default is false).
+    expect(body.general.enableAutoUpdate).toBe(true)
+    // Operator-added top-level field preserved.
+    expect(body.general.customField).toBe('operator-set')
+    // Operator-added top-level section preserved.
+    expect(body.mcp.servers).toEqual([{ name: 'op-tool', url: 'http://x' }])
+    // Missing field injected.
+    expect(body.security.auth.selectedType).toBe('oauth-personal')
+  })
+
+  it('falls back to a fresh seed when gemini-settings.json is unparseable (defensive corner case, kanban 61aac9db)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    fs.writeFileSync(settingsPath, '{ this is not json', { mode: 0o600 })
+
+    provisionCloudGeminiConfig(uuid, tmpHome)
+
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.general.enableAutoUpdate).toBe(false)
+    expect(body.security.auth.selectedType).toBe('oauth-personal')
+  })
+
+  it('preserves operator-set non-default selectedType (e.g. "gemini-api-key") — operator choice wins (Watson polish)', () => {
+    // Operator may legitimately choose a non-OAuth auth method (gemini-api-key,
+    // vertex-ai, etc.). Staleness guard must NOT overwrite operator selection
+    // — only inject when selectedType is missing or non-string.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        general: { enableAutoUpdate: false },
+        security: { auth: { selectedType: 'gemini-api-key' } },
+      }) + '\n',
+      { mode: 0o600 },
+    )
+
+    provisionCloudGeminiConfig(uuid, tmpHome)
+
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.security.auth.selectedType).toBe('gemini-api-key') // operator choice wins
+  })
+
+  it('tolerates non-object security or security.auth values (defensive coercion, Watson polish)', () => {
+    // If a corrupted/legacy settings.json has security set to a string (or
+    // any non-object), the spread {...security} would inline string indices
+    // and break gemini. Defensive coercion treats malformed shapes as empty.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        general: { enableAutoUpdate: false },
+        security: 'corrupted-string-not-object',
+      }) + '\n',
+      { mode: 0o600 },
+    )
+
+    provisionCloudGeminiConfig(uuid, tmpHome)
+
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.general.enableAutoUpdate).toBe(false)
+    // security replaced with a clean object; selectedType injected.
+    expect(typeof body.security).toBe('object')
+    expect(Array.isArray(body.security)).toBe(false)
+    expect(body.security.auth.selectedType).toBe('oauth-personal')
+    // No string-index leakage from the spread — count keys at the top level
+    // of body.security to ensure only "auth" is present, not "0", "1", ...
+    expect(Object.keys(body.security)).toEqual(['auth'])
   })
 })
 
