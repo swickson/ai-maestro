@@ -411,12 +411,27 @@ export function provisionCloudGeminiConfig(
   } else {
     try {
       settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-      const security = (settings.security as Record<string, unknown> | undefined) ?? {}
-      const auth = (security.auth as Record<string, unknown> | undefined) ?? {}
+      // Defensive: tolerate operator/legacy garbage where security or
+      // security.auth is set to a non-object (string, number, null). Without
+      // this, the spread `{...security}` would inline string indices into the
+      // result and break gemini's settings reader (Watson polish note).
+      const securityRaw = settings.security
+      const security: Record<string, unknown> =
+        securityRaw && typeof securityRaw === 'object' && !Array.isArray(securityRaw)
+          ? (securityRaw as Record<string, unknown>)
+          : {}
+      const authRaw = security.auth
+      const auth: Record<string, unknown> =
+        authRaw && typeof authRaw === 'object' && !Array.isArray(authRaw)
+          ? (authRaw as Record<string, unknown>)
+          : {}
       if (typeof auth.selectedType !== 'string') {
         // Stale-shape signal: migrated pre-PR-#108 settings lacks the auth
         // selector. Inject just the missing piece; preserve everything else
         // the operator may have set (mcp servers, custom keys, hand-edits).
+        // Operator-set selectedType (any string) is preserved — gemini supports
+        // multiple AuthType values besides "oauth-personal" (gemini-api-key,
+        // vertex-ai, cloud-shell, LOGIN_WITH_GOOGLE) and operator choice wins.
         settings.security = { ...security, auth: { ...auth, selectedType: 'oauth-personal' } }
         needWrite = true
       }

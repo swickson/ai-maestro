@@ -624,6 +624,57 @@ describe('provisionCloudGeminiConfig', () => {
     expect(body.general.enableAutoUpdate).toBe(false)
     expect(body.security.auth.selectedType).toBe('oauth-personal')
   })
+
+  it('preserves operator-set non-default selectedType (e.g. "gemini-api-key") — operator choice wins (Watson polish)', () => {
+    // Operator may legitimately choose a non-OAuth auth method (gemini-api-key,
+    // vertex-ai, etc.). Staleness guard must NOT overwrite operator selection
+    // — only inject when selectedType is missing or non-string.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        general: { enableAutoUpdate: false },
+        security: { auth: { selectedType: 'gemini-api-key' } },
+      }) + '\n',
+      { mode: 0o600 },
+    )
+
+    provisionCloudGeminiConfig(uuid, tmpHome)
+
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.security.auth.selectedType).toBe('gemini-api-key') // operator choice wins
+  })
+
+  it('tolerates non-object security or security.auth values (defensive coercion, Watson polish)', () => {
+    // If a corrupted/legacy settings.json has security set to a string (or
+    // any non-object), the spread {...security} would inline string indices
+    // and break gemini. Defensive coercion treats malformed shapes as empty.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const settingsPath = path.join(agentDir, 'gemini-settings.json')
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        general: { enableAutoUpdate: false },
+        security: 'corrupted-string-not-object',
+      }) + '\n',
+      { mode: 0o600 },
+    )
+
+    provisionCloudGeminiConfig(uuid, tmpHome)
+
+    const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(body.general.enableAutoUpdate).toBe(false)
+    // security replaced with a clean object; selectedType injected.
+    expect(typeof body.security).toBe('object')
+    expect(Array.isArray(body.security)).toBe(false)
+    expect(body.security.auth.selectedType).toBe('oauth-personal')
+    // No string-index leakage from the spread — count keys at the top level
+    // of body.security to ensure only "auth" is present, not "0", "1", ...
+    expect(Object.keys(body.security)).toEqual(['auth'])
+  })
 })
 
 describe('provisionCloudCodexConfig', () => {
