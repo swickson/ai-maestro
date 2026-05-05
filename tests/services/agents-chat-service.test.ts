@@ -126,6 +126,45 @@ describe('sendChatMessage', () => {
     expect(mockRuntime.cancelCopyMode).not.toHaveBeenCalled()
     expect(mockRuntime.sendKeys).not.toHaveBeenCalled()
   })
+
+  // ── cloud-path coverage (kanban 6c3f4357 / 7a94534e) ───────────────────
+  // sendChatMessage was host-only before 7a94534e — runtime.sendKeys against
+  // a non-existent host session for a cloud agent silently missed. Pin the
+  // cloud-aware dispatch via the sendKeysToAgent primitive.
+
+  it('cloud agent: dispatches to sendKeysToContainer (was host-only bug pre-7a94534e)', async () => {
+    mockAgentRegistry.getAgent.mockReturnValue({
+      id: 'cloud-uuid',
+      name: 'cloud-chat-agent',
+      sessions: [{ status: 'online' }],
+      deployment: { type: 'cloud', cloud: { containerName: 'aim-cloud-chat-agent' } },
+    })
+
+    const result = await sendChatMessage('cloud-uuid', 'hi cloud')
+
+    expect(result.status).toBe(200)
+    expect(mockContainerUtils.cancelCopyModeInContainer).toHaveBeenCalledWith('aim-cloud-chat-agent', 'cloud-chat-agent')
+    expect(mockContainerUtils.sendKeysToContainer).toHaveBeenCalledWith('aim-cloud-chat-agent', 'cloud-chat-agent', 'hi cloud', { literal: true, enter: true })
+    // Host runtime untouched on cloud path.
+    expect(mockRuntime.cancelCopyMode).not.toHaveBeenCalled()
+    expect(mockRuntime.sendKeys).not.toHaveBeenCalled()
+  })
+
+  it('cloud agent: cancelCopyModeInContainer ordering pin (before sendKeysToContainer)', async () => {
+    mockAgentRegistry.getAgent.mockReturnValue({
+      id: 'cloud-uuid',
+      name: 'cloud-chat-agent',
+      sessions: [{ status: 'online' }],
+      deployment: { type: 'cloud', cloud: { containerName: 'aim-cloud-chat-agent' } },
+    })
+    const callOrder: string[] = []
+    mockContainerUtils.cancelCopyModeInContainer.mockImplementation(async () => { callOrder.push('cancelCopyModeInContainer') })
+    mockContainerUtils.sendKeysToContainer.mockImplementation(async () => { callOrder.push('sendKeysToContainer') })
+
+    await sendChatMessage('cloud-uuid', 'ordering test')
+
+    expect(callOrder).toEqual(['cancelCopyModeInContainer', 'sendKeysToContainer'])
+  })
 })
 
 // ============================================================================
