@@ -224,6 +224,22 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
   const [operatorId, setOperatorId] = useState<string | undefined>(undefined)
   const [operatorName, setOperatorName] = useState<string | undefined>(undefined)
 
+  // Restore preferred chat-mode from localStorage on mount.
+  // Per design lock 2026-05-04: focus-mode preference survives reload so the
+  // long-running-meeting use case does not have to re-pop the overlay each load.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (window.localStorage.getItem('meeting.chatOpen') === '1') {
+      dispatch({ type: 'OPEN_CHAT' })
+    }
+  }, [])
+
+  // Persist chat-mode changes back to localStorage.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('meeting.chatOpen', state.chatOpen ? '1' : '0')
+  }, [state.chatOpen])
+
   // Restore meeting from disk on mount (skip for new meetings)
   useEffect(() => {
     if (isNewMeeting) return
@@ -676,6 +692,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
                   onBroadcastToAll={chatHook.broadcastToAll}
                   onMarkChatRead={chatHook.markAsRead}
                   onExpandChat={() => dispatch({ type: 'OPEN_CHAT' })}
+                  chatOverlayOpen={state.chatOpen}
+                  onCollapseChat={() => dispatch({ type: 'CLOSE_CHAT' })}
                 />
               )}
             </div>

@@ -401,9 +401,10 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
 
   if (!isOverlay) return inner
 
-  // Overlay mode — full-viewport pop mirroring TaskKanbanBoard's shell so the
-  // chat occupies the same middle slot as the kanban board does. Right panel
-  // (Tasks tab) stays free behind it for the simultaneous tasks-and-chat view.
+  // Overlay mode — flex-sibling occupying the middle slot only. Distinct from
+  // TaskKanbanBoard which uses fixed inset-0 z-50 (true viewport overlay): the
+  // chat-overlay design REQUIRES leaving the right panel visible behind, since
+  // the simultaneous tasks-and-chat view is the entire point.
   return (
     <div className="flex-1 flex flex-col bg-gray-950 min-w-0">
       <div className="flex-1 flex justify-center overflow-hidden">
