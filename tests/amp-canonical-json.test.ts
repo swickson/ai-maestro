@@ -84,4 +84,20 @@ describe('canonicalStringify', () => {
       '{"attachments":[{"kind":"amp-v1","name":"log.txt","size":1234}],"body":"check the run","meta":{"host":"milo","team":"iron-syndicate"},"type":"notification"}'
     )
   })
+
+  it('canonicalizes the federated webhook delivery body shape', () => {
+    // Pinned vector matching lib/message-delivery.ts:157 — the body fed into
+    // the X-AMP-Signature webhook HMAC. Same key-order independence concern
+    // as the AMP envelope signature, since a compliant peer that re-parses
+    // and re-canonicalizes for verification would silently fail with bare
+    // JSON.stringify on the sender side.
+    const webhookBody = {
+      sender_public_key: 'ed25519-public-hex',
+      payload: { type: 'task', body: 'do the thing' },
+      envelope: { to: 'bob@host', subject: 'hi', from: 'alice@host' },
+    }
+    expect(canonicalStringify(webhookBody)).toBe(
+      '{"envelope":{"from":"alice@host","subject":"hi","to":"bob@host"},"payload":{"body":"do the thing","type":"task"},"sender_public_key":"ed25519-public-hex"}'
+    )
+  })
 })
