@@ -1,8 +1,10 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { Send, Users, User, AlertTriangle, Play } from 'lucide-react'
+import { Send, Users, User, AlertTriangle, Play, X } from 'lucide-react'
 import type { Agent } from '@/types/agent'
+
+export type MeetingChatPanelMode = 'sidebar' | 'overlay'
 
 interface ChatMessage {
   id: string
@@ -31,9 +33,14 @@ interface MeetingChatPanelProps {
   onSendToAgent: (agentId: string, message: string) => Promise<void>
   onBroadcastToAll: (message: string) => Promise<void>
   onContinue?: () => Promise<void>
+  // Layout mode — 'sidebar' renders inline (in MeetingRightPanel), 'overlay'
+  // wraps in a fixed-viewport shell mirroring TaskKanbanBoard's overlay pattern.
+  mode?: MeetingChatPanelMode
+  onClose?: () => void
 }
 
-export default function MeetingChatPanel({ agents, messages, meetingId, onSendToAgent, onBroadcastToAll, onContinue }: MeetingChatPanelProps) {
+export default function MeetingChatPanel({ agents, messages, meetingId, onSendToAgent, onBroadcastToAll, onContinue, mode = 'sidebar', onClose }: MeetingChatPanelProps) {
+  const isOverlay = mode === 'overlay'
   const [recipient, setRecipient] = useState<string>('all')
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
@@ -218,8 +225,24 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
         m.fromAlias === recipient || m.toAlias === recipient
       )
 
-  return (
-    <div className="flex flex-col h-full">
+  const inner = (
+    <div className="flex flex-col h-full min-h-0">
+      {/* Overlay header — only visible in overlay mode (sidebar gets its tab bar from MeetingRightPanel) */}
+      {isOverlay && (
+        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 flex-shrink-0">
+          <h3 className="text-sm font-medium text-gray-200">Meeting chat</h3>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1 hover:bg-gray-800 rounded text-gray-400 hover:text-gray-200 transition-colors"
+              title="Close (back to terminal)"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Recipient selector */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-gray-800 overflow-x-auto">
         <button
@@ -280,7 +303,7 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
         {filteredMessages.length === 0 && (
-          <p className="text-[11px] text-gray-600 text-center py-8">
+          <p className="text-sm text-gray-600 text-center py-8">
             No messages yet. Use @agent-name to mention specific agents, or @all for everyone.
           </p>
         )}
@@ -306,7 +329,7 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
                 {msg.displayFrom}{msg.isMine ? <span className="ml-1 text-emerald-500/70">(you)</span> : ''} {msg.toAlias ? `→ ${msg.toAlias}` : ''}
               </span>
               <div
-                className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed ${
+                className={`${isOverlay ? 'max-w-[700px]' : 'max-w-[85%]'} rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
                   msg.isMine
                     ? 'bg-emerald-600/30 text-emerald-100'
                     : 'bg-gray-800 text-gray-300'
@@ -371,6 +394,21 @@ export default function MeetingChatPanel({ agents, messages, meetingId, onSendTo
           >
             <Send className="w-3.5 h-3.5" />
           </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  if (!isOverlay) return inner
+
+  // Overlay mode — full-viewport pop mirroring TaskKanbanBoard's shell so the
+  // chat occupies the same middle slot as the kanban board does. Right panel
+  // (Tasks tab) stays free behind it for the simultaneous tasks-and-chat view.
+  return (
+    <div className="flex-1 flex flex-col bg-gray-950 min-w-0">
+      <div className="flex-1 flex justify-center overflow-hidden">
+        <div className="w-full max-w-[900px] flex flex-col h-full">
+          {inner}
         </div>
       </div>
     </div>
