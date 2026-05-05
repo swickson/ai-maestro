@@ -37,6 +37,7 @@ import os from 'os'
 import { loadAgents, createAgent, getAgent, getAgentByName, getAgentByNameAnyHost, updateAgent, deleteAgent, markAgentAsAMPRegistered, checkMeshAgentExists, getAMPRegisteredAgents } from '@/lib/agent-registry'
 import { authenticateRequest, createApiKey, hashApiKey, extractApiKeyFromHeader, revokeApiKey, rotateApiKey, revokeAllKeysForAgent } from '@/lib/amp-auth'
 import { saveKeyPair, loadKeyPair, calculateFingerprint, verifySignature, generateKeyPair } from '@/lib/amp-keys'
+import { canonicalStringify } from '@/lib/amp-canonical-json'
 import { queueMessage, getPendingMessages, acknowledgeMessage, acknowledgeMessages, cleanupAllExpiredMessages } from '@/lib/amp-relay'
 import { deliver } from '@/lib/message-delivery'
 import { retrieveMemories } from '@/lib/memory/retrieval-middleware'
@@ -966,7 +967,7 @@ export async function routeMessage(
       if (senderKeyPair?.publicHex) {
         const payloadHash = crypto
           .createHash('sha256')
-          .update(JSON.stringify(body.payload))
+          .update(canonicalStringify(body.payload))
           .digest('base64')
 
         const signatureData = [
@@ -1841,7 +1842,7 @@ export async function deliverFederated(
       try {
         const payloadHash = crypto
           .createHash('sha256')
-          .update(JSON.stringify(payload))
+          .update(canonicalStringify(payload))
           .digest('base64')
 
         const signatureData = [
