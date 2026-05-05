@@ -45,7 +45,7 @@ import {
   deleteMeeting,
 } from '@/lib/meeting-registry'
 import { routeMessage } from '@/lib/meeting-router'
-import { getRuntime } from '@/lib/agent-runtime'
+import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
 import type { SidebarMode } from '@/types/team'
 import { type ServiceResult, missingField, notFound, invalidRequest, operationFailed } from '@/services/service-errors'
 
@@ -413,17 +413,19 @@ async function triggerMeetingAgents(params: {
     return // No agents to trigger (no @mentions or unaddressed message)
   }
 
-  const runtime = getRuntime()
   const teamName = subject.replace(/^\[MEETING:[^\]]+\]\s*/, '')
 
   for (const agentId of result.targetAgentIds) {
     const agent = getAgent(agentId)
     if (!agent) continue
 
-    // Check if agent has an active tmux session
-    const sessionName = agent.name
-    const sessionExists = await runtime.sessionExists(sessionName)
-    if (!sessionExists) {
+    // Existence check is deployment-aware: cloud agents have no host tmux
+    // session by their name (tmux runs inside the container under the same
+    // name), so the naive runtime.sessionExists() returned false and silently
+    // skipped them. agentSessionReady treats containerName-configured cloud
+    // agents as ready (kanban 7a94534e closes 6f5562f4).
+    const ready = await agentSessionReady(agent)
+    if (!ready) {
       console.log(`[MeetingRouter] Skipping ${agent.name} — no active session`)
       continue
     }
@@ -437,7 +439,11 @@ async function triggerMeetingAgents(params: {
     ].join('\n')
 
     try {
-      await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+      // Same cancelCopyMode→sendKeys ordering invariant as the rest of the
+      // tmux-input callsites — primitive routes to docker-exec for cloud
+      // agents (kanban 7a94534e migration; was host-only before).
+      await cancelCopyModeForAgent(agent)
+      await sendKeysToAgent(agent, prompt, { literal: true, enter: true })
       console.log(`[MeetingRouter] Injected prompt into ${agent.name}`)
     } catch (err) {
       console.warn(`[MeetingRouter] Failed to inject into ${agent.name}:`, err)

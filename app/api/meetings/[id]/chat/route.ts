@@ -3,16 +3,23 @@ import { isSelf, getHostById, getSelfHost } from '@/lib/hosts-config'
 import { getMeeting } from '@/lib/meeting-registry'
 import { getChatMessages } from '@/lib/meeting-chat-service'
 import { routeMessage } from '@/lib/meeting-router'
-import { getRuntime } from '@/lib/agent-runtime'
 import { getAgent } from '@/lib/agent-registry'
 import { lookupAgentById } from '@/lib/agent-directory'
-import { enqueueForSession, shouldUseAdditionalContext, sanitizeForRawInject, wrapAsBracketedPaste } from '@/lib/meeting-inject-queue'
+import { injectMeetingPrompt as injectMeetingPromptService } from '@/services/agents-chat-service'
 import { stripAvatarPaths } from '@/lib/meeting-inject-utils'
 
 /**
  * Inject a meeting chat prompt into an agent's tmux session.
- * For local agents: uses the local runtime directly.
- * For remote agents: POSTs to the agent's host notify endpoint.
+ * For local agents: delegates to services/agents-chat-service.injectMeetingPrompt
+ *   which is deployment-aware (host runtime OR docker-exec via the
+ *   sendKeysToAgent primitive — kanban 7a94534e closes 6f5562f4).
+ * For remote agents: POSTs to the agent's host notify endpoint, which routes
+ *   into the same service-layer primitive on the remote side.
+ *
+ * Previously this route had its own shadow injectMeetingPrompt that called
+ * the host tmux runtime directly, silently missing for local cloud agents.
+ * The shadow was deleted in 7a94534e — service-layer is the single source of
+ * truth for the four-way matrix (hybrid×{host,cloud} + legacy×{host,cloud}).
  */
 async function injectMeetingPrompt(
   agentId: string,
@@ -65,38 +72,17 @@ async function injectMeetingPrompt(
 
   const sessionName = agentName
 
-  // Local agent: inject directly via tmux
+  // Local agent: delegate to the cloud-aware service-layer primitive.
   if (!agentHostId || isSelf(agentHostId)) {
-    const runtime = getRuntime()
-    const exists = await runtime.sessionExists(sessionName)
-    if (!exists) return
-
-    // Hybrid path (flag-gated per agent kind): enqueue the prompt as structured
-    // context and fire a minimal wake-ping ("." + Enter). The agent's hook
-    // drains the queue on the resulting UserPromptSubmit and delivers the
-    // payload as additionalContext — never through the shell, so '!' and
-    // friends survive. Bare Enter was a no-op in Claude Code (empty prompts
-    // aren't submitted); "." forces a real prompt cycle.
-    if (agent && shouldUseAdditionalContext(agent.program)) {
-      enqueueForSession(sessionName, prompt)
-      await runtime.sendKeys(sessionName, '.', { literal: true, enter: false })
-      await new Promise(r => setTimeout(r, 100))
-      await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
-      console.log(`[MeetingChat] Queued prompt + wake-pinged local agent ${agentName} (${agent.program})`)
-      return
+    const result = await injectMeetingPromptService({ agentName: sessionName, injection: prompt })
+    if (result.status >= 400) {
+      const errMsg = (result.data && typeof result.data === 'object' && 'error' in result.data)
+        ? ((result.data as any).error?.message ?? 'unknown error')
+        : 'unknown error'
+      console.warn(`[MeetingChat] Inject failed for local agent ${sessionName}: ${errMsg}`)
+    } else {
+      console.log(`[MeetingChat] Injected prompt into local agent ${sessionName}${(result.data as any)?.queued ? ' (queued for hook drain)' : ''}`)
     }
-
-    // Legacy path: send full text via tmux send-keys, framed as an explicit
-    // bracketed-paste block. The sanitizer handles line-start `!` as a last-
-    // line-of-defense; wrapAsBracketedPaste adds ESC[200~/ESC[201~ so Codex
-    // (and other DEC 2004 TUIs) close their paste-receive window on the
-    // explicit 201~ marker before the Enter keystroke lands. The 500ms delay
-    // still covers tmux write-flush for large payloads on slow hosts.
-    const safePrompt = wrapAsBracketedPaste(sanitizeForRawInject(prompt))
-    await runtime.sendKeys(sessionName, safePrompt, { literal: true, enter: false })
-    await new Promise(r => setTimeout(r, 500))
-    await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
-    console.log(`[MeetingChat] Injected prompt into local agent ${agentName}`)
     return
   }
 

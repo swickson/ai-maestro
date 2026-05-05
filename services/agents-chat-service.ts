@@ -13,7 +13,7 @@ import {
   sanitizeForRawInject,
   wrapAsBracketedPaste,
 } from '@/lib/meeting-inject-queue'
-import { sendKeysToContainer, cancelCopyModeInContainer } from '@/lib/container-utils'
+import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
@@ -262,12 +262,12 @@ export async function sendChatMessage(
     return invalidRequest('Agent session is not online')
   }
 
-  const runtime = getRuntime()
   // Exit copy-mode first — sending keys to a copy-mode pane hangs the request
   // and drops the payload (kanban 96d317df). Mirror of the wakeAgent and
-  // sessions-service patterns.
-  await runtime.cancelCopyMode(sessionName)
-  await runtime.sendKeys(sessionName, message, { literal: true, enter: true })
+  // sessions-service patterns. Primitive routes the call to docker-exec for
+  // cloud agents (kanban 6c3f4357 / 7a94534e) — this used to be host-only.
+  await cancelCopyModeForAgent(agent)
+  await sendKeysToAgent(agent, message, { literal: true, enter: true })
 
   console.log('[Chat Service] Message sent successfully')
 
@@ -287,11 +287,16 @@ export async function sendChatMessage(
  * route handler for unit-testability of the cancelCopyMode→sendKeys ordering
  * across all four branches (kanban cff76d5c, PR #94 follow-up).
  *
- * Four branches:
- *   1. hybrid host    — runtime.cancelCopyMode → runtime.sendKeys('.') → wait → Enter
- *   2. hybrid cloud   — cancelCopyModeInContainer → sendKeysToContainer('.') → wait → Enter
- *   3. legacy host    — runtime.cancelCopyMode → runtime.sendKeys(safeInjection) → wait → Enter
- *   4. legacy cloud   — cancelCopyModeInContainer → sendKeysToContainer(safeInjection) → wait → Enter
+ * Two paths × two deployments:
+ *   1. hybrid host  — cancelCopyModeForAgent → sendKeysToAgent('.') → wait → Enter
+ *   2. hybrid cloud — same primitives, dispatched in-container by the primitive
+ *   3. legacy host  — cancelCopyModeForAgent → sendKeysToAgent(safeInjection) → wait → Enter
+ *   4. legacy cloud — same primitives, dispatched in-container by the primitive
+ *
+ * The cloud-vs-host dispatch was previously inlined here (one branch per path);
+ * 7a94534e collapsed it into the sendKeysToAgent / cancelCopyModeForAgent
+ * primitives so the four-way matrix is the cartesian product of {hybrid, legacy}
+ * × {whatever the primitive resolves} — no manual cloud branch in this file.
  *
  * The cancelCopyMode→sendKeys ordering invariant is load-bearing: tmux
  * send-keys -l against a copy-mode pane hangs the calling process AND drops
@@ -310,17 +315,16 @@ export async function injectMeetingPrompt(
 
   const sessionName = body.agentName
   const agent = getAgentBySession(sessionName)
-  const isCloud = agent?.deployment?.type === 'cloud'
-  const containerName = isCloud ? agent?.deployment?.cloud?.containerName : undefined
-
-  if (isCloud) {
-    if (!containerName) {
-      return invalidField('deployment.cloud.containerName', `Cloud agent ${sessionName} has no containerName configured`)
-    }
-  } else {
-    const runtime = getRuntime()
-    const exists = await runtime.sessionExists(sessionName)
-    if (!exists) {
+  if (!agent) {
+    return notFound('Agent', sessionName)
+  }
+  const isCloud = agent.deployment?.type === 'cloud'
+  if (isCloud && !agent.deployment?.cloud?.containerName) {
+    return invalidField('deployment.cloud.containerName', `Cloud agent ${sessionName} has no containerName configured`)
+  }
+  if (!isCloud) {
+    const ready = await agentSessionReady(agent)
+    if (!ready) {
       return notFound('Session', sessionName)
     }
   }
@@ -328,20 +332,12 @@ export async function injectMeetingPrompt(
   // Hybrid path (flag-gated per agent kind): enqueue as structured context and
   // wake-ping with "." + Enter (bare Enter was a no-op in Claude Code). Hook
   // drains on the resulting UserPromptSubmit.
-  if (agent && shouldUseAdditionalContext(agent.program)) {
+  if (shouldUseAdditionalContext(agent.program)) {
     enqueueForSession(sessionName, body.injection)
-    if (isCloud && containerName) {
-      await cancelCopyModeInContainer(containerName, sessionName)
-      await sendKeysToContainer(containerName, sessionName, '.', { literal: true, enter: false })
-      await new Promise(r => setTimeout(r, 100))
-      await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
-    } else {
-      const runtime = getRuntime()
-      await runtime.cancelCopyMode(sessionName)
-      await runtime.sendKeys(sessionName, '.', { literal: true, enter: false })
-      await new Promise(r => setTimeout(r, 100))
-      await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
-    }
+    await cancelCopyModeForAgent(agent)
+    await sendKeysToAgent(agent, '.', { literal: true, enter: false })
+    await new Promise(r => setTimeout(r, 100))
+    await sendKeysToAgent(agent, '', { literal: false, enter: true })
     console.log(`[Inject Service] queued + wake-pinged ${sessionName} (${agent.program}${isCloud ? ', cloud' : ''})`)
     return { data: { success: true, queued: true }, status: 200 }
   }
@@ -350,18 +346,10 @@ export async function injectMeetingPrompt(
   // (ESC[200~…ESC[201~) so Codex/Gemini close their paste-receive window on
   // the 201~ marker before our trailing Enter lands.
   const safeInjection = wrapAsBracketedPaste(sanitizeForRawInject(String(body.injection)))
-  if (isCloud && containerName) {
-    await cancelCopyModeInContainer(containerName, sessionName)
-    await sendKeysToContainer(containerName, sessionName, safeInjection, { literal: true, enter: false })
-    await new Promise(r => setTimeout(r, 500))
-    await sendKeysToContainer(containerName, sessionName, '', { literal: false, enter: true })
-  } else {
-    const runtime = getRuntime()
-    await runtime.cancelCopyMode(sessionName)
-    await runtime.sendKeys(sessionName, safeInjection, { literal: true, enter: false })
-    await new Promise(r => setTimeout(r, 500))
-    await runtime.sendKeys(sessionName, '', { literal: false, enter: true })
-  }
+  await cancelCopyModeForAgent(agent)
+  await sendKeysToAgent(agent, safeInjection, { literal: true, enter: false })
+  await new Promise(r => setTimeout(r, 500))
+  await sendKeysToAgent(agent, '', { literal: false, enter: true })
   console.log(`[Inject Service] injected meeting prompt into ${sessionName}${isCloud ? ' (cloud)' : ''}`)
   return { data: { success: true, injected: true }, status: 200 }
 }
