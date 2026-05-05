@@ -10,6 +10,7 @@
  */
 
 import { createHmac } from 'crypto'
+import { canonicalStringify } from '@/lib/amp-canonical-json'
 import { writeToAMPInbox } from '@/lib/amp-inbox-writer'
 import { notifyAgent } from '@/lib/notification-service'
 import { applyContentSecurity } from '@/lib/content-security'
@@ -153,7 +154,7 @@ async function deliverViaWebhook(
     return
   }
 
-  const body = JSON.stringify({ envelope, payload, sender_public_key: senderPublicKey })
+  const body = canonicalStringify({ envelope, payload, sender_public_key: senderPublicKey })
   const signature = createHmac('sha256', webhookUrl).update(body).digest('hex')
 
   for (let attempt = 0; attempt < WEBHOOK_RETRY_DELAYS.length; attempt++) {
