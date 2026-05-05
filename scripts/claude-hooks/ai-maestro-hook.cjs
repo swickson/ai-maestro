@@ -19,6 +19,18 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 
+// Maestro host URL — resolves to http://host.docker.internal:23000 inside
+// cloud-agent containers (env-injected at agent provision time) and falls
+// back to http://localhost:23000 for host-local agents (where the maestro
+// server is on the same loopback). Hardcoding "http://localhost:23000" was
+// a silent-no-op for cloud agents — every fetch from inside the container
+// hit the container's own loopback, not the host's maestro server, and the
+// drain/notify paths returned null in catch. Six sites used to hardcode it
+// (kanban filed by KAI in Iron Syndicate 2026-05-05 follow-up meeting).
+const MAESTRO_HOST_URL = process.env.AIMAESTRO_HOST_URL
+    || process.env.AMP_MAESTRO_URL
+    || 'http://localhost:23000';
+
 // Read stdin as JSON
 async function readStdin() {
     return new Promise((resolve, reject) => {
@@ -47,7 +59,7 @@ function hashCwd(cwd) {
 // Broadcast status update via WebSocket (non-blocking)
 async function broadcastStatusUpdate(cwd, state) {
     try {
-        const agentsResponse = await fetch('http://localhost:23000/api/agents');
+        const agentsResponse = await fetch(`${MAESTRO_HOST_URL}/api/agents`);
         if (!agentsResponse.ok) return;
 
         const agentsData = await agentsResponse.json();
@@ -59,7 +71,7 @@ async function broadcastStatusUpdate(cwd, state) {
         if (!sessionName) return;
 
         // Broadcast the status update
-        await fetch('http://localhost:23000/api/sessions/activity/update', {
+        await fetch(`${MAESTRO_HOST_URL}/api/sessions/activity/update`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -177,13 +189,24 @@ async function checkUnreadMessagesStandalone() {
 }
 
 // Resolve the agent for this hook invocation.
-// Priority: AIM_AGENT_ID env (exact) → AIM_AGENT_NAME env (exact) → cwd exact match.
-// The env vars are set by lib/agent-runtime.ts via `tmux set-environment` on every
-// agent session and propagate to child processes (Claude + its hooks). Cwd fallback
-// only fires for non-tmux launches, and uses exact equality to avoid the
-// collision/startsWith bug where multiple agents share a working directory.
+// Priority: AIM_AGENT_ID / CLAUDE_AGENT_ID env (exact) → AIM_AGENT_NAME /
+// CLAUDE_AGENT_NAME / AGENT_ID env (exact) → cwd exact match.
+//
+// AIM_AGENT_ID/AIM_AGENT_NAME are set by lib/agent-runtime.ts via
+// `tmux set-environment` on every HOST agent session and propagate to child
+// processes (Claude + its hooks). CLOUD agent containers receive a different
+// env-var convention at provision time (CLAUDE_AGENT_ID, CLAUDE_AGENT_NAME,
+// AGENT_ID — see services/agents-docker-service.ts container-env baking),
+// so the hook accepts EITHER set. Without this, cloud-agent hooks fall back
+// to cwd-match against /workspace, which never matches the host-path-keyed
+// registry → resolveAgent returns null → drainMeetingInjectQueue bails →
+// queued additionalContext is silently lost.
+//
+// Cwd fallback only fires for non-tmux launches, and uses exact equality
+// to avoid the collision/startsWith bug where multiple agents share a
+// working directory.
 function resolveAgent(cwd, agents) {
-    const envId = process.env.AIM_AGENT_ID;
+    const envId = process.env.AIM_AGENT_ID || process.env.CLAUDE_AGENT_ID;
     if (envId) {
         const byId = agents.find(a => a.id === envId);
         if (byId) {
@@ -191,7 +214,7 @@ function resolveAgent(cwd, agents) {
             return byId;
         }
     }
-    const envName = process.env.AIM_AGENT_NAME;
+    const envName = process.env.AIM_AGENT_NAME || process.env.CLAUDE_AGENT_NAME || process.env.AGENT_ID;
     if (envName) {
         const byName = agents.find(a => a.name === envName);
         if (byName) {
@@ -211,7 +234,7 @@ function resolveAgent(cwd, agents) {
 // keys injections. See lib/meeting-inject-queue.ts.
 async function drainMeetingInjectQueue(cwd) {
     try {
-        const agentsResponse = await fetch('http://localhost:23000/api/agents');
+        const agentsResponse = await fetch(`${MAESTRO_HOST_URL}/api/agents`);
         if (!agentsResponse.ok) return null;
 
         const agentsData = await agentsResponse.json();
@@ -222,7 +245,7 @@ async function drainMeetingInjectQueue(cwd) {
         if (!sessionName) return null;
 
         const drainResponse = await fetch(
-            `http://localhost:23000/api/meetings/inject-queue?session=${encodeURIComponent(sessionName)}`
+            `${MAESTRO_HOST_URL}/api/meetings/inject-queue?session=${encodeURIComponent(sessionName)}`
         );
         if (!drainResponse.ok) return null;
 
@@ -247,7 +270,7 @@ function mergeContexts(...parts) {
 // Check for unread messages for this agent
 async function checkUnreadMessages(cwd) {
     try {
-        const agentsResponse = await fetch('http://localhost:23000/api/agents');
+        const agentsResponse = await fetch(`${MAESTRO_HOST_URL}/api/agents`);
         if (!agentsResponse.ok) return null;
 
         const agentsData = await agentsResponse.json();
@@ -260,7 +283,7 @@ async function checkUnreadMessages(cwd) {
 
         // Check for unread messages
         const messagesResponse = await fetch(
-            `http://localhost:23000/api/messages?agent=${encodeURIComponent(agent.id)}&box=inbox&status=unread`
+            `${MAESTRO_HOST_URL}/api/messages?agent=${encodeURIComponent(agent.id)}&box=inbox&status=unread`
         );
         if (!messagesResponse.ok) return null;
 
