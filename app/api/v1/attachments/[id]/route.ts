@@ -13,12 +13,23 @@
  *
  * No transition to `clean` here — that happens on /confirm. Just store the
  * blob and update meta.digest.
+ *
+ * GET /api/v1/attachments/:id
+ *
+ * Status-poll alias of /status (kanban 4e70636e). amp-helper.sh upload_attachment
+ * polls this exact URL waiting for scan_status to leave 'pending'; without the
+ * GET handler the bare path returns 405 (only PUT is exported), the polling
+ * loop hits the "Provider may not support polling — leave as pending" branch
+ * and ships scan_status='pending' + url=null to the recipient — breaking
+ * cross-host attachments (PR #119/#122/#123 chain). Returns identical shape
+ * to GET /:id/status, including the signed download URL when scan_status=clean.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import * as crypto from 'crypto'
+import { authenticateRequest } from '@/lib/amp-auth'
 import { readMeta, writeMeta, writeBlob, hasBlob } from '@/lib/attachment-storage'
-import { verifySignedRequest } from '@/lib/attachment-signer'
+import { verifySignedRequest, buildSignedUrl } from '@/lib/attachment-signer'
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024
 function maxAttachmentBytes(): number {
@@ -71,4 +82,41 @@ export async function PUT(
   writeMeta(meta)
 
   return NextResponse.json({ attachment_id: id, digest: meta.digest })
+}
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params
+  const authHeader = request.headers.get('Authorization')
+  const auth = authenticateRequest(authHeader)
+  if (!auth.authenticated) {
+    return NextResponse.json({ error: { code: auth.error || 'unauthorized', message: auth.message || 'unauthorized' } }, { status: 401 })
+  }
+
+  const meta = readMeta(id)
+  if (!meta) {
+    return NextResponse.json({ error: { code: 'not_found', message: `attachment ${id} not found` } }, { status: 404 })
+  }
+
+  // Build the download URL only when status is 'clean' — recipients should not
+  // be able to start fetching a 'pending' or 'rejected' attachment. Same logic
+  // as the dedicated /status sub-route.
+  const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
+  const url = meta.scan_status === 'clean'
+    ? buildSignedUrl(baseUrl, 'download', id, meta.expires_at)
+    : null
+
+  return NextResponse.json({
+    attachment_id: id,
+    filename: meta.filename,
+    content_type: meta.content_type,
+    size: meta.size,
+    digest: meta.digest,
+    scan_status: meta.scan_status,
+    uploaded_at: meta.uploaded_at,
+    expires_at: meta.expires_at,
+    url,
+  })
 }
