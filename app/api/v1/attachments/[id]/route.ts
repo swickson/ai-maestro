@@ -30,6 +30,7 @@ import * as crypto from 'crypto'
 import { authenticateRequest } from '@/lib/amp-auth'
 import { readMeta, writeMeta, writeBlob, hasBlob } from '@/lib/attachment-storage'
 import { verifySignedRequest, buildSignedUrl } from '@/lib/attachment-signer'
+import { getSelfHost } from '@/lib/hosts-config'
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024
 function maxAttachmentBytes(): number {
@@ -102,8 +103,10 @@ export async function GET(
 
   // Build the download URL only when status is 'clean' — recipients should not
   // be able to start fetching a 'pending' or 'rejected' attachment. Same logic
-  // as the dedicated /status sub-route.
-  const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
+  // as the dedicated /status sub-route. baseUrl uses getSelfHost().url for the
+  // canonical Tailscale URL (NOT request.nextUrl.host which captures the bind
+  // address and would resolve to the recipient's loopback — kanban 1259f3a0).
+  const baseUrl = getSelfHost().url
   const url = meta.scan_status === 'clean'
     ? buildSignedUrl(baseUrl, 'download', id, meta.expires_at)
     : null

@@ -23,6 +23,7 @@ import {
 } from '@/lib/attachment-storage'
 import { buildSignedUrl } from '@/lib/attachment-signer'
 import { sanitize as sanitizeFilename } from '@/lib/attachment-filename'
+import { getSelfHost } from '@/lib/hosts-config'
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024
 function maxAttachmentBytes(): number {
@@ -79,7 +80,10 @@ export async function POST(request: NextRequest) {
   }
   writeMeta(meta)
 
-  const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
+  // Use getSelfHost().url for the canonical Tailscale URL — request.nextUrl.host
+  // captures the bind address (typically 0.0.0.0) which fails for any cross-host
+  // caller that needs to PUT to this signed URL (kanban 1259f3a0).
+  const baseUrl = getSelfHost().url
   const upload_url = buildSignedUrl(baseUrl, 'upload', id, expiresAt)
 
   return NextResponse.json({ attachment_id: id, upload_url })

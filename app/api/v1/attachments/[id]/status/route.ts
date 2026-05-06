@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { authenticateRequest } from '@/lib/amp-auth'
 import { readMeta } from '@/lib/attachment-storage'
 import { buildSignedUrl } from '@/lib/attachment-signer'
+import { getSelfHost } from '@/lib/hosts-config'
 
 export async function GET(
   request: NextRequest,
@@ -30,7 +31,12 @@ export async function GET(
 
   // Build the download URL only when status is 'clean' — recipients should not
   // be able to start fetching a 'pending' or 'rejected' attachment.
-  const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
+  //
+  // Use getSelfHost().url instead of request.nextUrl.host: the latter captures
+  // the server's BIND address (typically 0.0.0.0:23000), and a 0.0.0.0 host
+  // in a signed URL resolves to the recipient's own loopback when they try to
+  // download — wrong server + wrong HMAC secret → 401 (kanban 1259f3a0).
+  const baseUrl = getSelfHost().url
   const url = meta.scan_status === 'clean'
     ? buildSignedUrl(baseUrl, 'download', id, meta.expires_at)
     : null
