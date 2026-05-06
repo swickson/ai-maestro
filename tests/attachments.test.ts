@@ -218,9 +218,23 @@ describe('attachment-storage', () => {
   it('generateAttachmentId produces unique att_ prefixed ids', () => {
     const a = generateAttachmentId()
     const b = generateAttachmentId()
-    expect(a).toMatch(/^att_[a-f0-9]{32}$/)
-    expect(b).toMatch(/^att_[a-f0-9]{32}$/)
+    // Format: att_<ms-timestamp>_<16 hex chars> — three-part shape pinned by
+    // amp-helper.sh:validate_attachment_id (kanban 094594ac). A bare two-part
+    // shape silently breaks cross-host attachments via local-only fallback.
+    expect(a).toMatch(/^att_\d+_[a-f0-9]{16}$/)
+    expect(b).toMatch(/^att_\d+_[a-f0-9]{16}$/)
     expect(a).not.toBe(b)
+  })
+
+  it('generateAttachmentId matches amp-helper.sh:validate_attachment_id regex', () => {
+    // Pinned regex from ~/.local/bin/amp-helper.sh:1478:
+    //   ^att[_-][0-9]+[_-][a-zA-Z0-9]+$
+    // Must match or amp-send falls back to local-only delivery (kanban 094594ac).
+    const ampClientRegex = /^att[_-][0-9]+[_-][a-zA-Z0-9]+$/
+    for (let i = 0; i < 10; i++) {
+      const id = generateAttachmentId()
+      expect(id).toMatch(ampClientRegex)
+    }
   })
 
   it('writeMeta + readMeta round-trips', () => {

@@ -43,9 +43,20 @@ export function attachmentDir(id: string): string {
 }
 
 export function generateAttachmentId(): string {
-  // 16 bytes / 32 hex chars — opaque, single-use. `att_` prefix matches the
-  // spec example shape without leaking implementation detail.
-  return 'att_' + crypto.randomBytes(16).toString('hex')
+  // Format: `att_<ms-timestamp>_<8-byte hex>`. Three-part shape required by
+  // `~/.local/bin/amp-helper.sh:validate_attachment_id` which matches
+  // `^att[_-][0-9]+[_-][a-zA-Z0-9]+$` — designed against the legacy
+  // client-generated id format and shipped to operators via the AMP CLI
+  // package. A bare `att_<32-hex>` form (one separator) is rejected by that
+  // regex and silently falls back to client-generated ids + local-only
+  // delivery, breaking cross-host attachments end-to-end despite the server
+  // endpoints working under direct probe (kanban 094594ac, KAI empirical
+  // 2026-05-06 post-PR-#119-merge).
+  //
+  // Bonus property: monotonic timestamp prefix sorts ids by creation time,
+  // useful for debugging + log-grep. 8 bytes random / 16 hex chars provides
+  // sufficient entropy against collisions within the same millisecond.
+  return `att_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`
 }
 
 export function writeMeta(meta: AttachmentMeta): void {
