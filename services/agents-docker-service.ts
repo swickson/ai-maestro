@@ -130,7 +130,11 @@ export function buildEnvFlags(env: Record<string, string> | undefined): string[]
 // and exposed the operator's full session history/projects/credentials read-
 // write to the cloud agent. Per-container claude config is provisioned in
 // provisionCloudClaudeConfig + buildCloudClaudeSettingsMount + buildCloudClaudePersistMounts.
-export function buildAmpCommonMounts(agentId: string, hostHome: string = os.homedir()): SandboxMount[] {
+export function buildAmpCommonMounts(
+  agentId: string,
+  hostHome: string = os.homedir(),
+  repoRoot: string = process.cwd()
+): SandboxMount[] {
   return [
     {
       hostPath: path.join(hostHome, '.agent-messaging', 'agents', agentId),
@@ -154,6 +158,25 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
     {
       hostPath: path.join(hostHome, '.local', 'share', 'aimaestro', 'shell-helpers'),
       containerPath: path.posix.join(CONTAINER_HOME, '.local', 'share', 'aimaestro', 'shell-helpers'),
+      readOnly: true,
+    },
+    // Repo scripts dir (host-wide, RO) — exposes meeting-send.sh /
+    // meeting-task.sh / meeting-read.sh + other operator CLIs to cloud agents
+    // so they can participate in the team kanban + meeting flows from inside
+    // the container. Without this, only meeting-send.sh worked (manually
+    // installed in some operators' ~/.local/bin/) and meeting-task.sh was
+    // universally absent fleet-wide (Optic + Hardin + cross-host empirical
+    // 2026-05-06). The bind mount targets a known container path that gets
+    // prepended to CONTAINER_PATH below — sister pattern to the shell-helpers
+    // mount above. Sister to PR #98 / kanban 9c40609b.
+    //
+    // repoRoot defaults to process.cwd() (matches provisionCloudClaudeConfig
+    // signature) — Next.js bundling moves __dirname into .next/server/...
+    // so __dirname-relative paths break in production. The maestro server
+    // always runs from the repo root, so process.cwd() is the canonical anchor.
+    {
+      hostPath: path.join(repoRoot, 'scripts'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.local', 'share', 'aimaestro', 'cli'),
       readOnly: true,
     },
   ]
@@ -781,10 +804,14 @@ export function buildCloudClaudePersistMounts(
 }
 
 // Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
-// ahead of the standard Debian path. The base image's Dockerfile sets only
-// the standard path, so without this override `which amp-send` fails inside
-// the container even though the binary is mounted and works by full path.
-const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+// + the repo-script CLI dir (meeting-send / meeting-task / meeting-read,
+// mounted at /home/claude/.local/share/aimaestro/cli) ahead of the standard
+// Debian path. The base image's Dockerfile sets only the standard path, so
+// without this override `which amp-send` and `which meeting-task.sh` fail
+// inside the container even though the binaries are mounted and work by full
+// path. The cli/ entry was added 2026-05-06 alongside the matching
+// scripts-dir bind mount in buildAmpCommonMounts (kanban 0d80aed7).
+const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:${CONTAINER_HOME}/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
 
 // AMP common envs tell amp-helper.sh exactly which agent identity dir to use
 // (priority 1 of its resolution order) and where to reach the AI Maestro server
