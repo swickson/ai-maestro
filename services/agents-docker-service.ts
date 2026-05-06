@@ -130,7 +130,11 @@ export function buildEnvFlags(env: Record<string, string> | undefined): string[]
 // and exposed the operator's full session history/projects/credentials read-
 // write to the cloud agent. Per-container claude config is provisioned in
 // provisionCloudClaudeConfig + buildCloudClaudeSettingsMount + buildCloudClaudePersistMounts.
-export function buildAmpCommonMounts(agentId: string, hostHome: string = os.homedir()): SandboxMount[] {
+export function buildAmpCommonMounts(
+  agentId: string,
+  hostHome: string = os.homedir(),
+  repoRoot: string = process.cwd()
+): SandboxMount[] {
   return [
     {
       hostPath: path.join(hostHome, '.agent-messaging', 'agents', agentId),
@@ -166,10 +170,12 @@ export function buildAmpCommonMounts(agentId: string, hostHome: string = os.home
     // prepended to CONTAINER_PATH below — sister pattern to the shell-helpers
     // mount above. Sister to PR #98 / kanban 9c40609b.
     //
-    // Repo root is resolved at module-load time from this file's location;
-    // services/agents-docker-service.ts → __dirname=services → parent is repo.
+    // repoRoot defaults to process.cwd() (matches provisionCloudClaudeConfig
+    // signature) — Next.js bundling moves __dirname into .next/server/...
+    // so __dirname-relative paths break in production. The maestro server
+    // always runs from the repo root, so process.cwd() is the canonical anchor.
     {
-      hostPath: path.resolve(__dirname, '..', 'scripts'),
+      hostPath: path.join(repoRoot, 'scripts'),
       containerPath: path.posix.join(CONTAINER_HOME, '.local', 'share', 'aimaestro', 'cli'),
       readOnly: true,
     },

@@ -232,17 +232,21 @@ describe('buildAmpCommonMounts', () => {
     ])
   })
 
-  it('mirrors host paths under the supplied home (except repo cli)', () => {
-    const mounts = buildAmpCommonMounts(uuid, home)
-    // First four mirror $home; cli is repo-rooted (resolved at module load)
-    expect(mounts.slice(0, 4).map(m => m.hostPath)).toEqual([
+  it('mirrors host paths under the supplied home + repoRoot', () => {
+    const mounts = buildAmpCommonMounts(uuid, home, '/srv/ai-maestro')
+    expect(mounts.map(m => m.hostPath)).toEqual([
       `${home}/.agent-messaging/agents/${uuid}`,
       `${home}/.aimaestro/agents/${uuid}`,
       `${home}/.local/bin`,
       `${home}/.local/share/aimaestro/shell-helpers`,
+      '/srv/ai-maestro/scripts',
     ])
+  })
+
+  it('repoRoot defaults to process.cwd() (matches provisionCloudClaudeConfig precedent)', () => {
+    const mounts = buildAmpCommonMounts(uuid, home)
     const cli = mounts.find(m => m.containerPath === '/home/claude/.local/share/aimaestro/cli')
-    expect(cli?.hostPath).toMatch(/\/scripts$/)
+    expect(cli?.hostPath).toBe(`${process.cwd()}/scripts`)
   })
 
   it('marks the repo cli mount read-only', () => {
