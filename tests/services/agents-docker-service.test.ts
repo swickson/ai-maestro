@@ -220,25 +220,35 @@ describe('buildAmpCommonMounts', () => {
   const uuid = '11111111-1111-1111-1111-111111111111'
   const home = '/home/gosub'
 
-  it('returns four mounts derived from the agent UUID + host shared paths', () => {
+  it('returns five mounts derived from the agent UUID + host shared paths', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
-    expect(mounts).toHaveLength(4)
+    expect(mounts).toHaveLength(5)
     expect(mounts.map(m => m.containerPath)).toEqual([
       `/home/claude/.agent-messaging/agents/${uuid}`,
       `/home/claude/.aimaestro/agents/${uuid}`,
       '/home/claude/.local/bin',
       '/home/claude/.local/share/aimaestro/shell-helpers',
+      '/home/claude/.local/share/aimaestro/cli',
     ])
   })
 
-  it('mirrors host paths under the supplied home', () => {
+  it('mirrors host paths under the supplied home (except repo cli)', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
-    expect(mounts.map(m => m.hostPath)).toEqual([
+    // First four mirror $home; cli is repo-rooted (resolved at module load)
+    expect(mounts.slice(0, 4).map(m => m.hostPath)).toEqual([
       `${home}/.agent-messaging/agents/${uuid}`,
       `${home}/.aimaestro/agents/${uuid}`,
       `${home}/.local/bin`,
       `${home}/.local/share/aimaestro/shell-helpers`,
     ])
+    const cli = mounts.find(m => m.containerPath === '/home/claude/.local/share/aimaestro/cli')
+    expect(cli?.hostPath).toMatch(/\/scripts$/)
+  })
+
+  it('marks the repo cli mount read-only', () => {
+    const mounts = buildAmpCommonMounts(uuid, home)
+    const cli = mounts.find(m => m.containerPath === '/home/claude/.local/share/aimaestro/cli')
+    expect(cli?.readOnly).toBe(true)
   })
 
   it('marks the AMP CLI mount read-only', () => {
@@ -1245,7 +1255,7 @@ describe('buildAmpCommonEnv', () => {
       CLAUDE_AGENT_NAME: name,
       AMP_DIR: `/home/claude/.agent-messaging/agents/${uuid}`,
       AMP_MAESTRO_URL: hostUrl,
-      PATH: '/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      PATH: '/home/claude/.local/bin:/home/claude/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',
     })
   })
