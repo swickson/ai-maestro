@@ -303,9 +303,41 @@ export function provisionCloudClaudeConfig(
   // cloud agents land on the picker and the on-wake hook gets typed into a
   // menu (kanban 41dd54b9). Other claude-home fields are written by claude on
   // first run / login.
+  //
+  // Shape-aware merge (kanban 406ff85d, sister to PR #112's gemini fix):
+  // when migrateAgentPersistence carries forward a predecessor claude-home.json
+  // that pre-dates the theme=dark seed (kanban 41dd54b9), the bare existsSync
+  // guard short-circuited and the seed never re-applied — Holmes empirical
+  // 2026-05-06 (Watson Hale post-recreate finding). Now we read existing
+  // contents, inject `theme: "dark"` only if missing, preserve everything
+  // else the operator may have set (model preferences, hand-edits).
+  // Operator-set theme (any string) is preserved — claude supports multiple
+  // themes (dark, light, dark-daltonized, etc.) and operator choice wins.
   const claudeHomePath = path.join(agentDir, 'claude-home.json')
-  if (!fs.existsSync(claudeHomePath)) {
-    fs.writeFileSync(claudeHomePath, JSON.stringify({ theme: 'dark' }) + '\n', { mode: 0o600 })
+  let claudeHomeNeedWrite = !fs.existsSync(claudeHomePath)
+  let claudeHome: Record<string, unknown>
+  if (claudeHomeNeedWrite) {
+    claudeHome = { theme: 'dark' }
+  } else {
+    try {
+      claudeHome = JSON.parse(fs.readFileSync(claudeHomePath, 'utf8'))
+      if (typeof claudeHome.theme !== 'string') {
+        // Stale-shape signal: migrated pre-kanban-41dd54b9 claude-home lacks
+        // the theme selector. Inject just the missing piece.
+        claudeHome = { ...claudeHome, theme: 'dark' }
+        claudeHomeNeedWrite = true
+      }
+    } catch (err) {
+      console.warn(
+        `[provisionCloudClaudeConfig] unparseable claude-home.json at ${claudeHomePath} — re-seeding from scratch:`,
+        err instanceof Error ? err.message : err,
+      )
+      claudeHome = { theme: 'dark' }
+      claudeHomeNeedWrite = true
+    }
+  }
+  if (claudeHomeNeedWrite) {
+    fs.writeFileSync(claudeHomePath, JSON.stringify(claudeHome) + '\n', { mode: 0o600 })
   }
   // claude-credentials.json (OAuth tokens) — operator-driven bootstrap
   // (kanban 8aa61a60). At provision time, copy the host operator's

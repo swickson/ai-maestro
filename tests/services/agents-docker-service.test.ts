@@ -440,14 +440,69 @@ describe('provisionCloudClaudeConfig', () => {
     expect(fs.statSync(ghDir).isDirectory()).toBe(true)
   })
 
-  it('preserves existing claude-home.json content across re-runs (state persistence intent)', () => {
+  it('preserves existing claude-home.json operator state across re-runs (state persistence intent)', () => {
+    // Pre-seed with operator-set theme + state fields. Shape-aware merge
+    // (kanban 406ff85d) MUST preserve all existing operator state.
     const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
     fs.mkdirSync(agentDir, { recursive: true })
     const homeJsonPath = path.join(agentDir, 'claude-home.json')
-    const existing = '{"bypassPermissionsModeAccepted":true,"hasCompletedOnboarding":true}\n'
+    const existing = '{"theme":"light","bypassPermissionsModeAccepted":true,"hasCompletedOnboarding":true}\n'
     fs.writeFileSync(homeJsonPath, existing)
     provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
-    expect(fs.readFileSync(homeJsonPath, 'utf8')).toBe(existing)
+    // theme=light operator choice preserved; other fields untouched.
+    const body = JSON.parse(fs.readFileSync(homeJsonPath, 'utf8'))
+    expect(body.theme).toBe('light')
+    expect(body.bypassPermissionsModeAccepted).toBe(true)
+    expect(body.hasCompletedOnboarding).toBe(true)
+  })
+
+  // ── kanban 406ff85d: shape-aware merge regression coverage ─────────────
+  // Sister fix to PR #112 (gemini-settings.json shape-aware staleness).
+  // Pre-kanban-41dd54b9 claude-home.json files lacked theme — when
+  // migrateAgentPersistence carried them forward, the bare existsSync guard
+  // short-circuited and the theme=dark seed was never injected. Hale on
+  // Holmes empirically hit this 2026-05-06.
+  //
+  // Critical methodology note (feedback_provisioning_seed_empirical_methodology.md):
+  // these tests MUST exercise the migrate-then-existsSync path. Manual
+  // rm-then-recreate is a false-positive trap — the bug only manifests when
+  // the predecessor file ALREADY EXISTS but lacks the theme field.
+
+  it('migrate-then-staleness path: stale claude-home.json without theme gets shape-aware injection', () => {
+    // Simulate migrateAgentPersistence carry-forward: file exists but is
+    // pre-kanban-41dd54b9 shape (no theme field).
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const homeJsonPath = path.join(agentDir, 'claude-home.json')
+    const stale = '{"bypassPermissionsModeAccepted":true,"hasCompletedOnboarding":true}\n'
+    fs.writeFileSync(homeJsonPath, stale)
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const body = JSON.parse(fs.readFileSync(homeJsonPath, 'utf8'))
+    // Missing theme injected, all other state preserved.
+    expect(body.theme).toBe('dark')
+    expect(body.bypassPermissionsModeAccepted).toBe(true)
+    expect(body.hasCompletedOnboarding).toBe(true)
+  })
+
+  it('migrate-then-staleness path: empty {} claude-home.json gets theme injected', () => {
+    // Degenerate-empty case: file exists, parses, but is just {}.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const homeJsonPath = path.join(agentDir, 'claude-home.json')
+    fs.writeFileSync(homeJsonPath, '{}\n')
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const body = JSON.parse(fs.readFileSync(homeJsonPath, 'utf8'))
+    expect(body.theme).toBe('dark')
+  })
+
+  it('unparseable claude-home.json re-seeds from scratch (defensive recovery)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const homeJsonPath = path.join(agentDir, 'claude-home.json')
+    fs.writeFileSync(homeJsonPath, 'not-valid-json{{{\n')
+    provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const body = JSON.parse(fs.readFileSync(homeJsonPath, 'utf8'))
+    expect(body.theme).toBe('dark')
   })
 
   it('preserves existing claude-credentials.json content across re-runs (login persistence intent)', () => {
