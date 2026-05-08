@@ -18,6 +18,7 @@ import { type ServiceResult, operationFailed } from '@/services/service-errors'
 import {
   rebuildLocalDirectory,
   getLocalEntriesForSync,
+  getAllDirectoryEntries,
   getDirectoryStats,
   lookupAgent,
   syncWithPeers,
@@ -40,6 +41,22 @@ export function getDirectory(): ServiceResult<any> {
   } catch (error) {
     console.error('[Agent Directory Service] getDirectory error:', error)
     return operationFailed('get directory', error instanceof Error ? error.message : 'Internal server error')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/agents/directory/all
+// ---------------------------------------------------------------------------
+
+export function getAllDirectory(): ServiceResult<any> {
+  try {
+    rebuildLocalDirectory()
+    const entries = getAllDirectoryEntries()
+    const stats = getDirectoryStats()
+    return { data: { success: true, entries, stats }, status: 200 }
+  } catch (error) {
+    console.error('[Agent Directory Service] getAllDirectory error:', error)
+    return operationFailed('get all directory', error instanceof Error ? error.message : 'Internal server error')
   }
 }
 
