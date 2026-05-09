@@ -809,6 +809,19 @@ export async function registerAgent(
 // POST /api/v1/route
 // ---------------------------------------------------------------------------
 
+function countLegacyAttachments(payload: unknown): number {
+  if (!payload || typeof payload !== 'object') return 0
+  const attachments = (payload as { attachments?: unknown }).attachments
+  if (!Array.isArray(attachments)) return 0
+  let count = 0
+  for (const att of attachments) {
+    if (att && typeof att === 'object' && (att as { kind?: unknown }).kind === 'legacy') {
+      count++
+    }
+  }
+  return count
+}
+
 export async function routeMessage(
   body: AMPRouteRequest,
   authHeader: string | null,
@@ -899,6 +912,28 @@ export async function routeMessage(
     if (!body.payload.type || !body.payload.message) {
       return {
         data: { error: 'invalid_field', message: 'payload must have type and message fields', field: 'payload' },
+        status: 400
+      }
+    }
+
+    // ── AMPAttachmentLegacy Hard-Reject (kanban c12413bb) ─────────────
+    // Federation hard-rejects payloads carrying any attachment with
+    // kind: 'legacy' (the pre-#48 path-based shape). Deprecation log feeds
+    // the b2ab2a77 cut-trigger window — once 14 days pass with zero
+    // deprecation_attachment_shape entries from peers, the legacy union
+    // arm gets removed at the next minor bump.
+    const legacyCount = countLegacyAttachments(body.payload)
+    if (legacyCount > 0) {
+      console.warn(
+        `[AMP Route] deprecation_attachment_shape: rejected ${legacyCount} legacy-shape attachment(s) ` +
+        `from sender=${auth.address || 'unknown'} forwardedFrom=${forwardedFrom || 'none'} ` +
+        `to=${body.to}`
+      )
+      return {
+        data: {
+          error: 'deprecated_attachment_shape',
+          message: 'AMPAttachmentLegacy (kind: "legacy") is no longer accepted; use AMPAttachmentV1 (kind: "amp-v1") via /api/v1/attachments/upload'
+        },
         status: 400
       }
     }
