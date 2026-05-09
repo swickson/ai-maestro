@@ -119,6 +119,7 @@ import {
   rotateKey,
   rotateKeypair,
   registerAgent,
+  routeMessage,
 } from '@/services/amp-service'
 
 // ============================================================================
@@ -942,5 +943,94 @@ describe('registerAgent — duplicate key rejection', () => {
     const result = await registerAgent(validRegBody, null)
 
     expect(result.status).not.toBe(409)
+  })
+})
+
+// ============================================================================
+// POST /api/v1/route — AMPAttachmentLegacy hard-reject (kanban c12413bb)
+// ============================================================================
+
+describe('routeMessage — AMPAttachmentLegacy hard-reject', () => {
+  function buildRouteBody(attachments: unknown[] | undefined): any {
+    return {
+      to: 'bob@testorg.aimaestro.local',
+      subject: 'hi',
+      payload: {
+        type: 'task',
+        message: 'do the thing',
+        ...(attachments !== undefined ? { attachments } : {}),
+      },
+    }
+  }
+
+  it('rejects payload with kind: "legacy" attachment (400 deprecated_attachment_shape)', async () => {
+    mockAuthenticated()
+    const body = buildRouteBody([
+      { kind: 'legacy', name: 'old.txt', type: 'text/plain', size: 100 },
+    ])
+
+    const result = await routeMessage(body, 'Bearer test-key', null, null, null, null)
+
+    expect(result.status).toBe(400)
+    expect(result.data).toHaveProperty('error', 'deprecated_attachment_shape')
+    expect((result.data as any).message).toContain('AMPAttachmentLegacy')
+  })
+
+  it('rejects mixed-shape array containing any legacy attachment', async () => {
+    mockAuthenticated()
+    const body = buildRouteBody([
+      {
+        kind: 'amp-v1',
+        id: 'att_123_abc',
+        filename: 'new.txt',
+        content_type: 'text/plain',
+        size: 200,
+        digest: 'a'.repeat(64),
+        url: 'https://x.example/d',
+        scan_status: 'clean',
+        uploaded_at: '2026-05-09T10:00:00Z',
+        expires_at: '2026-05-16T10:00:00Z',
+      },
+      { kind: 'legacy', name: 'old.txt', type: 'text/plain', size: 100 },
+    ])
+
+    const result = await routeMessage(body, 'Bearer test-key', null, null, null, null)
+
+    expect(result.status).toBe(400)
+    expect(result.data).toHaveProperty('error', 'deprecated_attachment_shape')
+  })
+
+  it('does not reject payload with only amp-v1 attachments (passes guard)', async () => {
+    mockAuthenticated()
+    const body = buildRouteBody([
+      {
+        kind: 'amp-v1',
+        id: 'att_456_def',
+        filename: 'new.txt',
+        content_type: 'text/plain',
+        size: 200,
+        digest: 'b'.repeat(64),
+        url: 'https://x.example/d',
+        scan_status: 'clean',
+        uploaded_at: '2026-05-09T10:00:00Z',
+        expires_at: '2026-05-16T10:00:00Z',
+      },
+    ])
+
+    const result = await routeMessage(body, 'Bearer test-key', null, null, null, null)
+
+    // Guard does NOT fire; downstream may still 5xx without full mock setup —
+    // we only assert the legacy-reject branch is not the failure mode.
+    expect(result.status).not.toBe(400)
+    expect(result.data).not.toHaveProperty('error', 'deprecated_attachment_shape')
+  })
+
+  it('does not reject payload with no attachments field at all', async () => {
+    mockAuthenticated()
+    const body = buildRouteBody(undefined)
+
+    const result = await routeMessage(body, 'Bearer test-key', null, null, null, null)
+
+    expect(result.data).not.toHaveProperty('error', 'deprecated_attachment_shape')
   })
 })
