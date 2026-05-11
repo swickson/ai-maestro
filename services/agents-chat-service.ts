@@ -157,10 +157,12 @@ export async function getConversationMessages(
     }
   }
 
-  // Capture tmux to detect prompts waiting for input
+  // Capture tmux to detect prompts waiting for input. Use the cloud-aware
+  // agentSessionReady primitive — agent.sessions[] is tmux-host-enumerated
+  // and wrongly reports offline for cloud agents whose tmux runs in-container.
   let terminalPrompt: string | null = null
   let promptType: 'permission' | 'input' | null = null
-  const hasOnlineSession = agent.sessions?.some((s: any) => s.status === 'online')
+  const hasOnlineSession = await agentSessionReady(agent)
   if (hasOnlineSession) {
     const sessionName = agent.name || agent.alias
     if (sessionName) {
@@ -257,7 +259,11 @@ export async function sendChatMessage(
     return invalidRequest('Agent has no session name')
   }
 
-  const hasOnlineSession = agent.sessions?.some(s => s.status === 'online')
+  // Use the cloud-aware agentSessionReady primitive — agent.sessions[] is
+  // tmux-host-enumerated and wrongly reports offline for cloud agents whose
+  // tmux runs in-container. The PR #115 dispatch path is already cloud-aware;
+  // this pre-dispatch gate was missed in that migration.
+  const hasOnlineSession = await agentSessionReady(agent)
   if (!hasOnlineSession) {
     return invalidRequest('Agent session is not online')
   }
