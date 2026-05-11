@@ -19,8 +19,16 @@ export const CONTAINER_CWD = '/workspace'
 
 // Encoded form of CONTAINER_CWD as Claude Code writes its projects subdir
 // (slashes → hyphens). Sibling const so the cloud-branch path lookup does not
-// re-derive on every call. Invariant pinned by tests/lib/container-utils.test.ts.
+// re-derive on every call. Invariant pinned by tests/container-utils.test.ts.
 export const CONTAINER_CWD_ENCODED = '-workspace'
+
+// Gemini CLI does NOT slash-encode the cwd — its per-project mapping
+// (~/.gemini/projects.json) stores `'/workspace': 'workspace'` and the
+// per-project chats dir is `<HOME>/.gemini/tmp/workspace/chats/`. Sibling
+// const so the cloud-branch path lookup for cloud-Gemini agents has a
+// single source of truth that does not drift from CONTAINER_CWD.
+// Empirically pinned on Holmes Mason/Optic 2026-05-11 (kanban d937c33d).
+export const CONTAINER_CWD_GEMINI_PROJECT = 'workspace'
 
 export type ContainerStatus =
   | 'running'

@@ -17,6 +17,7 @@ import { generateKeyPair, saveKeyPair } from '@/lib/amp-keys'
 import { registerAgent } from '@/services/amp-service'
 import { type ServiceResult, missingField, operationFailed, invalidRequest, invalidState, notFound, gone, serviceError } from '@/services/service-errors'
 import type { Agent, SandboxMount } from '@/types/agent'
+import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
 
 const execAsync = promisify(exec)
 
@@ -876,6 +877,33 @@ export function buildCloudClaudeReadthroughMounts(
   ]
 }
 
+// Sister-of buildCloudClaudeReadthroughMounts for cloud-Gemini agents.
+// Gemini CLI writes conversation JSONL to ~/.gemini/tmp/<project>/chats/
+// where <project> is the value from ~/.gemini/projects.json keyed by cwd
+// (CONTAINER_CWD_GEMINI_PROJECT = "workspace" for the standard /workspace
+// bind). Empirically pinned via Holmes Mason/Optic 2026-05-11 (kanban
+// d937c33d). Applied to ALL cloud agents regardless of program — the mount
+// is harmless for non-Gemini agents (claude/codex never write under
+// .gemini/tmp/), keeping the mount-set shape uniform.
+export function buildCloudGeminiReadthroughMounts(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount[] {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  return [
+    {
+      hostPath: path.join(agentDir, 'gemini-chats'),
+      containerPath: path.posix.join(
+        CONTAINER_HOME,
+        '.gemini',
+        'tmp',
+        CONTAINER_CWD_GEMINI_PROJECT,
+        'chats',
+      ),
+    },
+  ]
+}
+
 // Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
 // + the repo-script CLI dir (meeting-send / meeting-task / meeting-read,
 // mounted at /home/claude/.local/share/aimaestro/cli) ahead of the standard
@@ -1198,13 +1226,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
 
   const ampMounts = buildAmpCommonMounts(agentId)
   const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
+  const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
 
   // Pre-create host-side dirs that are about to be bind-mounted. If the host
   // path doesn't exist, docker creates it as a root-owned empty directory,
   // which (a) leaves the container's claude (uid 1000) unable to write keys
   // and (b) silently masks the missing-identity failure. We create them as the
   // server process user (uid matches the container's claude user by convention).
-  for (const m of [...ampMounts, ...claudeReadthroughMounts]) {
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts]) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -1268,6 +1297,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       ...claudeReadthroughMounts,
       buildCloudGeminiSettingsMount(agentId),
       buildCloudGeminiOAuthMount(agentId),
+      ...geminiReadthroughMounts,
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
