@@ -1186,6 +1186,14 @@ describe('migrateAgentPersistence', () => {
       '[projects."/workspace"]\ntrust_level = "trusted"\n', { mode: 0o600 })
     fs.writeFileSync(path.join(fromDir, 'gemini-oauth-creds.json'),
       '{"access_token":"ya29.rotated-by-gemini","refresh_token":"r-pred","token_type":"Bearer"}\n', { mode: 0o600 })
+    // PR #130 (kanban 2853e62d) directory mounts — chat history + hook state
+    // that must carry forward on /recreate with persistFromAgentId.
+    fs.mkdirSync(path.join(fromDir, 'claude-projects', '-workspace'), { recursive: true })
+    fs.writeFileSync(path.join(fromDir, 'claude-projects', '-workspace', 'pred-session.jsonl'),
+      '{"type":"user","message":{"content":"history from predecessor"},"timestamp":"2026-05-11T00:00:00Z"}\n', { mode: 0o600 })
+    fs.mkdirSync(path.join(fromDir, 'chat-state'), { recursive: true })
+    fs.writeFileSync(path.join(fromDir, 'chat-state', 'abc123def456.json'),
+      '{"status":"waiting_for_input","updatedAt":"2026-05-11T00:00:00Z"}\n', { mode: 0o600 })
   })
 
   afterEach(() => {
@@ -1212,6 +1220,29 @@ describe('migrateAgentPersistence', () => {
     const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'gh-config', 'hosts.yml')
     expect(fs.existsSync(dst)).toBe(true)
     expect(fs.readFileSync(dst, 'utf8')).toContain('github.com:')
+  })
+
+  it('migrates claude-projects/ recursively so chat history survives recreate-with-persistFromAgentId (kanban bf012c03)', () => {
+    // PR #130 added claude-projects/ as a per-agent bind-mount source; without
+    // the dirAssets extension to migrateAgentPersistence, /recreate with
+    // persistFromAgentId would land the new UUID on an empty claude-projects/
+    // and the operator's chat history would reset to "0 messages" in the
+    // chat panel despite the auth and onboarding state surviving.
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'claude-projects', '-workspace', 'pred-session.jsonl')
+    expect(fs.existsSync(dst)).toBe(true)
+    expect(fs.readFileSync(dst, 'utf8')).toContain('history from predecessor')
+  })
+
+  it('migrates chat-state/ recursively so hook output survives recreate-with-persistFromAgentId (kanban bf012c03)', () => {
+    // Same shape as claude-projects, for the ai-maestro hook output —
+    // permission-prompts + pending-state pinned by the most recent hook write
+    // would otherwise reset to empty on every recreate.
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'chat-state', 'abc123def456.json')
+    expect(fs.existsSync(dst)).toBe(true)
+    const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
+    expect(body.status).toBe('waiting_for_input')
   })
 
   it('preserves restrictive 0600 mode on copied JSON files', () => {
