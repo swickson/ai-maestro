@@ -193,3 +193,17 @@ describe('removeContainer', () => {
     await expect(removeContainer('aim-missing')).rejects.toThrow(/no such container/i)
   })
 })
+
+describe('CONTAINER_CWD constants', () => {
+  it('CONTAINER_CWD_ENCODED matches the slashes-to-hyphens encoding of CONTAINER_CWD', async () => {
+    // Invariant: Claude Code encodes its cwd as the projects subdir name by
+    // replacing slashes with hyphens. CONTAINER_CWD_ENCODED is the
+    // pre-computed sibling so the cloud-branch JSONL lookup doesn't
+    // re-derive on every read. If anyone edits CONTAINER_CWD without
+    // re-encoding, this test fails — catches drift before it ships.
+    const { CONTAINER_CWD, CONTAINER_CWD_ENCODED } = await vi.importActual<
+      typeof import('@/lib/container-utils')
+    >('@/lib/container-utils')
+    expect(CONTAINER_CWD_ENCODED).toBe(CONTAINER_CWD.replace(/\//g, '-'))
+  })
+})

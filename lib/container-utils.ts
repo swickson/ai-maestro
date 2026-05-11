@@ -11,6 +11,17 @@ import { promisify } from 'util'
 
 const execAsync = promisify(exec)
 
+// Cloud-agent container working directory — the host's working-directory bind
+// is mounted at this path, so Claude Code (and any other in-container TUI)
+// launches with cwd=/workspace regardless of the host workingDirectory string.
+// Used by getConversationMessages cloud branch + the chat-state hook hash.
+export const CONTAINER_CWD = '/workspace'
+
+// Encoded form of CONTAINER_CWD as Claude Code writes its projects subdir
+// (slashes → hyphens). Sibling const so the cloud-branch path lookup does not
+// re-derive on every call. Invariant pinned by tests/lib/container-utils.test.ts.
+export const CONTAINER_CWD_ENCODED = '-workspace'
+
 export type ContainerStatus =
   | 'running'
   | 'paused'
