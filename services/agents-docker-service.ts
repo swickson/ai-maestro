@@ -835,6 +835,31 @@ export function buildCloudClaudePersistMounts(
   ]
 }
 
+// Directory mounts that expose in-container Claude state (conversation JSONL
+// + ai-maestro hook chat-state) back through to the host fs so the maestro
+// server can read them with plain fs.readFileSync. Without these, the chat
+// panel renders empty for cloud agents because getConversationMessages reads
+// the operator's host ~/.claude/projects/ which has no record of the
+// in-container Claude run. Per-agent isolation — each cloud agent gets its
+// own host-side dir. mkdir-pre-create ensures docker does not auto-create
+// a root-owned dir that the in-container claude (uid 1000) cannot write to.
+export function buildCloudClaudeReadthroughMounts(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount[] {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  return [
+    {
+      hostPath: path.join(agentDir, 'claude-projects'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.claude', 'projects'),
+    },
+    {
+      hostPath: path.join(agentDir, 'chat-state'),
+      containerPath: path.posix.join(CONTAINER_HOME, '.aimaestro', 'chat-state'),
+    },
+  ]
+}
+
 // Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
 // + the repo-script CLI dir (meeting-send / meeting-task / meeting-read,
 // mounted at /home/claude/.local/share/aimaestro/cli) ahead of the standard
@@ -1156,13 +1181,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, body.extraEnv)
 
   const ampMounts = buildAmpCommonMounts(agentId)
+  const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
 
-  // Pre-create host-side AMP dirs that are about to be bind-mounted. If the
-  // host path doesn't exist, docker creates it as a root-owned empty directory,
+  // Pre-create host-side dirs that are about to be bind-mounted. If the host
+  // path doesn't exist, docker creates it as a root-owned empty directory,
   // which (a) leaves the container's claude (uid 1000) unable to write keys
   // and (b) silently masks the missing-identity failure. We create them as the
   // server process user (uid matches the container's claude user by convention).
-  for (const m of ampMounts) {
+  for (const m of [...ampMounts, ...claudeReadthroughMounts]) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -1223,6 +1249,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       ...ampMounts,
       buildCloudClaudeSettingsMount(agentId),
       ...buildCloudClaudePersistMounts(agentId),
+      ...claudeReadthroughMounts,
       buildCloudGeminiSettingsMount(agentId),
       buildCloudGeminiOAuthMount(agentId),
       buildCloudCodexVersionMount(agentId),
