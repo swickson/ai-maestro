@@ -781,17 +781,33 @@ export function migrateAgentPersistence(
     }
   }
 
-  // gh-config is a directory tree (config.yml + hosts.yml at minimum). Use
-  // fs.cpSync recursively so any nested gh state (extensions/, etc.) carries
-  // forward without us having to enumerate every gh-internal layout choice.
-  const ghSrc = path.join(fromDir, 'gh-config')
-  const ghDst = path.join(toDir, 'gh-config')
-  try {
-    if (fs.existsSync(ghSrc) && fs.statSync(ghSrc).isDirectory()) {
-      fs.cpSync(ghSrc, ghDst, { recursive: true })
+  // Directory assets carried forward recursively. Each is a per-agent host
+  // dir bind-mounted into the container (see buildCloudClaudePersistMounts +
+  // buildCloudClaudeReadthroughMounts). Without these, /recreate with
+  // persistFromAgentId destroys: gh-config (config.yml + hosts.yml + any
+  // extensions/); claude-projects (Claude Code conversation JSONL — chat
+  // history would reset to empty on every recreate); chat-state (ai-maestro
+  // hook output — permission-prompts + pending-state pinned by the most
+  // recent hook write would reset to empty on every recreate).
+  const dirAssets = [
+    'gh-config',
+    // PR #130 (kanban 2853e62d) added these as per-agent bind-mount sources
+    // exposed back through to the host. Migrate forward so chat-history +
+    // hook-state survive UUID rotation, mirroring the claude-credentials /
+    // claude-home / gh-config carry-forward semantics on the file side.
+    'claude-projects',
+    'chat-state',
+  ]
+  for (const name of dirAssets) {
+    const src = path.join(fromDir, name)
+    const dst = path.join(toDir, name)
+    try {
+      if (fs.existsSync(src) && fs.statSync(src).isDirectory()) {
+        fs.cpSync(src, dst, { recursive: true })
+      }
+    } catch (err) {
+      console.warn(`[migrateAgentPersistence] copy ${name}:`, err instanceof Error ? err.message : err)
     }
-  } catch (err) {
-    console.warn('[migrateAgentPersistence] copy gh-config:', err instanceof Error ? err.message : err)
   }
 }
 
