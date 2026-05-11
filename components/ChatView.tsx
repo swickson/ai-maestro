@@ -280,7 +280,11 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
     return content.filter(block => block.type === 'tool_use')
   }
 
-  const isOnline = agent.sessions?.some(s => s.status === 'online')
+  // Use agent.session (singular) — populated by listAgents from heartbeat-derived
+  // sessionStatus, so cloud agents (no host tmux but heartbeating) render as online.
+  // agent.sessions[0] would be tmux-derived and wrongly mark them offline.
+  // Matches AgentBadge.tsx:111-116 precedent.
+  const isOnline = agent.session?.status === 'online'
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-gray-900">

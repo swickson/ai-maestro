@@ -115,12 +115,14 @@ describe('sendChatMessage', () => {
     expect(mockRuntime.sendKeys).not.toHaveBeenCalled()
   })
 
-  it('returns 400 when agent has no online session', async () => {
+  it('returns 400 when agent has no online session (host agent, tmux session missing)', async () => {
     mockAgentRegistry.getAgent.mockReturnValue({
       id: 'agent-uuid-1',
       name: 'test-agent',
       sessions: [{ status: 'offline' }],
     })
+    // Gate is now agentSessionReady which for host agents calls runtime.sessionExists.
+    mockRuntime.sessionExists.mockResolvedValueOnce(false)
     const result = await sendChatMessage('agent-uuid-1', 'hello')
     expect(result.status).toBe(400)
     expect(mockRuntime.cancelCopyMode).not.toHaveBeenCalled()
@@ -164,6 +166,30 @@ describe('sendChatMessage', () => {
     await sendChatMessage('cloud-uuid', 'ordering test')
 
     expect(callOrder).toEqual(['cancelCopyModeInContainer', 'sendKeysToContainer'])
+  })
+
+  // Regression: cloud agents have sessions[].status='offline' because tmux runs
+  // in-container, not on the host. The pre-dispatch gate previously did
+  // agent.sessions?.some(s => s.status === 'online') which 400'd cloud agents
+  // before sendKeysToAgent could dispatch. Switched to agentSessionReady which
+  // recognizes containerName as proxy-for-ready.
+  it('cloud agent: gate passes when sessions[] reports offline (cloud-Luke shape)', async () => {
+    mockAgentRegistry.getAgent.mockReturnValue({
+      id: 'cloud-uuid',
+      name: 'cloud-luke',
+      sessions: [{ status: 'offline' }],
+      deployment: { type: 'cloud', cloud: { containerName: 'aim-cloud-luke' } },
+    })
+
+    const result = await sendChatMessage('cloud-uuid', 'gated send')
+
+    expect(result.status).toBe(200)
+    expect(mockContainerUtils.sendKeysToContainer).toHaveBeenCalledWith(
+      'aim-cloud-luke',
+      'cloud-luke',
+      'gated send',
+      { literal: true, enter: true },
+    )
   })
 })
 
