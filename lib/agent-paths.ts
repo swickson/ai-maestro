@@ -37,8 +37,10 @@ export interface AgentPathInput {
 // Cloud-agent provider — normalized from agent.program (free-form values like
 // 'claude code', 'claude-code', 'gemini', 'codex' across the registry). The
 // resolver only needs to know "is this Claude, Gemini, or Codex" so it can
-// pick the right per-program bind-mount source.
-function cloudProgram(agent: AgentPathInput): 'claude' | 'gemini' | 'codex' {
+// pick the right per-program bind-mount source. Exported so the chat-service
+// can branch on the same single source of truth instead of re-deriving the
+// substring match inline.
+export function cloudProgram(agent: AgentPathInput): 'claude' | 'gemini' | 'codex' {
   const raw = (agent.program || '').toLowerCase()
   if (raw.includes('gemini')) return 'gemini'
   if (raw.includes('codex')) return 'codex'

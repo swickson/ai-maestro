@@ -14,7 +14,7 @@ import {
   wrapAsBracketedPaste,
 } from '@/lib/meeting-inject-queue'
 import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
-import { resolveConversationDir, resolveChatStateFile } from '@/lib/agent-paths'
+import { resolveConversationDir, resolveChatStateFile, cloudProgram } from '@/lib/agent-paths'
 import { capturePaneFromContainer } from '@/lib/container-utils'
 import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
 import * as fs from 'fs'
@@ -96,7 +96,7 @@ export async function getConversationMessages(
 
   const sinceTime = since ? new Date(since).getTime() : 0
   const messages: any[] = []
-  const isGemini = (agent.program || '').toLowerCase().includes('gemini')
+  const isGemini = cloudProgram(agent) === 'gemini'
 
   for (const line of lines) {
     try {
