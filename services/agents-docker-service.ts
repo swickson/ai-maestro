@@ -798,6 +798,10 @@ export function migrateAgentPersistence(
     // claude-home / gh-config carry-forward semantics on the file side.
     'claude-projects',
     'chat-state',
+    // PR #132 (kanban d937c33d) sister mount for cloud-Gemini transcript;
+    // same survival-on-recreate semantic as claude-projects but for the
+    // ~/.gemini/tmp/<project>/chats/ bind-mount source.
+    'gemini-chats',
   ]
   for (const name of dirAssets) {
     const src = path.join(fromDir, name)
