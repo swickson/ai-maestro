@@ -14,8 +14,9 @@ import {
   wrapAsBracketedPaste,
 } from '@/lib/meeting-inject-queue'
 import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
-import { resolveConversationDir, resolveChatStateFile } from '@/lib/agent-paths'
+import { resolveConversationDir, resolveChatStateFile, cloudProgram } from '@/lib/agent-paths'
 import { capturePaneFromContainer } from '@/lib/container-utils'
+import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
 import * as fs from 'fs'
 import * as path from 'path'
 import { type ServiceResult, notFound, invalidRequest, invalidField, missingField } from '@/services/service-errors'
@@ -95,34 +96,41 @@ export async function getConversationMessages(
 
   const sinceTime = since ? new Date(since).getTime() : 0
   const messages: any[] = []
+  const isGemini = cloudProgram(agent) === 'gemini'
 
   for (const line of lines) {
     try {
-      const message = JSON.parse(line)
+      const raw = JSON.parse(line)
 
-      if (since && message.timestamp) {
-        const msgTime = new Date(message.timestamp).getTime()
+      if (since && raw.timestamp) {
+        const msgTime = new Date(raw.timestamp).getTime()
         if (msgTime <= sinceTime) continue
       }
 
-      // Extract thinking blocks from assistant messages
-      if (message.type === 'assistant' && message.message?.content) {
-        const content = message.message.content
+      if (isGemini) {
+        const normalized = normalizeGeminiLine(raw)
+        if (normalized) messages.push(normalized)
+        continue
+      }
+
+      // Claude shape — preserve thinking-block extraction + raw message push
+      if (raw.type === 'assistant' && raw.message?.content) {
+        const content = raw.message.content
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'thinking' && block.thinking) {
               messages.push({
                 type: 'thinking',
                 thinking: block.thinking,
-                timestamp: message.timestamp,
-                uuid: message.uuid
+                timestamp: raw.timestamp,
+                uuid: raw.uuid
               })
             }
           }
         }
       }
 
-      messages.push(message)
+      messages.push(raw)
     } catch {
       // Skip malformed lines
     }

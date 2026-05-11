@@ -1194,6 +1194,11 @@ describe('migrateAgentPersistence', () => {
     fs.mkdirSync(path.join(fromDir, 'chat-state'), { recursive: true })
     fs.writeFileSync(path.join(fromDir, 'chat-state', 'abc123def456.json'),
       '{"status":"waiting_for_input","updatedAt":"2026-05-11T00:00:00Z"}\n', { mode: 0o600 })
+    // PR #132 (kanban d937c33d) gemini-chats sister mount — same survival
+    // semantic as claude-projects but for cloud-Gemini transcript files.
+    fs.mkdirSync(path.join(fromDir, 'gemini-chats'), { recursive: true })
+    fs.writeFileSync(path.join(fromDir, 'gemini-chats', 'session-2026-05-11-abc12345.jsonl'),
+      '{"id":"evt-1","type":"user","content":[{"text":"history from gemini predecessor"}],"timestamp":"2026-05-11T00:00:00Z"}\n', { mode: 0o600 })
   })
 
   afterEach(() => {
@@ -1243,6 +1248,17 @@ describe('migrateAgentPersistence', () => {
     expect(fs.existsSync(dst)).toBe(true)
     const body = JSON.parse(fs.readFileSync(dst, 'utf8'))
     expect(body.status).toBe('waiting_for_input')
+  })
+
+  it('migrates gemini-chats/ recursively so cloud-Gemini transcripts survive recreate-with-persistFromAgentId (kanban d937c33d closes-the-loop)', () => {
+    // Sister to claude-projects for the Gemini per-project chats dir.
+    // Without this, recreating a cloud-Gemini agent (Mason/Optic) with
+    // persistFromAgentId resets the chat panel to "0 messages" the same
+    // way PR #131 fixed for cloud-Claude agents.
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'gemini-chats', 'session-2026-05-11-abc12345.jsonl')
+    expect(fs.existsSync(dst)).toBe(true)
+    expect(fs.readFileSync(dst, 'utf8')).toContain('history from gemini predecessor')
   })
 
   it('preserves restrictive 0600 mode on copied JSON files', () => {

@@ -53,6 +53,45 @@ describe('resolveConversationDir', () => {
     )
   })
 
+  it('cloud Gemini agent: derives from per-agent gemini-chats path, ignores host workingDirectory (kanban d937c33d)', () => {
+    const agent = {
+      id: 'a26f6822-fake-uuid-mason-on-holmes',
+      program: 'gemini',
+      workingDirectory: '/home/operator/code/n4-armory',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-ops-exec-mason' } },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    expect(dir).toBe(
+      path.join(
+        HOST_HOME,
+        '.aimaestro',
+        'agents',
+        'a26f6822-fake-uuid-mason-on-holmes',
+        'gemini-chats',
+      ),
+    )
+  })
+
+  it('cloud Codex agent: returns null (deferred to its own kanban when Vance migrates to Codex)', () => {
+    const agent = {
+      id: 'future-codex-uuid',
+      program: 'codex',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-future-codex' } },
+    }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBeNull()
+  })
+
+  it('cloud agent with no explicit program defaults to claude path', () => {
+    const agent = {
+      id: 'pre-pr-117-no-program-field',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-legacy' } },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    expect(dir).toBe(
+      path.join(HOST_HOME, '.aimaestro', 'agents', 'pre-pr-117-no-program-field', 'claude-projects', CONTAINER_CWD_ENCODED),
+    )
+  })
+
   it('host agent: returns null when no working directory is configured', () => {
     const agent = {
       id: 'agent-host-2',
