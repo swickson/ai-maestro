@@ -406,6 +406,15 @@ describe('provisionCloudClaudeConfig', () => {
     expect(settings.skipDangerousModePermissionPrompt).toBe(true)
   })
 
+  it('seeds statusLine pointing at the container-side amp-statusline.sh path (host/cloud UX-parity, kanban 172e170d)', () => {
+    const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(settings.statusLine).toEqual({
+      type: 'command',
+      command: '/home/claude/.local/share/aimaestro/cli/amp-statusline.sh',
+    })
+  })
+
   it('does not reference the host repo path in the generated settings', () => {
     const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
     const body = fs.readFileSync(settingsPath, 'utf8')
@@ -1359,11 +1368,18 @@ describe('buildAmpCommonEnv', () => {
     expect(buildAmpCommonEnv(uuid, name, hostUrl)).toEqual({
       CLAUDE_AGENT_ID: uuid,
       CLAUDE_AGENT_NAME: name,
+      AMP_AGENT_ID: uuid,
       AMP_DIR: `/home/claude/.agent-messaging/agents/${uuid}`,
       AMP_MAESTRO_URL: hostUrl,
       PATH: '/home/claude/.local/bin:/home/claude/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',
     })
+  })
+
+  it('aliases AMP_AGENT_ID = CLAUDE_AGENT_ID for amp-statusline.sh priority-1 resolution (kanban 172e170d)', () => {
+    const env = buildAmpCommonEnv(uuid, name, hostUrl)
+    expect(env.AMP_AGENT_ID).toBe(env.CLAUDE_AGENT_ID)
+    expect(env.AMP_AGENT_ID).toBe(uuid)
   })
 
   it('puts the AMP CLI dir ahead of the standard path', () => {
