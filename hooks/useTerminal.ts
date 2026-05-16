@@ -181,6 +181,24 @@ export function useTerminal(options: UseTerminalOptions = {}) {
         terminal.loadAddon(webglAddon)
         webglAddonRef.current = webglAddon
         console.log(`[Terminal] Initialized with WebGL renderer for session ${optionsRef.current.sessionId}`)
+
+        // Refit after WebGL renderer commits its cell metrics. fit() at the
+        // earlier call site ran with the canvas renderer's cell measurements;
+        // WebGL can produce different cell-width values (subpixel rendering,
+        // DPR rounding), which leaves the cell-grid sized for canvas dims while
+        // cells render at WebGL widths — visible-viewport vs grid-width
+        // mismatch, especially in cloud-agent dashboards (kanban eb3e705c).
+        // requestAnimationFrame defers past the current frame so the WebGL
+        // renderer has committed its internal dimensions before fit re-measures.
+        // The existing terminal.onResize listener in TerminalView picks up any
+        // cols/rows delta and emits a resize message to the PTY.
+        requestAnimationFrame(() => {
+          try {
+            fitAddon.fit()
+          } catch {
+            // Renderer not ready — first ResizeObserver fire will catch it.
+          }
+        })
       } catch (e) {
         console.log(`[Terminal] Initialized with canvas renderer for session ${optionsRef.current.sessionId}`)
       }
