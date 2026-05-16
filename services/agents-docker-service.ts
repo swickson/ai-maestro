@@ -278,8 +278,24 @@ export function provisionCloudClaudeConfig(
   // Combined with the RW mount below, this also lets claude write OTHER
   // settings.json keys (allowedTools, model preferences) and have them
   // persist across the container's lifetime.
+  // statusLine: Claude Code renders the configured command's stdout as the
+  // 2-line status block between the prompt and the tmux status bar (agent
+  // identity + unread count on line 1, model + ctx% + cost on line 2). Host
+  // agents have this wired via the operator's ~/.claude/settings.json. Cloud
+  // agents had a blank where this block sits because the seeded settings.json
+  // omitted statusLine — host/cloud UX-parity gap (kanban 172e170d). Ships
+  // amp-statusline.sh via the existing scripts/ bind mount at
+  // /home/claude/.local/share/aimaestro/cli/ (buildAmpCommonMounts line ~178,
+  // sister to meeting-send.sh / meeting-task.sh shipping pattern from 0d80aed7).
+  // Container env (buildAmpCommonEnv) exposes AMP_AGENT_ID so the script's
+  // priority-1 resolution fires without needing the host-side .index.json
+  // (not mounted per-agent).
   const settings = {
     skipDangerousModePermissionPrompt: true,
+    statusLine: {
+      type: 'command',
+      command: '/home/claude/.local/share/aimaestro/cli/amp-statusline.sh',
+    },
     hooks: {
       Notification: [
         {
@@ -933,6 +949,13 @@ export function buildAmpCommonEnv(agentId: string, agentName: string, hostUrl: s
   return {
     CLAUDE_AGENT_ID: agentId,
     CLAUDE_AGENT_NAME: agentName,
+    // AMP_AGENT_ID aliases CLAUDE_AGENT_ID for amp-statusline.sh's priority-1
+    // resolution path (kanban 172e170d). The script checks AMP_AGENT_ID first
+    // then falls back to CLAUDE_AGENT_NAME + an index lookup that requires
+    // ~/.agent-messaging/.index.json — but only the per-agent subdir is bind-
+    // mounted into the container, not the index. Direct AMP_AGENT_ID bypasses
+    // the index entirely and reads the per-agent config.json (which IS mounted).
+    AMP_AGENT_ID: agentId,
     AMP_DIR: path.posix.join(CONTAINER_HOME, '.agent-messaging', 'agents', agentId),
     AMP_MAESTRO_URL: hostUrl,
     PATH: CONTAINER_PATH,
