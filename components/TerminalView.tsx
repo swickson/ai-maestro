@@ -216,19 +216,21 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
         sendMessage(resizeMsg)
       }
 
-      // Defensive post-mount refit: layout transitions (sidebar render-in,
-      // panel mount, flex re-balance) can complete after the immediate fit()
-      // above, leaving terminal.cols measured against pre-settle parent width.
+      // Defensive post-mount refit chain: layout transitions (sidebar
+      // render-in, panel mount, flex re-balance, prior-agent terminal
+      // unmount) can complete after the immediate fit() above, leaving
+      // terminal.cols measured against pre-settle parent width.
       // ResizeObserver catches user-driven resizes (dragging sidebar handle,
-      // collapsing prompt-builder) but mis-fires the initial mount-time race.
-      // Empirical (kanban eb3e705c): clicking onto a cloud agent renders cells
-      // overflowing a narrower parent → text appears clipped/shifted; dragging
-      // the sidebar handle 10px corrects it. Schedule a deferred fit+emit at
-      // 500ms to catch the settled layout. Always emit regardless of cols/rows
-      // delta — tmux pty may have been spawned at stale cols from the
-      // immediate-fit, and re-broadcasting current dims forces SIGWINCH at
-      // the right width.
-      setTimeout(() => {
+      // collapsing prompt-builder) but mis-fires the initial mount-time
+      // race. Empirical (kanban eb3e705c): single 500ms refit (PR #137)
+      // caught some click-cycles but missed others — layout settle time is
+      // non-deterministic (varies with prior-agent unmount timing).
+      // Chained refits at multiple delays cover the range of settle
+      // profiles without expensive polling.
+      // Always emit the resize message regardless of cols/rows delta — tmux
+      // pty may have been spawned at stale cols; re-broadcasting current
+      // dims forces SIGWINCH + Claude redraw at the right width.
+      const refit = () => {
         const t = terminalInstanceRef.current
         if (!t) return
         try {
@@ -237,7 +239,10 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
         } catch (e) {
           console.warn('[Terminal] Deferred post-mount refit failed:', e)
         }
-      }, 500)
+      }
+      setTimeout(refit, 100)
+      setTimeout(refit, 500)
+      setTimeout(refit, 1500)
     },
     onClose: () => {
       // Notify parent of connection status change

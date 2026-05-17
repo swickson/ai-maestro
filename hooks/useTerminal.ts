@@ -103,6 +103,15 @@ export function useTerminal(options: UseTerminalOptions = {}) {
       customGlyphs: true,
       macOptionIsMeta: true,
       rightClickSelectsWord: true,
+      // Required for Unicode11Addon to load — uses xterm.js proposed API for
+      // character-width classification. Without this, the addon's activate()
+      // throws "You must set the allowProposedApi option to true to use
+      // proposed API" and gets caught by the try-catch below, silently
+      // leaving xterm.js with default character-width measurements that
+      // miscategorize CJK + emoji + box-drawing characters and cascade into
+      // cell-grid sizing miscalculations. (Surfaced empirically 2026-05-17
+      // during eb3e705c cloud-agent terminal rendering diagnosis.)
+      allowProposedApi: true,
     })
 
     // Initialize addons
