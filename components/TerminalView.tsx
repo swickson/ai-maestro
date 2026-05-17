@@ -106,9 +106,21 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
 
   // Store terminal in a ref so the WebSocket callback can access the current value
   const terminalInstanceRef = useRef<typeof terminal>(null)
+  // Tracks pending post-mount-refit setTimeout IDs so they can be cancelled on
+  // WS close or unmount. Without this, the chained 100/500/1500ms refits from
+  // onOpen below would still fire after the component unmounts, calling
+  // fitTerminal()/sendMessage() on a disposed terminal — the in-handler
+  // null-guard catches it, but try-catch silently swallows the resulting log,
+  // and pending sendMessage calls go to a closed WS. Kanban 3d156bfa.
+  const refitTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
   useEffect(() => {
     terminalInstanceRef.current = terminal
+    return () => {
+      terminalInstanceRef.current = null
+      refitTimeoutsRef.current.forEach(clearTimeout)
+      refitTimeoutsRef.current = []
+    }
   }, [terminal])
 
   const focusTerminal = useCallback(() => {
@@ -240,11 +252,17 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
           console.warn('[Terminal] Deferred post-mount refit failed:', e)
         }
       }
-      setTimeout(refit, 100)
-      setTimeout(refit, 500)
-      setTimeout(refit, 1500)
+      refitTimeoutsRef.current = [
+        setTimeout(refit, 100),
+        setTimeout(refit, 500),
+        setTimeout(refit, 1500),
+      ]
     },
     onClose: () => {
+      // Cancel any pending post-mount refits — the next onOpen will reschedule
+      // a fresh chain against the new connection's layout. Kanban 3d156bfa.
+      refitTimeoutsRef.current.forEach(clearTimeout)
+      refitTimeoutsRef.current = []
       // Notify parent of connection status change
       onConnectionStatusChange?.(false)
     },
