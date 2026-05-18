@@ -16,6 +16,7 @@ export interface UseTerminalOptions {
 }
 
 import { debounce } from '@/lib/utils'
+import { termDiag, diagFit } from '@/lib/terminal-diag'
 
 export function useTerminal(options: UseTerminalOptions = {}) {
   const terminalRef = useRef<Terminal | null>(null)
@@ -133,17 +134,27 @@ export function useTerminal(options: UseTerminalOptions = {}) {
     // Load Unicode 11 addon for proper wide character / emoji width calculation.
     // Without this, TUI layouts (Claude Code /plan mode, box-drawing) are corrupted
     // because xterm.js miscalculates character widths for CJK and emoji.
+    const sessionIdForDiag = optionsRef.current.sessionId ?? ''
     try {
       const { Unicode11Addon } = await import('@xterm/addon-unicode11')
       const unicode11Addon = new Unicode11Addon()
       terminal.loadAddon(unicode11Addon)
       terminal.unicode.activeVersion = '11'
+      termDiag('addon-load', { addon: 'unicode11', status: 'loaded', sessionId: sessionIdForDiag })
     } catch (e) {
+      termDiag('addon-load', { addon: 'unicode11', status: 'failed', err: String(e), sessionId: sessionIdForDiag })
       console.warn(`[Terminal] Unicode11Addon not available for session ${optionsRef.current.sessionId}:`, e)
     }
 
     // Open terminal in container
     terminal.open(container)
+
+    // Wire onResize listener BEFORE the first fit so we see internal cols/rows
+    // changes from xterm.js itself (separate from our fit() calls). Debug-only
+    // via termDiag gate.
+    terminal.onResize(({ cols, rows }) => {
+      termDiag('terminal-onResize', { sessionId: sessionIdForDiag, cols, rows })
+    })
 
     // NOTE: No MutationObserver or JS-based accessibility tree hiding.
     // The accessibility tree is handled purely via CSS (pointer-events: none + opacity: 0).
@@ -151,7 +162,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
     // that disrupts xterm.js's internal rendering and breaks canvas-based text selection.
 
     // Calculate proper size using FitAddon
-    fitAddon.fit()
+    diagFit('initial-onopen', sessionIdForDiag, fitAddon, terminal, container)
 
     // Load WebGL renderer inline during initialization (not via separate effect).
     // Loading WebGL via a separate useEffect caused a race condition on agent switch:
@@ -162,6 +173,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
     // causes blank terminals that never recover. Canvas renderer is adequate for mobile.
     if (optionsRef.current.disableWebGL) {
       console.log(`[Terminal] Using canvas renderer for session ${optionsRef.current.sessionId} (WebGL disabled)`)
+      termDiag('addon-load', { addon: 'webgl', status: 'skipped-touch', sessionId: sessionIdForDiag })
     } else {
       try {
         const { WebglAddon } = await import('@xterm/addon-webgl')
@@ -169,6 +181,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
 
         webglAddon.onContextLoss(() => {
           console.warn(`[Terminal] WebGL context lost for session ${optionsRef.current.sessionId}, falling back to canvas`)
+          termDiag('webgl-context-loss', { sessionId: sessionIdForDiag })
           try { webglAddon.dispose() } catch { /* ignore */ }
           webglAddonRef.current = null
           // After WebGL disposal, xterm.js _renderer.value becomes undefined.
@@ -182,7 +195,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
           if (term && parent) {
             term.open(parent)
             if (fitAddonRef.current) {
-              try { fitAddonRef.current.fit() } catch { /* ignore */ }
+              diagFit('webgl-context-loss-recovery', sessionIdForDiag, fitAddonRef.current, term, parent)
             }
           }
         })
@@ -190,6 +203,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
         terminal.loadAddon(webglAddon)
         webglAddonRef.current = webglAddon
         console.log(`[Terminal] Initialized with WebGL renderer for session ${optionsRef.current.sessionId}`)
+        termDiag('addon-load', { addon: 'webgl', status: 'loaded', sessionId: sessionIdForDiag })
 
         // Refit after WebGL renderer commits its cell metrics. fit() at the
         // earlier call site ran with the canvas renderer's cell measurements;
@@ -203,13 +217,14 @@ export function useTerminal(options: UseTerminalOptions = {}) {
         // cols/rows delta and emits a resize message to the PTY.
         requestAnimationFrame(() => {
           try {
-            fitAddon.fit()
+            diagFit('post-webgl-raf', sessionIdForDiag, fitAddon, terminal, container)
           } catch {
             // Renderer not ready — first ResizeObserver fire will catch it.
           }
         })
       } catch (e) {
         console.log(`[Terminal] Initialized with canvas renderer for session ${optionsRef.current.sessionId}`)
+        termDiag('addon-load', { addon: 'webgl', status: 'failed', err: String(e), sessionId: sessionIdForDiag })
       }
     }
 
@@ -233,11 +248,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
     // 150ms debounce allows CSS transitions to complete before refitting
     const debouncedFit = debounce(() => {
       if (fitAddonRef.current && terminalRef.current) {
-        try {
-          fitAddonRef.current.fit()
-        } catch (e) {
-          console.warn('[Terminal] Fit failed during resize:', e)
-        }
+        diagFit('resize-observer', sessionIdForDiag, fitAddonRef.current, terminalRef.current, container)
       }
     }, 150)
 
@@ -381,10 +392,11 @@ export function useTerminal(options: UseTerminalOptions = {}) {
     }
   }, [])
 
-  const fitTerminal = useCallback(() => {
-    if (fitAddonRef.current) {
-      fitAddonRef.current.fit()
-    }
+  const fitTerminal = useCallback((source: string = 'fitTerminal') => {
+    if (!fitAddonRef.current) return
+    const sessionId = optionsRef.current.sessionId ?? ''
+    const parentEl = (terminalRef.current as unknown as { element?: HTMLElement })?.element?.parentElement as HTMLElement | null
+    diagFit(source, sessionId, fitAddonRef.current, terminalRef.current, parentEl)
   }, [])
 
   const clearTerminal = useCallback(() => {
