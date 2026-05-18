@@ -201,14 +201,23 @@ wss.on('connection', (ws, req) => {
     // Send current screen content to new client
     exec(`tmux capture-pane -t "${sessionKey}" -p -e -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
       .then(({ stdout }) => {
-        if (stdout && ws.readyState === 1) {
-          // Send captured content
-          ws.send(stdout)
-          console.log(`  ✓ Sent ${stdout.length} bytes of history to new client`)
+        if (ws.readyState === 1) {
+          if (stdout) {
+            ws.send(stdout)
+            console.log(`  ✓ Sent ${stdout.length} bytes of history to new client`)
+          }
+          // Host/cloud parity: emit history-complete so the client runs the
+          // canonical post-history fit + PTY resize path (TerminalView's
+          // history-complete handler). Without this, cloud agents skip the
+          // post-history fit/resize that resyncs xterm grid to PTY/tmux dims.
+          ws.send(JSON.stringify({ type: 'history-complete' }))
         }
       })
       .catch((err) => {
         console.error(`  ✗ Failed to capture pane:`, err.message)
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'history-complete' }))
+        }
       })
   } else {
     console.log(`  → New session: ${sessionKey} (PTY spawn deferred until first resize)`)
@@ -250,13 +259,20 @@ wss.on('connection', (ws, req) => {
       setTimeout(() => {
         exec(`tmux capture-pane -t "${sessionKey}" -p -e -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
           .then(({ stdout }) => {
-            if (stdout && ws.readyState === 1) {
-              ws.send(stdout)
-              console.log(`  ✓ Sent ${stdout.length} bytes of initial content to first client`)
+            if (ws.readyState === 1) {
+              if (stdout) {
+                ws.send(stdout)
+                console.log(`  ✓ Sent ${stdout.length} bytes of initial content to first client`)
+              }
+              // Host/cloud parity — see reuse-PTY branch above.
+              ws.send(JSON.stringify({ type: 'history-complete' }))
             }
           })
           .catch((err) => {
             console.error(`  ✗ Failed to capture initial pane:`, err.message)
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'history-complete' }))
+            }
           })
       }, 150) // Wait for tmux attach to complete
 
