@@ -203,7 +203,7 @@ wss.on('connection', (ws, req) => {
       .then(({ stdout }) => {
         if (ws.readyState === 1) {
           if (stdout) {
-            ws.send(stdout)
+            ws.send(stdout.replace(/\n/g, '\r\n'))
             console.log(`  ✓ Sent ${stdout.length} bytes of history to new client`)
           }
           // Host/cloud parity: emit history-complete so the client runs the
@@ -261,7 +261,7 @@ wss.on('connection', (ws, req) => {
           .then(({ stdout }) => {
             if (ws.readyState === 1) {
               if (stdout) {
-                ws.send(stdout)
+                ws.send(stdout.replace(/\n/g, '\r\n'))
                 console.log(`  ✓ Sent ${stdout.length} bytes of initial content to first client`)
               }
               // Host/cloud parity — see reuse-PTY branch above.
