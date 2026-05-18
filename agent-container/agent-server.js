@@ -199,7 +199,7 @@ wss.on('connection', (ws, req) => {
     console.log(`  → Total clients connected: ${sessionData.clients.size}`)
 
     // Send current screen content to new client
-    exec(`tmux capture-pane -t "${sessionKey}" -p -e -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
+    exec(`tmux capture-pane -t "${sessionKey}" -p -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
       .then(({ stdout }) => {
         if (ws.readyState === 1) {
           if (stdout) {
@@ -257,7 +257,7 @@ wss.on('connection', (ws, req) => {
 
       // Capture and send initial screen content to first client
       setTimeout(() => {
-        exec(`tmux capture-pane -t "${sessionKey}" -p -e -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
+        exec(`tmux capture-pane -t "${sessionKey}" -p -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
           .then(({ stdout }) => {
             if (ws.readyState === 1) {
               if (stdout) {
