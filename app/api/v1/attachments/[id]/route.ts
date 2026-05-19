@@ -107,7 +107,11 @@ export async function GET(
   // canonical Tailscale URL (NOT request.nextUrl.host which captures the bind
   // address and would resolve to the recipient's loopback — kanban 1259f3a0).
   const baseUrl = getSelfHost().url
-  const url = meta.scan_status === 'clean'
+  // Both `clean` and `basic_clean` are routable per spec v0.1.2 §5 (table).
+  // We emit `basic_clean` from /confirm since we don't run AV / injection;
+  // `clean` would be set only by a future SHOULD-tier scanner.
+  const isRoutable = meta.scan_status === 'clean' || meta.scan_status === 'basic_clean'
+  const url = isRoutable
     ? buildSignedUrl(baseUrl, 'download', id, meta.expires_at)
     : null
 

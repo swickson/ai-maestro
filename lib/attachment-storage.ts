@@ -21,7 +21,10 @@ export interface AttachmentMeta {
   content_type: string
   size: number
   digest: string | null // populated after upload PUT
-  scan_status: 'pending' | 'clean' | 'suspicious' | 'rejected'
+  // `basic_clean` = passed all required MUSTs (size/digest/exec/type-match) but
+  // no AV / injection-pattern scan was run (spec v0.1.2 §5, table line 429).
+  // We don't run AV — terminal success state is `basic_clean`, not `clean`.
+  scan_status: 'pending' | 'clean' | 'basic_clean' | 'suspicious' | 'rejected'
   uploaded_at: string | null // populated after confirm
   expires_at: string
   // Audit fields
@@ -35,7 +38,18 @@ function attachRoot(): string {
 }
 
 export function ensureRoot(): void {
-  fs.mkdirSync(attachRoot(), { recursive: true, mode: 0o700 })
+  const root = attachRoot()
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+  // mkdirSync `mode` is no-op for already-existing dirs; an explicit chmod
+  // tightens an existing root that was created with looser perms (spec v0.1.2
+  // §10 requires 0700 owner-only on attachment storage).
+  try {
+    fs.chmodSync(root, 0o700)
+  } catch {
+    // chmod can fail on filesystems that don't honor POSIX perms (e.g. some
+    // Windows / network mounts). The mkdir mode is the best-effort path on
+    // those; silent fallback keeps Linux/macOS behavior strict.
+  }
 }
 
 export function attachmentDir(id: string): string {

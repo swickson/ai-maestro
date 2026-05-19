@@ -201,8 +201,12 @@ export interface AMPAttachmentV1 {
   digest: string
   /** Provider-signed download URL (HMAC-signed, embeds expires_at + att_id). */
   url: string
-  /** Scan state. `clean` until AV integration ships. */
-  scan_status: 'pending' | 'clean' | 'suspicious' | 'rejected'
+  /**
+   * Scan state. `basic_clean` is what /confirm emits today (MUSTs only,
+   * no AV / injection — spec v0.1.2 §5 table line 429). `clean` is reserved
+   * for a future SHOULD-tier scanner.
+   */
+  scan_status: 'pending' | 'clean' | 'basic_clean' | 'suspicious' | 'rejected'
   /** ISO-8601 upload completion timestamp. */
   uploaded_at: string
   /** ISO-8601 expiry. Spec mandates >=7 days from upload. Immutable post-routing. */

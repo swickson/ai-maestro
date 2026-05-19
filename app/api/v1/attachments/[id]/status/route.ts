@@ -37,7 +37,10 @@ export async function GET(
   // in a signed URL resolves to the recipient's own loopback when they try to
   // download — wrong server + wrong HMAC secret → 401 (kanban 1259f3a0).
   const baseUrl = getSelfHost().url
-  const url = meta.scan_status === 'clean'
+  // Both `clean` and `basic_clean` are routable per spec v0.1.2 §5 (table).
+  // We emit `basic_clean` from /confirm since we don't run AV / injection.
+  const isRoutable = meta.scan_status === 'clean' || meta.scan_status === 'basic_clean'
+  const url = isRoutable
     ? buildSignedUrl(baseUrl, 'download', id, meta.expires_at)
     : null
 

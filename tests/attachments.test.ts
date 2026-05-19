@@ -19,7 +19,7 @@ import * as path from 'path'
 import * as os from 'os'
 
 import { isValid, sanitize } from '@/lib/attachment-filename'
-import { sniff } from '@/lib/attachment-mime'
+import { sniff, primaryTypeMatches } from '@/lib/attachment-mime'
 import {
   signToken,
   verifyToken,
@@ -36,6 +36,7 @@ import {
   digestBlob,
   defaultExpiresAt,
   attachmentDir,
+  ensureRoot,
   type AttachmentMeta,
 } from '@/lib/attachment-storage'
 
@@ -133,6 +134,71 @@ describe('attachment-mime sniff', () => {
   it('falls back to octet-stream when declared is null', () => {
     const r = sniff(Buffer.from([0x42, 0x42, 0x42, 0x42]))
     expect(r.detected_type).toBe('application/octet-stream')
+  })
+
+  it('matched_magic is true when a magic-byte signature matches', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    expect(sniff(png).matched_magic).toBe(true)
+    const elf = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0])
+    expect(sniff(elf).matched_magic).toBe(true)
+  })
+
+  it('matched_magic is false when sniff falls back to declared/octet-stream', () => {
+    // No known magic — detected_type is just an echo of declared, which can't
+    // be used for the §5 step 3 primary-type cross-check.
+    const unknown = Buffer.from([0x42, 0x42, 0x42, 0x42])
+    expect(sniff(unknown, 'image/png').matched_magic).toBe(false)
+    expect(sniff(unknown).matched_magic).toBe(false)
+  })
+})
+
+describe('attachment-mime primaryTypeMatches (spec v0.1.2 §5 step 3)', () => {
+  it('matches when sniffed and declared share primary type', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const sniffed = sniff(png, 'image/png')
+    expect(primaryTypeMatches('image/png', sniffed, png.length)).toBe(true)
+    // image/png declared, image/gif sniffed — same primary type `image`,
+    // counts as a match at primary-type level per spec.
+    const gif = Buffer.from([0x47, 0x49, 0x46, 0x38, 0, 0, 0, 0])
+    const gifSniffed = sniff(gif, 'image/png')
+    expect(primaryTypeMatches('image/png', gifSniffed, gif.length)).toBe(true)
+  })
+
+  it('rejects mismatched primary type when magic was matched', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const sniffed = sniff(png, 'text/plain')
+    expect(primaryTypeMatches('text/plain', sniffed, png.length)).toBe(false)
+    const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0, 0, 0, 0])
+    const pdfSniffed = sniff(pdf, 'image/png')
+    expect(primaryTypeMatches('image/png', pdfSniffed, pdf.length)).toBe(false)
+  })
+
+  it('exempts application/octet-stream declarations', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const sniffed = sniff(png, 'application/octet-stream')
+    expect(primaryTypeMatches('application/octet-stream', sniffed, png.length)).toBe(true)
+  })
+
+  it('exempts empty files (0 bytes)', () => {
+    const empty = Buffer.alloc(0)
+    const sniffed = sniff(empty, 'image/png')
+    expect(primaryTypeMatches('image/png', sniffed, 0)).toBe(true)
+  })
+
+  it('exempts unsniffable content (no magic match — cannot disprove declaration)', () => {
+    // Spec §5 step 3 requires magic bytes to disagree with declared. If we
+    // can't sniff anything, we can't reject — declared stands.
+    const unknown = Buffer.from([0x42, 0x42, 0x42, 0x42])
+    const sniffed = sniff(unknown, 'text/plain')
+    expect(sniffed.matched_magic).toBe(false)
+    expect(primaryTypeMatches('text/plain', sniffed, unknown.length)).toBe(true)
+  })
+
+  it('treats null/missing declared as octet-stream → exempt', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const sniffed = sniff(png)
+    expect(primaryTypeMatches(null, sniffed, png.length)).toBe(true)
+    expect(primaryTypeMatches('', sniffed, png.length)).toBe(true)
   })
 })
 
@@ -285,5 +351,33 @@ describe('attachment-storage', () => {
     })
     expect(attachmentDir(id).startsWith(tmpHome)).toBe(true)
     expect(fs.existsSync(path.join(attachmentDir(id), 'meta.json'))).toBe(true)
+  })
+
+  it('ensureRoot tightens existing-dir perms to 0700 (spec v0.1.2 §10)', () => {
+    // mkdirSync's `mode` arg is no-op for a dir that already exists. Without
+    // the chmodSync follow-up, a root created earlier with 0755 (e.g. from a
+    // pre-spec build) would never be tightened. Verify the chmod runs.
+    const root = path.join(tmpHome, '.aimaestro', 'attachments')
+    fs.mkdirSync(root, { recursive: true, mode: 0o755 })
+    // Belt and braces: chmod explicitly to defeat any umask interaction the
+    // mkdir mode argument might have allowed.
+    fs.chmodSync(root, 0o755)
+    expect(fs.statSync(root).mode & 0o777).toBe(0o755)
+    ensureRoot()
+    expect(fs.statSync(root).mode & 0o777).toBe(0o700)
+  })
+
+  it('writeMeta round-trips scan_status="basic_clean" (new enum value)', () => {
+    const id = generateAttachmentId()
+    const meta: AttachmentMeta = {
+      id, filename: 'x.png', content_type: 'image/png', size: 10,
+      digest: 'd'.repeat(64), scan_status: 'basic_clean',
+      uploaded_at: '2026-05-19T00:00:00.000Z',
+      expires_at: defaultExpiresAt(),
+      initiated_at: new Date().toISOString(),
+      initiator_agent_id: 'agent-uuid-1',
+    }
+    writeMeta(meta)
+    expect(readMeta(id)?.scan_status).toBe('basic_clean')
   })
 })
