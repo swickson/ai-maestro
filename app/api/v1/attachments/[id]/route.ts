@@ -101,13 +101,18 @@ export async function GET(
     return NextResponse.json({ error: { code: 'not_found', message: `attachment ${id} not found` } }, { status: 404 })
   }
 
-  // Build the download URL only when status is 'clean' — recipients should not
-  // be able to start fetching a 'pending' or 'rejected' attachment. Same logic
-  // as the dedicated /status sub-route. baseUrl uses getSelfHost().url for the
-  // canonical Tailscale URL (NOT request.nextUrl.host which captures the bind
-  // address and would resolve to the recipient's loopback — kanban 1259f3a0).
+  // Build the download URL only when the attachment is routable — both
+  // `clean` and `basic_clean` qualify per spec v0.1.2 §5 (table). `pending`,
+  // `suspicious`, and `rejected` return null. /confirm emits `basic_clean`
+  // since we run no AV/injection; `clean` is reserved for a future SHOULD-
+  // tier scanner. Same logic as the dedicated /status sub-route.
+  //
+  // baseUrl uses getSelfHost().url for the canonical Tailscale URL (NOT
+  // request.nextUrl.host which captures the bind address and would resolve
+  // to the recipient's loopback — kanban 1259f3a0).
   const baseUrl = getSelfHost().url
-  const url = meta.scan_status === 'clean'
+  const isRoutable = meta.scan_status === 'clean' || meta.scan_status === 'basic_clean'
+  const url = isRoutable
     ? buildSignedUrl(baseUrl, 'download', id, meta.expires_at)
     : null
 

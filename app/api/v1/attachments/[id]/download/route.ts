@@ -11,7 +11,9 @@
  * (returned in /status). Server returns the raw blob with Content-Type +
  * Content-Length headers + the digest in X-Amp-Attachment-Digest.
  *
- * Refuses to serve `pending`, `rejected`, or `suspicious` attachments.
+ * Refuses to serve `pending`, `rejected`, or `suspicious` attachments. Both
+ * `clean` and `basic_clean` are servable per spec v0.1.2 §5 (table) — the
+ * latter is what /confirm emits today since we don't run AV / injection.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -34,8 +36,8 @@ export async function GET(
   if (!meta) {
     return NextResponse.json({ error: { code: 'not_found', message: `attachment ${id} not found` } }, { status: 404 })
   }
-  if (meta.scan_status !== 'clean') {
-    return NextResponse.json({ error: { code: 'forbidden', message: `attachment ${id} not in clean state (${meta.scan_status})` } }, { status: 403 })
+  if (meta.scan_status !== 'clean' && meta.scan_status !== 'basic_clean') {
+    return NextResponse.json({ error: { code: 'forbidden', message: `attachment ${id} not in servable state (${meta.scan_status})` } }, { status: 403 })
   }
   if (!hasBlob(id)) {
     return NextResponse.json({ error: { code: 'not_found', message: `attachment ${id} blob missing` } }, { status: 404 })

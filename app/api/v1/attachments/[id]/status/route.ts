@@ -29,15 +29,18 @@ export async function GET(
     return NextResponse.json({ error: { code: 'not_found', message: `attachment ${id} not found` } }, { status: 404 })
   }
 
-  // Build the download URL only when status is 'clean' — recipients should not
-  // be able to start fetching a 'pending' or 'rejected' attachment.
+  // Build the download URL only when the attachment is routable — both
+  // `clean` and `basic_clean` qualify per spec v0.1.2 §5 (table). `pending`,
+  // `suspicious`, and `rejected` return null. /confirm emits `basic_clean`
+  // today since we run no AV/injection scan.
   //
   // Use getSelfHost().url instead of request.nextUrl.host: the latter captures
   // the server's BIND address (typically 0.0.0.0:23000), and a 0.0.0.0 host
   // in a signed URL resolves to the recipient's own loopback when they try to
   // download — wrong server + wrong HMAC secret → 401 (kanban 1259f3a0).
   const baseUrl = getSelfHost().url
-  const url = meta.scan_status === 'clean'
+  const isRoutable = meta.scan_status === 'clean' || meta.scan_status === 'basic_clean'
+  const url = isRoutable
     ? buildSignedUrl(baseUrl, 'download', id, meta.expires_at)
     : null
 
