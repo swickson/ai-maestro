@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKe
 import { useTerminal } from '@/hooks/useTerminal'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { createResizeMessage } from '@/lib/websocket'
-import { termDiag } from '@/lib/terminal-diag'
 import { useTerminalRegistry } from '@/contexts/TerminalContext'
 import { useDeviceType } from '@/hooks/useDeviceType'
 import MobileKeyToolbar from './MobileKeyToolbar'
@@ -224,8 +223,7 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
       // instead of defaulting to 80×24 (which corrupts TUI layouts like /plan mode)
       const term = terminalInstanceRef.current
       if (term) {
-        fitTerminal('onOpen-immediate')
-        termDiag('resize-out', { source: 'onOpen-immediate', cols: term.cols, rows: term.rows, sessionId: session.id })
+        fitTerminal()
         const resizeMsg = createResizeMessage(term.cols, term.rows)
         sendMessage(resizeMsg)
       }
@@ -244,21 +242,20 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
       // Always emit the resize message regardless of cols/rows delta — tmux
       // pty may have been spawned at stale cols; re-broadcasting current
       // dims forces SIGWINCH + Claude redraw at the right width.
-      const refit = (sourceTag: string) => {
+      const refit = () => {
         const t = terminalInstanceRef.current
         if (!t) return
         try {
-          fitTerminal(sourceTag)
-          termDiag('resize-out', { source: sourceTag, cols: t.cols, rows: t.rows, sessionId: session.id })
+          fitTerminal()
           sendMessage(createResizeMessage(t.cols, t.rows))
         } catch (e) {
           console.warn('[Terminal] Deferred post-mount refit failed:', e)
         }
       }
       refitTimeoutsRef.current = [
-        setTimeout(() => refit('chained-100'), 100),
-        setTimeout(() => refit('chained-500'), 500),
-        setTimeout(() => refit('chained-1500'), 1500),
+        setTimeout(refit, 100),
+        setTimeout(refit, 500),
+        setTimeout(refit, 1500),
       ]
     },
     onClose: () => {
@@ -284,11 +281,10 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
               if (!t) return
 
               // 1. CRITICAL: Refit terminal to ensure correct dimensions
-              fitTerminal('history-complete')
+              fitTerminal()
 
               // 2. Send resize to PTY to sync tmux with correct dimensions
               // This also triggers a redraw which helps with color issues
-              termDiag('resize-out', { source: 'history-complete', cols: t.cols, rows: t.rows, sessionId: session.id })
               const resizeMsg = createResizeMessage(t.cols, t.rows)
               sendMessage(resizeMsg)
 
@@ -348,7 +344,6 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
   // Initialize terminal ONCE on mount - never re-initialize
   // Tab-based architecture: terminal stays mounted, just hidden via CSS
   useEffect(() => {
-    termDiag('mount', { sessionId: session.id })
     let cleanup: (() => void) | undefined
     let retryCount = 0
     const maxRefRetries = 10 // Quick retries for DOM ref only
@@ -409,7 +404,6 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
 
     // Cleanup only on unmount (when tab is removed from DOM)
     return () => {
-      termDiag('unmount', { sessionId: session.id })
       mounted = false
       if (retryTimer) {
         clearTimeout(retryTimer)
@@ -445,7 +439,7 @@ export default function TerminalView({ session, isVisible = true, hideFooter = f
     if (isReady && terminal) {
       // Notes state or footer tab changed, terminal height changed
       const timeout = setTimeout(() => {
-        fitTerminal('notes-or-footer-change')
+        fitTerminal()
       }, 150)
       return () => clearTimeout(timeout)
     }
