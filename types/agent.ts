@@ -295,6 +295,18 @@ export interface AgentDeployment {
     healthCheckUrl?: string           // Health check endpoint (e.g., http://localhost:46000/health)
     containerName?: string            // Docker container name
     status?: 'provisioning' | 'running' | 'stopped' | 'error'
+    // Container runtime config persisted at create time so /recreate and the
+    // mid-life /update-runtime endpoint can rebuild the docker run command
+    // without re-prompting the operator for cpus/memory/extraEnv. Without
+    // these, recreate falls back to defaults (cpus=2, memory=4g) and silently
+    // drops operator-supplied extraEnv (e.g. HOME=/workspace overrides for
+    // the Shape β agent-home convention).
+    runtime?: {
+      cpus?: number
+      memory?: string
+      autoRemove?: boolean
+      extraEnv?: Record<string, string>
+    }
   }
 
   // Sandbox configuration (currently consumed by cloud/container deployments)

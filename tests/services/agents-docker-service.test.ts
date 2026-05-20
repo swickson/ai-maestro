@@ -35,6 +35,7 @@ import {
   mergeEnv,
   buildRecreateBody,
   RECREATE_PRESERVED_FIELDS,
+  parsePortFromWebsocketUrl,
 } from '@/services/agents-docker-service'
 import type { Agent, SandboxMount } from '@/types/agent'
 
@@ -1566,6 +1567,47 @@ describe('buildRecreateBody', () => {
     const agent = makeCloudAgent() // no sandbox key at all
     expect(buildRecreateBody(agent).mounts).toBeUndefined()
   })
+
+  it('maps deployment.cloud.runtime fields back into the create body', () => {
+    // Closes kanban 105b82a0 — without persisting runtime config on the agent
+    // record, recreate fell back to createDockerAgent's hard-coded defaults
+    // (cpus=2, memory=4g, autoRemove=undefined → restart unless-stopped) and
+    // silently dropped any operator-supplied extraEnv (e.g. HOME=/workspace
+    // overrides). Now runtime carries through deterministically.
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: {
+          provider: 'local-container',
+          containerName: 'aim-x',
+          status: 'running',
+          runtime: {
+            cpus: 4,
+            memory: '8g',
+            autoRemove: true,
+            extraEnv: { HOME: '/workspace/myagent', FOO: 'bar' },
+          },
+        },
+      },
+    })
+    const body = buildRecreateBody(agent)
+    expect(body.cpus).toBe(4)
+    expect(body.memory).toBe('8g')
+    expect(body.autoRemove).toBe(true)
+    expect(body.extraEnv).toEqual({ HOME: '/workspace/myagent', FOO: 'bar' })
+  })
+
+  it('leaves runtime fields undefined when not persisted', () => {
+    // Legacy agents predating PR #146 have no deployment.cloud.runtime. Body
+    // should reflect "not set" so createDockerAgent's existing defaults
+    // (cpus=2, memory=4g) apply unchanged.
+    const agent = makeCloudAgent()
+    const body = buildRecreateBody(agent)
+    expect(body.cpus).toBeUndefined()
+    expect(body.memory).toBeUndefined()
+    expect(body.autoRemove).toBeUndefined()
+    expect(body.extraEnv).toBeUndefined()
+  })
 })
 
 describe('RECREATE_PRESERVED_FIELDS', () => {
@@ -1601,5 +1643,31 @@ describe('RECREATE_PRESERVED_FIELDS', () => {
     for (const field of mustNotInclude) {
       expect(RECREATE_PRESERVED_FIELDS).not.toContain(field)
     }
+  })
+})
+
+describe('parsePortFromWebsocketUrl', () => {
+  it('extracts port from a ws://localhost:PORT/term URL', () => {
+    expect(parsePortFromWebsocketUrl('ws://localhost:23042/term')).toBe(23042)
+  })
+
+  it('returns null for undefined', () => {
+    expect(parsePortFromWebsocketUrl(undefined)).toBeNull()
+  })
+
+  it('returns null for empty string', () => {
+    expect(parsePortFromWebsocketUrl('')).toBeNull()
+  })
+
+  it('returns null when no port is present in the URL', () => {
+    expect(parsePortFromWebsocketUrl('ws://localhost/term')).toBeNull()
+  })
+
+  it('returns null for malformed input', () => {
+    expect(parsePortFromWebsocketUrl('not-a-url')).toBeNull()
+  })
+
+  it('handles wss URLs', () => {
+    expect(parsePortFromWebsocketUrl('wss://agent.example.com:443/term')).toBe(443)
   })
 })

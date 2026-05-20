@@ -545,6 +545,74 @@ export function updateAgent(id: string, updates: UpdateAgentRequest): Agent | nu
 }
 
 /**
+ * Update an agent's container runtime config (deployment.sandbox.mounts and/or
+ * deployment.cloud.runtime.extraEnv) atomically.
+ *
+ * Resolves kanban 43753261 (rescoped option b — accept+persist operator mount
+ * mutations). The public UpdateAgentRequest type intentionally omits
+ * `deployment`, so operator-driven mount/env updates must come through this
+ * explicit primitive — callers prove they understand the semantics (a
+ * docker-side rebuild is required to make these stick on a running container;
+ * see services/agents-docker-service.updateContainerMountsAndExtraEnv).
+ *
+ * AMP common mounts (buildAmpCommonMounts) are NOT stored in
+ * `deployment.sandbox.mounts` — they recompute deterministically from the
+ * agent UUID at every docker run — so this helper cannot accidentally
+ * displace them. Path-level guards live in validateMounts (called by the
+ * service layer before this).
+ *
+ * Pass `mounts: []` to clear all operator mounts. Pass `mounts: undefined`
+ * (the default) to leave them untouched. Same semantics for `extraEnv`.
+ *
+ * Returns the updated agent, or null if not found.
+ */
+export function updateAgentRuntimeConfig(
+  id: string,
+  config: { mounts?: import('@/types/agent').SandboxMount[]; extraEnv?: Record<string, string> }
+): Agent | null {
+  const agents = loadAgents()
+  const index = agents.findIndex(a => a.id === id)
+  if (index === -1) return null
+
+  const agent = agents[index]
+  const deployment: Agent['deployment'] = {
+    ...agent.deployment,
+    type: agent.deployment?.type ?? 'cloud',
+  }
+
+  if (config.mounts !== undefined) {
+    deployment.sandbox =
+      config.mounts.length === 0
+        ? undefined
+        : { ...(deployment.sandbox ?? {}), mounts: config.mounts }
+  }
+
+  if (config.extraEnv !== undefined) {
+    const existingCloud = deployment.cloud
+    const existingRuntime = existingCloud?.runtime ?? {}
+    const newRuntime = { ...existingRuntime, extraEnv: config.extraEnv }
+    if (Object.keys(config.extraEnv).length === 0) {
+      delete (newRuntime as { extraEnv?: Record<string, string> }).extraEnv
+    }
+    // Only persist a `cloud` block if one already existed — this helper isn't
+    // a vehicle for converting a local agent into a cloud one. Caller is
+    // responsible for ensuring this is a cloud agent before invoking.
+    if (existingCloud) {
+      deployment.cloud = { ...existingCloud, runtime: newRuntime }
+    }
+  }
+
+  agents[index] = {
+    ...agent,
+    deployment,
+    lastActive: new Date().toISOString(),
+  }
+  saveAgents(agents)
+  invalidateAgentCache()
+  return agents[index]
+}
+
+/**
  * Update agent metrics
  */
 export function updateAgentMetrics(id: string, metrics: UpdateAgentMetricsRequest): Agent | null {
