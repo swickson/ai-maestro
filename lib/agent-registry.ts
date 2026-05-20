@@ -558,8 +558,16 @@ export function updateAgent(id: string, updates: UpdateAgentRequest): Agent | nu
  * AMP common mounts (buildAmpCommonMounts) are NOT stored in
  * `deployment.sandbox.mounts` — they recompute deterministically from the
  * agent UUID at every docker run — so this helper cannot accidentally
- * displace them. Path-level guards live in validateMounts (called by the
- * service layer before this).
+ * displace them AT THE PERSISTENCE LAYER. Path-level guards in
+ * validateMounts reserve `/workspace` exact-match only; AMP common-mount
+ * paths and common env keys are NOT reserved today, and mergeMounts +
+ * mergeEnv (services/agents-docker-service.ts:973-982) are operator-wins
+ * at docker-run time. An operator supplying e.g. a mount at
+ * /home/claude/.agent-messaging/agents/<uuid> or an extraEnv key like
+ * AMP_AGENT_ID WILL shadow the AMP common-mount/env in the running
+ * container. Pre-existing exposure shared with createDockerAgent (same
+ * mergeMounts/mergeEnv call sites); hardening (RESERVED_CONTAINER_PATHS +
+ * RESERVED_ENV_KEYS in validateMounts/validateExtraEnv) tracked separately.
  *
  * Pass `mounts: []` to clear all operator mounts. Pass `mounts: undefined`
  * (the default) to leave them untouched. Same semantics for `extraEnv`.
