@@ -90,6 +90,7 @@ import {
   getAgentBySession,
   addSessionToAgent,
   incrementAgentMetric,
+  updateAgentRuntimeConfig,
 } from '@/lib/agent-registry'
 import type { Agent, CreateAgentRequest } from '@/types/agent'
 
@@ -1043,5 +1044,132 @@ describe('deployment.sandbox.mounts', () => {
     const agent = createAgent(makeCreateRequest({ name: 'no-sandbox' }))
     const reloaded = getAgent(agent.id)
     expect(reloaded?.deployment?.sandbox).toBeUndefined()
+  })
+})
+
+describe('updateAgentRuntimeConfig', () => {
+  function makeCloudAgent(name: string): Agent {
+    const agent = createAgent(makeCreateRequest({ name, deploymentType: 'cloud' }))
+    const agents = loadAgents()
+    const idx = agents.findIndex(a => a.id === agent.id)
+    agents[idx].deployment = {
+      type: 'cloud',
+      cloud: {
+        provider: 'local-container',
+        containerName: `aim-${name}`,
+        websocketUrl: 'ws://localhost:23001/term',
+        status: 'running',
+      },
+    }
+    saveAgents(agents)
+    return agents[idx]
+  }
+
+  it('returns null for unknown agent id', () => {
+    expect(updateAgentRuntimeConfig('nonexistent', { mounts: [] })).toBeNull()
+  })
+
+  it('persists operator mounts on deployment.sandbox.mounts', () => {
+    const agent = makeCloudAgent('runtime-1')
+    const mounts = [
+      { hostPath: '/home/op/code', containerPath: '/work/code' },
+      { hostPath: '/etc/ssl/certs', containerPath: '/certs', readOnly: true },
+    ]
+    const updated = updateAgentRuntimeConfig(agent.id, { mounts })
+    expect(updated?.deployment?.sandbox?.mounts).toEqual(mounts)
+
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual(mounts)
+  })
+
+  it('replaces existing mounts wholesale (not merge)', () => {
+    const agent = makeCloudAgent('runtime-2')
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/a', containerPath: '/a' }],
+    })
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/b', containerPath: '/b' }],
+    })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual([
+      { hostPath: '/b', containerPath: '/b' },
+    ])
+  })
+
+  it('mounts:[] clears the sandbox block entirely', () => {
+    const agent = makeCloudAgent('runtime-3')
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/a', containerPath: '/a' }],
+    })
+    updateAgentRuntimeConfig(agent.id, { mounts: [] })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox).toBeUndefined()
+  })
+
+  it('mounts:undefined leaves existing mounts untouched', () => {
+    const agent = makeCloudAgent('runtime-4')
+    const original = [{ hostPath: '/x', containerPath: '/x' }]
+    updateAgentRuntimeConfig(agent.id, { mounts: original })
+    updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual(original)
+    expect(reloaded?.deployment?.cloud?.runtime?.extraEnv).toEqual({ FOO: 'bar' })
+  })
+
+  it('persists extraEnv into deployment.cloud.runtime', () => {
+    const agent = makeCloudAgent('runtime-5')
+    const updated = updateAgentRuntimeConfig(agent.id, {
+      extraEnv: { HOME: '/workspace/myagent', FOO: 'bar' },
+    })
+    expect(updated?.deployment?.cloud?.runtime?.extraEnv).toEqual({
+      HOME: '/workspace/myagent',
+      FOO: 'bar',
+    })
+  })
+
+  it('extraEnv:{} clears the persisted extraEnv', () => {
+    const agent = makeCloudAgent('runtime-6')
+    updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+    updateAgentRuntimeConfig(agent.id, { extraEnv: {} })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.runtime?.extraEnv).toBeUndefined()
+  })
+
+  it('preserves other runtime fields (cpus/memory) when only extraEnv changes', () => {
+    const agent = makeCloudAgent('runtime-7')
+    // Seed pre-existing runtime config via direct save
+    const agents = loadAgents()
+    const idx = agents.findIndex(a => a.id === agent.id)
+    agents[idx].deployment!.cloud!.runtime = { cpus: 4, memory: '8g' }
+    saveAgents(agents)
+
+    updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+      cpus: 4,
+      memory: '8g',
+      extraEnv: { FOO: 'bar' },
+    })
+  })
+
+  it('updates mounts and extraEnv together in one call', () => {
+    const agent = makeCloudAgent('runtime-8')
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/y', containerPath: '/y' }],
+      extraEnv: { BAR: 'baz' },
+    })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual([
+      { hostPath: '/y', containerPath: '/y' },
+    ])
+    expect(reloaded?.deployment?.cloud?.runtime?.extraEnv).toEqual({ BAR: 'baz' })
+  })
+
+  it('no-op (empty config) still bumps lastActive', async () => {
+    const agent = makeCloudAgent('runtime-9')
+    const before = agent.lastActive
+    await new Promise(r => setTimeout(r, 5))
+    const updated = updateAgentRuntimeConfig(agent.id, {})
+    expect(updated?.lastActive).not.toBe(before)
   })
 })

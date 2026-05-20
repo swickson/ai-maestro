@@ -11,7 +11,7 @@ import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { v4 as uuidv4 } from 'uuid'
-import { createAgent, deleteAgent, getAgent, loadAgents, saveAgents, updateAgent } from '@/lib/agent-registry'
+import { createAgent, deleteAgent, getAgent, loadAgents, saveAgents, updateAgent, updateAgentRuntimeConfig } from '@/lib/agent-registry'
 import { getHosts, isSelf, getOrganization } from '@/lib/hosts-config'
 import { generateKeyPair, saveKeyPair } from '@/lib/amp-keys'
 import { registerAgent } from '@/services/amp-service'
@@ -1379,6 +1379,18 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     const agents = loadAgents()
     const idx = agents.findIndex(a => a.id === agent.id)
     if (idx !== -1) {
+      // Persist runtime config (cpus/memory/autoRemove/extraEnv) so recreate
+      // and the mid-life /update-runtime endpoint can rebuild docker run with
+      // the operator's original sizing + env, not the create defaults. Omit
+      // the runtime sub-object entirely when nothing was supplied to keep
+      // legacy agent records identical on the on-disk shape.
+      const runtime: NonNullable<NonNullable<Agent['deployment']['cloud']>['runtime']> = {}
+      if (body.cpus !== undefined) runtime.cpus = body.cpus
+      if (body.memory !== undefined) runtime.memory = body.memory
+      if (body.autoRemove !== undefined) runtime.autoRemove = body.autoRemove
+      if (body.extraEnv && Object.keys(body.extraEnv).length > 0) runtime.extraEnv = body.extraEnv
+      const hasRuntime = Object.keys(runtime).length > 0
+
       agents[idx].deployment = {
         type: 'cloud',
         cloud: {
@@ -1387,6 +1399,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
           websocketUrl: `ws://localhost:${port}/term`,
           healthCheckUrl: `http://localhost:${port}/health`,
           status: 'running',
+          ...(hasRuntime ? { runtime } : {}),
         },
         ...(body.mounts && body.mounts.length > 0
           ? { sandbox: { mounts: body.mounts } }
@@ -1430,6 +1443,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
  * NOT included — they regenerate inside createDockerAgent.
  */
 export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
+  const runtime = oldAgent.deployment?.cloud?.runtime
   return {
     name: oldAgent.name,
     label: oldAgent.label,
@@ -1440,6 +1454,10 @@ export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
     model: oldAgent.model,
     workingDirectory: oldAgent.workingDirectory,
     mounts: oldAgent.deployment?.sandbox?.mounts,
+    cpus: runtime?.cpus,
+    memory: runtime?.memory,
+    autoRemove: runtime?.autoRemove,
+    extraEnv: runtime?.extraEnv,
   }
 }
 
@@ -1595,5 +1613,239 @@ export async function recreateDockerAgent(
       preservedFields: RECREATE_PRESERVED_FIELDS.filter(f => (oldAgent as unknown as Record<string, unknown>)[f] !== undefined),
     },
     status: result.status,
+  }
+}
+
+/**
+ * Parse the host-side port from a websocketUrl like "ws://localhost:23042/term".
+ * Returns null if the URL is missing or unparseable.
+ */
+export function parsePortFromWebsocketUrl(url: string | undefined): number | null {
+  if (!url) return null
+  const match = url.match(/:(\d+)\//)
+  if (!match) return null
+  const port = parseInt(match[1], 10)
+  return Number.isFinite(port) ? port : null
+}
+
+export interface UpdateRuntimeConfig {
+  mounts?: SandboxMount[]            // Replace operator-supplied mounts wholesale (omit to keep existing)
+  extraEnv?: Record<string, string>  // Replace operator-supplied extraEnv wholesale (omit to keep existing)
+}
+
+/**
+ * Update an existing cloud agent's container mounts and/or extraEnv without
+ * rotating its UUID, AMP keypair, or per-agent state directory.
+ *
+ * Stops + removes the existing container by name, rebuilds the docker run
+ * invocation from the agent record (program, programArgs, model,
+ * workingDirectory, sandbox.mounts, cloud.runtime) with the requested
+ * `config` overrides applied, runs a fresh container under the SAME
+ * containerName + port + websocketUrl, then persists the new mounts/extraEnv
+ * onto the agent record.
+ *
+ * Why this exists: /recreate intentionally rotates the audit-trail UUID
+ * (see recreateDockerAgent), which forces a new AMP keypair, fresh per-agent
+ * state dir, and breaks long-lived references (peer caches, kanban
+ * assignments, dashboards). Operator-driven mid-life mutations — adding a
+ * code mount, overriding HOME for the Shape β agent-home convention — do
+ * NOT need an audit-trail event; they only need the docker run command
+ * rebuilt with the new flags. Going through /recreate for these would burn
+ * UUID rotation per mount, which is unacceptable for routine config edits.
+ *
+ * Atomicity caveat: same shape as recreateDockerAgent — stop+rm + run is
+ * best-effort. If docker run fails after stop+rm, the operator is left with
+ * the container gone but the registry still pointing at the old config.
+ * Recovery: rerun update-runtime with corrected inputs, or /recreate to
+ * fully re-provision (UUID rotation cost). Failure is rare in practice
+ * (mirrors recreate's exposure).
+ *
+ * Limitations matched to /recreate: yolo, prompt, and dashboard-supplied
+ * githubToken are not persisted on the agent record, so a rebuild loses
+ * them. To carry these forward, set them in programArgs or extraEnv.
+ *
+ * Pass `mounts: undefined` to leave the operator-mount list untouched. Same
+ * for `extraEnv`. Pass `mounts: []` or `extraEnv: {}` to explicitly clear.
+ */
+export async function updateContainerMountsAndExtraEnv(
+  agentId: string,
+  config: UpdateRuntimeConfig
+): Promise<ServiceResult<Record<string, unknown>>> {
+  const agent = getAgent(agentId, true)
+  if (!agent) return notFound('Agent', agentId)
+  if (agent.deletedAt) return gone('Agent')
+
+  if (agent.deployment?.type !== 'cloud' || agent.deployment.cloud?.provider !== 'local-container') {
+    return invalidState(
+      `update-runtime is only supported for cloud agents with provider 'local-container' (agent ${agentId} is type=${agent.deployment?.type ?? 'unset'}, provider=${agent.deployment?.cloud?.provider ?? 'unset'})`
+    )
+  }
+
+  // Validate the operator-supplied mounts/extraEnv before doing any destructive
+  // docker work. Empty arrays/objects are valid (= "clear"), so only validate
+  // when the caller actually supplied a value.
+  if (config.mounts !== undefined) {
+    const mountError = validateMounts(config.mounts)
+    if (mountError) return invalidRequest(mountError)
+  }
+  if (config.extraEnv !== undefined) {
+    const envError = validateExtraEnv(config.extraEnv)
+    if (envError) return invalidRequest(envError)
+  }
+
+  try {
+    await execAsync("docker version --format '{{.Server.Version}}'", { timeout: 5000 })
+  } catch {
+    return invalidRequest('Docker is not available on this host')
+  }
+
+  const containerName = agent.deployment.cloud.containerName
+  if (!containerName) {
+    return invalidState(`agent ${agentId} has no containerName — cannot determine which container to rebuild`)
+  }
+  const port = parsePortFromWebsocketUrl(agent.deployment.cloud.websocketUrl)
+  if (!port) {
+    return invalidState(
+      `agent ${agentId} has no parseable port in deployment.cloud.websocketUrl (${agent.deployment.cloud.websocketUrl ?? 'unset'})`
+    )
+  }
+
+  // Determine the mounts/env to apply: explicit override from config, or fall
+  // back to the persisted values on the agent record.
+  const newMounts = config.mounts !== undefined ? config.mounts : agent.deployment.sandbox?.mounts
+  const existingRuntime = agent.deployment.cloud.runtime ?? {}
+  const newExtraEnv = config.extraEnv !== undefined ? config.extraEnv : existingRuntime.extraEnv
+
+  // Rebuild AI_TOOL from persisted fields. Matches recreate semantics — yolo,
+  // prompt, and dashboard-supplied githubToken are NOT preserved (same gap
+  // as buildRecreateBody, tracked separately).
+  const program = agent.program || 'claude'
+  let aiTool = program
+  if (agent.programArgs) {
+    const sanitizedArgs = agent.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+    if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
+  }
+  if (agent.model) {
+    aiTool += ` --model ${agent.model}`
+  }
+
+  const workDir = agent.workingDirectory || '/tmp'
+  const cpus = existingRuntime.cpus ?? 2
+  const memory = existingRuntime.memory ?? '4g'
+  const autoRemove = existingRuntime.autoRemove ?? false
+
+  const hostPort = process.env.PORT || '23000'
+  const hostInternalUrl = `http://host.docker.internal:${hostPort}`
+
+  const baseEnv: Record<string, string> = {
+    TMUX_SESSION_NAME: agent.name,
+    AI_TOOL: aiTool,
+    AGENT_ID: agent.name,
+    AIMAESTRO_HOST_URL: hostInternalUrl,
+  }
+  const ampEnv = buildAmpCommonEnv(agentId, agent.name, hostInternalUrl)
+  const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, newExtraEnv)
+
+  const ampMounts = buildAmpCommonMounts(agentId)
+  const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
+  const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
+
+  // Pre-create host-side mount sources so docker doesn't materialize them as
+  // root-owned dirs at run time. Same pattern as createDockerAgent.
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts]) {
+    try {
+      fs.mkdirSync(m.hostPath, { recursive: true })
+    } catch (err) {
+      console.warn(`[update-runtime] Could not pre-create mount source ${m.hostPath}:`, err)
+    }
+  }
+
+  const mergedMounts = mergeMounts(
+    [
+      ...ampMounts,
+      buildCloudClaudeSettingsMount(agentId),
+      ...buildCloudClaudePersistMounts(agentId),
+      ...claudeReadthroughMounts,
+      buildCloudGeminiSettingsMount(agentId),
+      buildCloudGeminiOAuthMount(agentId),
+      ...geminiReadthroughMounts,
+      buildCloudCodexVersionMount(agentId),
+      buildCloudCodexAuthMount(agentId),
+      buildCloudCodexConfigTomlMount(agentId),
+    ],
+    newMounts
+  )
+
+  // Stop + remove the existing container. Non-fatal if already stopped/gone
+  // (the verify-removal step catches "still exists" failures and aborts).
+  const safeContainerName = containerName.replace(/[^a-zA-Z0-9_-]/g, '')
+  try {
+    await execAsync(`docker stop ${safeContainerName}`, { timeout: 60000 })
+  } catch (err) {
+    console.log(`[update-runtime] stop ${containerName} (non-fatal):`, err instanceof Error ? err.message : err)
+  }
+  try {
+    await execAsync(`docker rm ${safeContainerName}`, { timeout: 60000 })
+  } catch (err) {
+    console.log(`[update-runtime] rm ${containerName} (non-fatal):`, err instanceof Error ? err.message : err)
+  }
+  try {
+    await execAsync(`docker inspect ${safeContainerName}`, { timeout: 5000 })
+    return operationFailed(
+      'remove old container',
+      `${containerName} still exists after stop+rm; docker run would fail with a name conflict. Manual cleanup required.`
+    )
+  } catch {
+    // inspect failed → container is gone, proceed
+  }
+
+  const dockerCmd = [
+    'docker run -d',
+    `--name "${containerName}"`,
+    '--add-host=host.docker.internal:host-gateway',
+    autoRemove ? '' : '--restart unless-stopped',
+    ...buildEnvFlags(mergedEnv),
+    `-v "${workDir}:/workspace"`,
+    ...buildMountFlags(mergedMounts),
+    `-p ${port}:23000`,
+    `--cpus=${cpus}`,
+    `--memory=${memory}`,
+    autoRemove ? '--rm' : '',
+    'ai-maestro-agent:latest',
+  ].filter(Boolean).join(' ')
+
+  let containerId: string
+  try {
+    const { stdout } = await execAsync(dockerCmd, { timeout: 30000 })
+    containerId = stdout.trim().slice(0, 12)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    return operationFailed('start container', message)
+  }
+
+  // Persist the new operator config onto the agent record. Failure here is
+  // non-fatal but logged loudly — the running container has the new mounts,
+  // but the registry would drift, so a future /recreate would lose them.
+  try {
+    updateAgentRuntimeConfig(agentId, {
+      mounts: config.mounts,
+      extraEnv: config.extraEnv,
+    })
+  } catch (err) {
+    console.warn(
+      `[update-runtime] registry update failed for ${agentId} after successful container rebuild — drift between container and registry:`,
+      err instanceof Error ? err.message : err
+    )
+  }
+
+  return {
+    data: {
+      success: true,
+      agentId,
+      containerId,
+      port,
+      containerName,
+    },
+    status: 200,
   }
 }
