@@ -19,8 +19,10 @@ import {
   buildAmpCommonEnv,
   buildCloudClaudeSettingsMount,
   buildCloudClaudePersistMounts,
+  buildCloudClaudeReadthroughMounts,
   buildCloudGeminiSettingsMount,
   buildCloudGeminiOAuthMount,
+  buildCloudGeminiReadthroughMounts,
   buildCloudCodexVersionMount,
   buildCloudCodexAuthMount,
   buildCloudCodexConfigTomlMount,
@@ -36,6 +38,9 @@ import {
   buildRecreateBody,
   RECREATE_PRESERVED_FIELDS,
   parsePortFromWebsocketUrl,
+  ALWAYS_RESERVED_CONTAINER_PATH_ROOTS,
+  OPERATOR_RESERVED_CONTAINER_PATH_ROOTS,
+  OPERATOR_RESERVED_ENV_KEYS,
 } from '@/services/agents-docker-service'
 import type { Agent, SandboxMount } from '@/types/agent'
 
@@ -108,6 +113,114 @@ describe('validateMounts', () => {
       { hostPath: 'bad', containerPath: '/ok' },
     ]
     expect(validateMounts(mounts)).toMatch(/mounts\[1\]/)
+  })
+
+  describe('operator-mount reservation (kanban 489c4afd)', () => {
+    // ALWAYS_RESERVED applies regardless of operatorSupplied — /workspace is the
+    // operator's workingDirectory bind, and it would conflict whether the mount
+    // came from operator input or anywhere else.
+    it('rejects /workspace exact-match without operatorSupplied flag', () => {
+      const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace' }]
+      expect(validateMounts(mounts)).toMatch(/reserved.*working directory/)
+    })
+
+    it('rejects descendants of /workspace without operatorSupplied flag', () => {
+      const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace/src' }]
+      expect(validateMounts(mounts)).toMatch(/reserved.*working directory/)
+    })
+
+    it('passes system mount paths without operatorSupplied flag', () => {
+      // This is the critical "don't self-reject" property — every system
+      // mount builder produces paths under OPERATOR_RESERVED roots, and the
+      // internal flows in createDockerAgent / updateContainerMountsAndExtraEnv
+      // build the merged mount list AFTER validation of operator input. Tests
+      // that hand system mounts through validateMounts MUST not trigger
+      // operator reservation.
+      const uuid = 'test-uuid-aaaa'
+      const home = '/tmp/test-home'
+      const allSystemMounts: SandboxMount[] = [
+        ...buildAmpCommonMounts(uuid, home, '/tmp/test-repo'),
+        buildCloudClaudeSettingsMount(uuid, home),
+        ...buildCloudClaudePersistMounts(uuid, home),
+        ...buildCloudClaudeReadthroughMounts(uuid, home),
+        buildCloudGeminiSettingsMount(uuid, home),
+        buildCloudGeminiOAuthMount(uuid, home),
+        ...buildCloudGeminiReadthroughMounts(uuid, home),
+        buildCloudCodexVersionMount(uuid, home),
+        buildCloudCodexAuthMount(uuid, home),
+        buildCloudCodexConfigTomlMount(uuid, home),
+      ]
+      expect(validateMounts(allSystemMounts)).toBeNull()
+    })
+
+    it('rejects operator mounts at each OPERATOR_RESERVED root exact-match', () => {
+      for (const root of OPERATOR_RESERVED_CONTAINER_PATH_ROOTS) {
+        const mounts: SandboxMount[] = [{ hostPath: '/tmp/src', containerPath: root }]
+        const err = validateMounts(mounts, { operatorSupplied: true })
+        expect(err, `expected rejection for root ${root}`).toMatch(/reserved by AI Maestro/)
+        expect(err).toContain(root)
+      }
+    })
+
+    it('rejects operator mounts at descendants of OPERATOR_RESERVED roots', () => {
+      for (const root of OPERATOR_RESERVED_CONTAINER_PATH_ROOTS) {
+        const mounts: SandboxMount[] = [{ hostPath: '/tmp/src', containerPath: `${root}/child` }]
+        const err = validateMounts(mounts, { operatorSupplied: true })
+        expect(err, `expected rejection for descendant of ${root}`).toMatch(/reserved by AI Maestro/)
+      }
+    })
+
+    it('accepts operator mounts that are siblings of reserved roots (no false-positive on substring)', () => {
+      // /home/claude/.claude is reserved; /home/claude/.claude-other shares
+      // the prefix as a substring but is NOT a descendant. Must not reject.
+      const mounts: SandboxMount[] = [
+        { hostPath: '/tmp/a', containerPath: '/home/claude/.claude-other' },
+        { hostPath: '/tmp/b', containerPath: '/home/claude/code' },
+        { hostPath: '/tmp/c', containerPath: '/home/operator/files' },
+        { hostPath: '/tmp/d', containerPath: '/mnt/data' },
+        { hostPath: '/tmp/e', containerPath: '/opt/tools' },
+      ]
+      expect(validateMounts(mounts, { operatorSupplied: true })).toBeNull()
+    })
+
+    it('rejects operator mount at /workspace via ALWAYS_RESERVED path (operatorSupplied also tripped)', () => {
+      const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace' }]
+      // ALWAYS_RESERVED fires first; either error is acceptable here.
+      expect(validateMounts(mounts, { operatorSupplied: true })).toMatch(/reserved/)
+    })
+
+    it('reservation completeness: every system mount builder containerPath maps to a reserved root', () => {
+      // If a future PR adds a new system-mount builder under a path that isn't
+      // in OPERATOR_RESERVED_CONTAINER_PATH_ROOTS, the operator could shadow it.
+      // This test forces the RESERVED list to stay in sync with the builders.
+      const uuid = 'test-uuid-completeness'
+      const home = '/tmp/test-home'
+      const allSystemMounts: SandboxMount[] = [
+        ...buildAmpCommonMounts(uuid, home, '/tmp/test-repo'),
+        buildCloudClaudeSettingsMount(uuid, home),
+        ...buildCloudClaudePersistMounts(uuid, home),
+        ...buildCloudClaudeReadthroughMounts(uuid, home),
+        buildCloudGeminiSettingsMount(uuid, home),
+        buildCloudGeminiOAuthMount(uuid, home),
+        ...buildCloudGeminiReadthroughMounts(uuid, home),
+        buildCloudCodexVersionMount(uuid, home),
+        buildCloudCodexAuthMount(uuid, home),
+        buildCloudCodexConfigTomlMount(uuid, home),
+      ]
+      const allReserved = [
+        ...ALWAYS_RESERVED_CONTAINER_PATH_ROOTS,
+        ...OPERATOR_RESERVED_CONTAINER_PATH_ROOTS,
+      ]
+      for (const m of allSystemMounts) {
+        const matched = allReserved.find(
+          r => m.containerPath === r || m.containerPath.startsWith(`${r}/`)
+        )
+        expect(
+          matched,
+          `system mount at ${m.containerPath} has no reserved root — operator could shadow it`
+        ).toBeDefined()
+      }
+    })
   })
 })
 
@@ -197,6 +310,84 @@ describe('validateExtraEnv', () => {
 
   it('rejects non-string values', () => {
     expect(validateExtraEnv({ FOO: 123 as unknown as string })).toMatch(/must be a string/)
+  })
+
+  describe('operator-env reservation (kanban 489c4afd)', () => {
+    it('passes system env keys without operatorSupplied flag', () => {
+      // buildAmpCommonEnv populates exactly these keys; internal callers hand
+      // this output through validateExtraEnv (transitively via flow tests).
+      const sysEnv = buildAmpCommonEnv(
+        'test-uuid-bbbb',
+        'test-agent',
+        'http://host.docker.internal:23000'
+      )
+      // Plus the baseEnv keys the docker service layers in:
+      const fullSystemEnv = {
+        ...sysEnv,
+        TMUX_SESSION_NAME: 'test-agent',
+        AI_TOOL: 'claude',
+        AGENT_ID: 'test-agent',
+        AIMAESTRO_HOST_URL: 'http://host.docker.internal:23000',
+      }
+      expect(validateExtraEnv(fullSystemEnv)).toBeNull()
+    })
+
+    it('rejects each OPERATOR_RESERVED key when operatorSupplied is true', () => {
+      for (const key of OPERATOR_RESERVED_ENV_KEYS) {
+        const err = validateExtraEnv({ [key]: 'evil' }, { operatorSupplied: true })
+        expect(err, `expected rejection for key ${key}`).toMatch(/reserved by AI Maestro/)
+        expect(err).toContain(key)
+      }
+    })
+
+    it('accepts the same keys when operatorSupplied is false', () => {
+      // Internal callers hand the same keys through this validator without the
+      // flag (e.g., the merged env that goes to buildEnvFlags). Reservation
+      // must not self-reject.
+      for (const key of OPERATOR_RESERVED_ENV_KEYS) {
+        expect(validateExtraEnv({ [key]: 'system-value' })).toBeNull()
+      }
+    })
+
+    it('does NOT reserve HOME (Shape β operator override use case)', () => {
+      // HOME=/workspace/<name> is the canonical Shape β agent-home override —
+      // operator must be able to set it via extraEnv.
+      expect(
+        validateExtraEnv({ HOME: '/workspace/myagent' }, { operatorSupplied: true })
+      ).toBeNull()
+    })
+
+    it('does NOT reserve GITHUB_TOKEN (alternative to body.githubToken)', () => {
+      // Operator may want to rotate GITHUB_TOKEN via extraEnv as an
+      // alternative to body.githubToken at create time.
+      expect(
+        validateExtraEnv({ GITHUB_TOKEN: 'ghp_example' }, { operatorSupplied: true })
+      ).toBeNull()
+    })
+
+    it('reservation completeness: every buildAmpCommonEnv key is reserved', () => {
+      // If a future PR adds a new key to buildAmpCommonEnv without updating
+      // OPERATOR_RESERVED_ENV_KEYS, the operator could shadow it.
+      const ampKeys = Object.keys(
+        buildAmpCommonEnv('test-uuid', 'test-agent', 'http://host.docker.internal:23000')
+      )
+      for (const key of ampKeys) {
+        expect(
+          OPERATOR_RESERVED_ENV_KEYS,
+          `buildAmpCommonEnv emits ${key} but it's not in OPERATOR_RESERVED_ENV_KEYS`
+        ).toContain(key)
+      }
+    })
+
+    it('accepts operator env with reserved-key-substring (no false positive)', () => {
+      // PATH is reserved; PATH_EXTRA is not (full-key match, not prefix).
+      expect(
+        validateExtraEnv(
+          { PATH_EXTRA: '/opt/foo/bin', MY_AGENT_ID: 'something' },
+          { operatorSupplied: true }
+        )
+      ).toBeNull()
+    })
   })
 })
 
