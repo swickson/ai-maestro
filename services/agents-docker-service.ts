@@ -1934,3 +1934,140 @@ export async function updateContainerMountsAndExtraEnv(
     status: 200,
   }
 }
+
+/**
+ * Normalize a docker-inspect `HostConfig.Memory` byte value to the canonical
+ * 'Xg' / 'Xm' string form that createDockerAgent accepts (default '4g'). Round
+ * to nearest integer GiB for typical sizes; fall back to MiB for sub-GiB.
+ */
+export function formatMemoryBytesToString(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    throw new Error(`formatMemoryBytesToString: invalid byte count ${bytes}`)
+  }
+  const gibFloat = bytes / 1024 ** 3
+  if (gibFloat >= 1) {
+    const gibRounded = Math.round(gibFloat)
+    // Within 1% of an integer GiB → use integer form (matches createDockerAgent
+    // defaults of '2g' / '4g' that docker normalizes to exact powers of 1024).
+    if (Math.abs(gibFloat - gibRounded) / gibRounded < 0.01) return `${gibRounded}g`
+    return `${gibFloat.toFixed(2)}g`
+  }
+  const mib = Math.round(bytes / 1024 ** 2)
+  return `${mib}m`
+}
+
+/**
+ * One-time backfill of `deployment.cloud.runtime` (cpus, memory, autoRemove)
+ * from `docker inspect` for legacy cloud agents that predate PR #146's
+ * runtime-persistence write at create time. Without this, `/recreate` and
+ * `/update-runtime` fall back to createDockerAgent's hard-coded defaults
+ * (cpus=2, memory='4g') for these agents — silent downsize for any agent
+ * that was originally created with non-default sizing via dashboard. See
+ * kanban 1ef9eabd.
+ *
+ * Idempotent: skips agents whose runtime block already has BOTH cpus and
+ * memory populated (the two fields that drive the silent-downsize hazard).
+ * autoRemove and extraEnv presence is not part of the idempotency gate
+ * (autoRemove defaults safely to false on a fresh runtime block; extraEnv
+ * is operator-driven and not part of the legacy gap).
+ *
+ * Read-only with respect to the running container — docker inspect doesn't
+ * touch container state, and updateAgentRuntimeConfig is a registry-only
+ * write. No /update-runtime / docker rebuild is triggered.
+ */
+export async function backfillAgentRuntime(
+  agentId: string
+): Promise<ServiceResult<Record<string, unknown>>> {
+  const agent = getAgent(agentId, true)
+  if (!agent) return notFound('Agent', agentId)
+  if (agent.deletedAt) return gone('Agent')
+
+  if (
+    agent.deployment?.type !== 'cloud' ||
+    agent.deployment.cloud?.provider !== 'local-container'
+  ) {
+    return invalidState(
+      `backfill-runtime is only supported for cloud agents with provider 'local-container' (agent ${agentId} is type=${agent.deployment?.type ?? 'unset'}, provider=${agent.deployment?.cloud?.provider ?? 'unset'})`
+    )
+  }
+
+  const existing = agent.deployment.cloud.runtime
+  if (existing?.cpus !== undefined && existing?.memory !== undefined) {
+    return {
+      data: {
+        success: true,
+        agentId,
+        action: 'skipped',
+        reason: 'runtime already populated (cpus + memory present)',
+        runtime: existing,
+      },
+      status: 200,
+    }
+  }
+
+  const containerName = agent.deployment.cloud.containerName
+  if (!containerName) {
+    return invalidState(
+      `agent ${agentId} has no containerName — cannot run docker inspect for backfill`
+    )
+  }
+
+  const safeContainerName = containerName.replace(/[^a-zA-Z0-9_-]/g, '')
+  let inspectOutput: string
+  try {
+    const { stdout } = await execAsync(
+      `docker inspect ${safeContainerName} --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.AutoRemove}}'`,
+      { timeout: 5000 }
+    )
+    inspectOutput = stdout.trim()
+  } catch (err) {
+    return operationFailed(
+      'docker inspect',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+
+  const [nanoCpusStr, memoryStr, autoRemoveStr] = inspectOutput.split('|')
+  const nanoCpus = parseInt(nanoCpusStr ?? '', 10)
+  const memoryBytes = parseInt(memoryStr ?? '', 10)
+  const cpus = nanoCpus / 1e9
+
+  if (!Number.isFinite(cpus) || cpus <= 0) {
+    return operationFailed(
+      'parse docker inspect cpus',
+      `NanoCpus=${nanoCpusStr} (computed cpus=${cpus}) is not a positive number; container may have unbounded CPU. Operator must set cpus explicitly before backfill is safe.`
+    )
+  }
+  if (!Number.isFinite(memoryBytes) || memoryBytes <= 0) {
+    return operationFailed(
+      'parse docker inspect memory',
+      `Memory=${memoryStr} bytes is not a positive number; container may have unbounded memory. Operator must set memory explicitly before backfill is safe.`
+    )
+  }
+
+  let memory: string
+  try {
+    memory = formatMemoryBytesToString(memoryBytes)
+  } catch (err) {
+    return operationFailed(
+      'format memory',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+  const autoRemove = autoRemoveStr === 'true'
+
+  const updated = updateAgentRuntimeConfig(agentId, { cpus, memory, autoRemove })
+  if (!updated) {
+    return invalidState(`agent ${agentId} disappeared during backfill`)
+  }
+
+  return {
+    data: {
+      success: true,
+      agentId,
+      action: 'backfilled',
+      runtime: { cpus, memory, autoRemove },
+    },
+    status: 200,
+  }
+}

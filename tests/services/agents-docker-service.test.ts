@@ -18,6 +18,7 @@ import {
   buildAmpCommonMounts,
   buildAmpCommonEnv,
   buildBaseAgentEnv,
+  formatMemoryBytesToString,
   buildCloudClaudeSettingsMount,
   buildCloudClaudePersistMounts,
   buildCloudClaudeReadthroughMounts,
@@ -1878,5 +1879,44 @@ describe('parsePortFromWebsocketUrl', () => {
 
   it('handles wss URLs', () => {
     expect(parsePortFromWebsocketUrl('wss://agent.example.com:443/term')).toBe(443)
+  })
+})
+
+describe('formatMemoryBytesToString (kanban 1ef9eabd)', () => {
+  // Maps docker inspect HostConfig.Memory (bytes) back to the canonical
+  // 'Xg' / 'Xm' string that createDockerAgent accepts (default '4g').
+  it('formats canonical createDockerAgent defaults exactly', () => {
+    // 2g default and 4g default — verify these round-trip cleanly through
+    // bytes → string with no precision loss.
+    expect(formatMemoryBytesToString(2 * 1024 ** 3)).toBe('2g')
+    expect(formatMemoryBytesToString(4 * 1024 ** 3)).toBe('4g')
+  })
+
+  it('rounds to integer GiB when within 1% of an integer', () => {
+    // docker inspect bytes for 4 GiB is exactly 4 * 1024^3 = 4294967296.
+    // Some configurations report off-by-a-few-bytes; round-to-integer keeps
+    // the canonical 'Xg' form when intent is obvious.
+    expect(formatMemoryBytesToString(4 * 1024 ** 3 + 100)).toBe('4g')
+    expect(formatMemoryBytesToString(4 * 1024 ** 3 - 100)).toBe('4g')
+  })
+
+  it('returns decimal GiB when not close to an integer', () => {
+    expect(formatMemoryBytesToString(Math.round(1.5 * 1024 ** 3))).toBe('1.50g')
+    expect(formatMemoryBytesToString(Math.round(3.25 * 1024 ** 3))).toBe('3.25g')
+  })
+
+  it('falls back to MiB for sub-GiB sizes', () => {
+    expect(formatMemoryBytesToString(512 * 1024 ** 2)).toBe('512m')
+    expect(formatMemoryBytesToString(256 * 1024 ** 2)).toBe('256m')
+  })
+
+  it('throws on non-positive or non-finite input', () => {
+    // backfillAgentRuntime gates this branch separately (returns operationFailed
+    // before calling format), but throw-guard keeps the helper honest if it's
+    // ever called from a new site.
+    expect(() => formatMemoryBytesToString(0)).toThrow(/invalid byte count/)
+    expect(() => formatMemoryBytesToString(-1)).toThrow(/invalid byte count/)
+    expect(() => formatMemoryBytesToString(NaN)).toThrow(/invalid byte count/)
+    expect(() => formatMemoryBytesToString(Infinity)).toThrow(/invalid byte count/)
   })
 })
