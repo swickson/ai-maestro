@@ -17,6 +17,7 @@ import {
   buildEnvFlags,
   buildAmpCommonMounts,
   buildAmpCommonEnv,
+  buildBaseAgentEnv,
   buildCloudClaudeSettingsMount,
   buildCloudClaudePersistMounts,
   buildCloudClaudeReadthroughMounts,
@@ -375,6 +376,23 @@ describe('validateExtraEnv', () => {
         expect(
           OPERATOR_RESERVED_ENV_KEYS,
           `buildAmpCommonEnv emits ${key} but it's not in OPERATOR_RESERVED_ENV_KEYS`
+        ).toContain(key)
+      }
+    })
+
+    it('reservation completeness: every buildBaseAgentEnv key is reserved', () => {
+      // Parallel guard for the per-container agent-identity env that
+      // createDockerAgent + updateContainerMountsAndExtraEnv both layer into
+      // the merged env before operator extraEnv. Future addition to
+      // buildBaseAgentEnv that isn't also added to OPERATOR_RESERVED_ENV_KEYS
+      // would let an operator silently fake agent identity.
+      const baseKeys = Object.keys(
+        buildBaseAgentEnv('test-agent', 'claude', 'http://host.docker.internal:23000')
+      )
+      for (const key of baseKeys) {
+        expect(
+          OPERATOR_RESERVED_ENV_KEYS,
+          `buildBaseAgentEnv emits ${key} but it's not in OPERATOR_RESERVED_ENV_KEYS`
         ).toContain(key)
       }
     })

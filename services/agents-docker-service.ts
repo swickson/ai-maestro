@@ -1013,6 +1013,22 @@ export function buildCloudGeminiReadthroughMounts(
 // scripts-dir bind mount in buildAmpCommonMounts (kanban 0d80aed7).
 const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:${CONTAINER_HOME}/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
 
+// Per-container agent-identity env (TMUX session, AI program, agent id, host
+// URL) that every cloud agent needs regardless of provider. createDockerAgent
+// and updateContainerMountsAndExtraEnv both layer this in BEFORE buildAmpCommonEnv
+// + operator extraEnv. Operator override of these keys would fake agent identity
+// inside the container; the keys are reserved against operator override in
+// OPERATOR_RESERVED_ENV_KEYS (and the reservation-completeness test in
+// agents-docker-service.test.ts forces the two lists to stay in sync).
+export function buildBaseAgentEnv(agentName: string, aiTool: string, hostUrl: string): Record<string, string> {
+  return {
+    TMUX_SESSION_NAME: agentName,
+    AI_TOOL: aiTool,
+    AGENT_ID: agentName,
+    AIMAESTRO_HOST_URL: hostUrl,
+  }
+}
+
 // AMP common envs tell amp-helper.sh exactly which agent identity dir to use
 // (priority 1 of its resolution order) and where to reach the AI Maestro server
 // from inside the container (host.docker.internal is added via --add-host).
@@ -1318,12 +1334,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const hostPort = process.env.PORT || '23000'
   const hostInternalUrl = `http://host.docker.internal:${hostPort}`
 
-  const baseEnv: Record<string, string> = {
-    TMUX_SESSION_NAME: name,
-    AI_TOOL: aiTool,
-    AGENT_ID: name,
-    AIMAESTRO_HOST_URL: hostInternalUrl,
-  }
+  const baseEnv: Record<string, string> = buildBaseAgentEnv(name, aiTool, hostInternalUrl)
   if (body.githubToken) {
     baseEnv.GITHUB_TOKEN = body.githubToken
   }
@@ -1816,12 +1827,7 @@ export async function updateContainerMountsAndExtraEnv(
   const hostPort = process.env.PORT || '23000'
   const hostInternalUrl = `http://host.docker.internal:${hostPort}`
 
-  const baseEnv: Record<string, string> = {
-    TMUX_SESSION_NAME: agent.name,
-    AI_TOOL: aiTool,
-    AGENT_ID: agent.name,
-    AIMAESTRO_HOST_URL: hostInternalUrl,
-  }
+  const baseEnv = buildBaseAgentEnv(agent.name, aiTool, hostInternalUrl)
   const ampEnv = buildAmpCommonEnv(agentId, agent.name, hostInternalUrl)
   const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, newExtraEnv)
 
