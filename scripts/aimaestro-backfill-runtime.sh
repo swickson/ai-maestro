@@ -127,16 +127,20 @@ while IFS=$'\t' read -r agent_id agent_name container_name; do
         continue
     fi
 
-    action=$(printf '%s' "$payload" | jq -r '.data.action // "unknown"')
+    # toResponse (app/api/_helpers.ts:25-26) JSONs result.data directly — the
+    # HTTP body has {success, agentId, action, runtime, reason, ...} at top
+    # level, NOT wrapped under .data. CelestIA caught this on PR #148 review
+    # before first dogfood.
+    action=$(printf '%s' "$payload" | jq -r '.action // "unknown"')
     case "$action" in
         backfilled)
             backfilled=$((backfilled + 1))
-            runtime=$(printf '%s' "$payload" | jq -r '.data.runtime | "cpus=\(.cpus) memory=\(.memory) autoRemove=\(.autoRemove)"')
+            runtime=$(printf '%s' "$payload" | jq -r '.runtime | "cpus=\(.cpus) memory=\(.memory) autoRemove=\(.autoRemove)"')
             printf 'backfilled (%s)\n' "$runtime"
             ;;
         skipped)
             skipped=$((skipped + 1))
-            reason=$(printf '%s' "$payload" | jq -r '.data.reason // ""')
+            reason=$(printf '%s' "$payload" | jq -r '.reason // ""')
             printf 'skipped (%s)\n' "$reason"
             ;;
         *)

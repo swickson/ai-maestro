@@ -568,6 +568,12 @@ export function updateAgent(id: string, updates: UpdateAgentRequest): Agent | nu
  * Pass `mounts: []` to clear all operator mounts. Pass `mounts: undefined`
  * (the default) to leave them untouched. Same semantics for `extraEnv`.
  *
+ * `cpus`, `memory`, and `autoRemove` are similarly field-level optional and
+ * follow the same omit-leaves-untouched / explicit-value-overwrites semantics.
+ * Wired in for the kanban 1ef9eabd backfill flow; pre-existing callers
+ * (createDockerAgent at create time, updateContainerMountsAndExtraEnv mid-life)
+ * still drive those fields through other paths.
+ *
  * Returns the updated agent, or null if not found.
  */
 export function updateAgentRuntimeConfig(
