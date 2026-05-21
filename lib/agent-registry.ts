@@ -568,11 +568,28 @@ export function updateAgent(id: string, updates: UpdateAgentRequest): Agent | nu
  * Pass `mounts: []` to clear all operator mounts. Pass `mounts: undefined`
  * (the default) to leave them untouched. Same semantics for `extraEnv`.
  *
+ * `cpus`, `memory`, and `autoRemove` are similarly field-level optional and
+ * follow the same omit-leaves-untouched / explicit-value-overwrites semantics.
+ * Wired in for the kanban 1ef9eabd backfill flow; pre-existing callers
+ * (createDockerAgent at create time, updateContainerMountsAndExtraEnv mid-life)
+ * still drive those fields through other paths.
+ *
  * Returns the updated agent, or null if not found.
  */
 export function updateAgentRuntimeConfig(
   id: string,
-  config: { mounts?: import('@/types/agent').SandboxMount[]; extraEnv?: Record<string, string> }
+  config: {
+    mounts?: import('@/types/agent').SandboxMount[]
+    extraEnv?: Record<string, string>
+    // Container sizing fields — historically only written by createDockerAgent
+    // at create time. The kanban 1ef9eabd backfill flow persists these from
+    // docker inspect for legacy agents that predate PR #146's runtime block.
+    // Each is field-level optional; omitted = leave untouched. Same semantics
+    // as mounts/extraEnv.
+    cpus?: number
+    memory?: string
+    autoRemove?: boolean
+  }
 ): Agent | null {
   const agents = loadAgents()
   const index = agents.findIndex(a => a.id === id)
@@ -591,12 +608,26 @@ export function updateAgentRuntimeConfig(
         : { ...(deployment.sandbox ?? {}), mounts: config.mounts }
   }
 
-  if (config.extraEnv !== undefined) {
+  const writesRuntime =
+    config.extraEnv !== undefined ||
+    config.cpus !== undefined ||
+    config.memory !== undefined ||
+    config.autoRemove !== undefined
+
+  if (writesRuntime) {
     const existingCloud = deployment.cloud
     const existingRuntime = existingCloud?.runtime ?? {}
-    const newRuntime = { ...existingRuntime, extraEnv: config.extraEnv }
-    if (Object.keys(config.extraEnv).length === 0) {
-      delete (newRuntime as { extraEnv?: Record<string, string> }).extraEnv
+    const newRuntime: NonNullable<NonNullable<Agent['deployment']['cloud']>['runtime']> = {
+      ...existingRuntime,
+    }
+    if (config.cpus !== undefined) newRuntime.cpus = config.cpus
+    if (config.memory !== undefined) newRuntime.memory = config.memory
+    if (config.autoRemove !== undefined) newRuntime.autoRemove = config.autoRemove
+    if (config.extraEnv !== undefined) {
+      newRuntime.extraEnv = config.extraEnv
+      if (Object.keys(config.extraEnv).length === 0) {
+        delete newRuntime.extraEnv
+      }
     }
     // Only persist a `cloud` block if one already existed — this helper isn't
     // a vehicle for converting a local agent into a cloud one. Caller is

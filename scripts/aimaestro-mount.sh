@@ -15,6 +15,15 @@
 # AMP keypair, and per-agent state directory stable. The container restarts
 # on every mount change; in-flight tmux state inside the container is lost.
 #
+# IMPORTANT for legacy agents (created before v0.30.84): The /update-runtime
+# rebuild reads cpus / memory / autoRemove from the agent's persisted
+# deployment.cloud.runtime block. Agents created before that block was added
+# will silently fall back to createDockerAgent defaults (cpus=2, memory=4g) —
+# silent downsize for any agent originally sized higher via dashboard. Run
+# `aimaestro-backfill-runtime` ONCE per host before operating on legacy
+# agents with this tool (kanban 1ef9eabd). The backfill is idempotent and
+# reads docker inspect — no container restart, no UUID rotation.
+#
 # Standalone — no dependency on the aimaestro-agent.sh modular CLI. Requires
 # only curl + jq.
 

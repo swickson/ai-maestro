@@ -1172,4 +1172,69 @@ describe('updateAgentRuntimeConfig', () => {
     const updated = updateAgentRuntimeConfig(agent.id, {})
     expect(updated?.lastActive).not.toBe(before)
   })
+
+  describe('cpus / memory / autoRemove fields (kanban 1ef9eabd)', () => {
+    it('persists cpus + memory + autoRemove into deployment.cloud.runtime', () => {
+      const agent = makeCloudAgent('rt-fields-1')
+      const updated = updateAgentRuntimeConfig(agent.id, {
+        cpus: 4,
+        memory: '8g',
+        autoRemove: true,
+      })
+      expect(updated?.deployment?.cloud?.runtime).toEqual({
+        cpus: 4,
+        memory: '8g',
+        autoRemove: true,
+      })
+    })
+
+    it('field-level merge: setting only cpus preserves existing memory + extraEnv', () => {
+      const agent = makeCloudAgent('rt-fields-2')
+      updateAgentRuntimeConfig(agent.id, {
+        memory: '4g',
+        extraEnv: { FOO: 'bar' },
+      })
+      updateAgentRuntimeConfig(agent.id, { cpus: 2 })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+        cpus: 2,
+        memory: '4g',
+        extraEnv: { FOO: 'bar' },
+      })
+    })
+
+    it('overwriting cpus replaces only that field', () => {
+      const agent = makeCloudAgent('rt-fields-3')
+      updateAgentRuntimeConfig(agent.id, { cpus: 2, memory: '4g', autoRemove: false })
+      updateAgentRuntimeConfig(agent.id, { cpus: 8 })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+        cpus: 8,
+        memory: '4g',
+        autoRemove: false,
+      })
+    })
+
+    it('only writes cloud.runtime when the agent already has a cloud deployment block', () => {
+      // Mirrors the existing extraEnv-only branch behavior — this helper isn't
+      // a vehicle for converting a local agent into a cloud one.
+      const localAgent = createAgent(makeCreateRequest({ name: 'rt-local', deploymentType: 'local' }))
+      const updated = updateAgentRuntimeConfig(localAgent.id, {
+        cpus: 4,
+        memory: '4g',
+      })
+      // Helper does not create a cloud block; runtime is dropped.
+      expect(updated?.deployment?.cloud).toBeUndefined()
+    })
+
+    it('writesRuntime gate fires when any of cpus/memory/autoRemove is set, with no extraEnv', () => {
+      // Pre-#1ef9eabd, only `config.extraEnv !== undefined` triggered the
+      // runtime block write. Backfill needs the gate to also fire for
+      // cpus/memory/autoRemove-only updates.
+      const agent = makeCloudAgent('rt-fields-5')
+      updateAgentRuntimeConfig(agent.id, { autoRemove: true })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.cloud?.runtime).toEqual({ autoRemove: true })
+    })
+  })
 })
