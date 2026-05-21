@@ -150,10 +150,27 @@ cmd_add() {
         print_err "container-path must be absolute: ${container_path}"
         exit 1
     fi
-    if [[ "$container_path" == "/workspace" ]]; then
-        print_err "/workspace is reserved for the agent working directory"
-        exit 1
-    fi
+    # Reserved container paths — mirrors services/agents-docker-service.ts
+    # ALWAYS_RESERVED_CONTAINER_PATH_ROOTS + OPERATOR_RESERVED_CONTAINER_PATH_ROOTS.
+    # Failing fast here avoids a destructive container rebuild + a 400 round-trip
+    # for a path that the server would reject. Server is authoritative.
+    local reserved_root
+    for reserved_root in \
+        "/workspace" \
+        "/home/claude/.agent-messaging" \
+        "/home/claude/.aimaestro" \
+        "/home/claude/.local" \
+        "/home/claude/.claude" \
+        "/home/claude/.claude.json" \
+        "/home/claude/.gemini" \
+        "/home/claude/.codex" \
+        "/home/claude/.config/gh"
+    do
+        if [[ "$container_path" == "$reserved_root" || "$container_path" == "${reserved_root}/"* ]]; then
+            print_err "container-path \"${container_path}\" is reserved by AI Maestro (matches \"${reserved_root}\") — operator mounts cannot shadow AMP common mounts, claude/gemini/codex state, or the agent working directory"
+            exit 1
+        fi
+    done
     if [[ ! -e "$host_path" ]]; then
         print_err "host-path does not exist: ${host_path}"
         exit 1

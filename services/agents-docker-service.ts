@@ -65,11 +65,74 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // USER ever changes, update this and the Dockerfile together.
 const CONTAINER_HOME = '/home/claude'
 
+// Container paths reserved unconditionally — operator AND internal callers are
+// both forbidden from declaring mounts here. /workspace is the operator's
+// workingDirectory bind, owned by the docker run -v ${workDir}:/workspace flag.
+export const ALWAYS_RESERVED_CONTAINER_PATH_ROOTS: readonly string[] = ['/workspace']
+
+// Container paths AI Maestro itself mounts at docker-run time via the
+// buildAmpCommonMounts + buildCloud{Claude,Gemini,Codex}* skeletons. mergeMounts
+// is operator-wins on containerPath collision (line 973-976), so an operator-
+// declared mount under any of these would shadow the system mount and destroy
+// the agent's AMP identity / claude / gemini / codex state inside the container.
+// Reservation rejects collisions at validation time before mergeMounts gets to
+// silently swap them. Reservation matches the path EXACTLY or any descendant.
+export const OPERATOR_RESERVED_CONTAINER_PATH_ROOTS: readonly string[] = [
+  `${CONTAINER_HOME}/.agent-messaging`,  // AMP per-uuid state (buildAmpCommonMounts)
+  `${CONTAINER_HOME}/.aimaestro`,        // AMP per-uuid state + chat-state
+  `${CONTAINER_HOME}/.local`,            // shell-helpers, cli, .local/bin
+  `${CONTAINER_HOME}/.claude`,           // settings, .credentials.json, projects
+  `${CONTAINER_HOME}/.claude.json`,      // claude persist root config (file)
+  `${CONTAINER_HOME}/.gemini`,           // settings, oauth, tmp/<project>
+  `${CONTAINER_HOME}/.codex`,            // config.toml, version.json, auth.json
+  `${CONTAINER_HOME}/.config/gh`,        // gh credentials
+]
+
+// Env keys AI Maestro itself sets per-container via baseEnv (createDockerAgent
+// line ~1242, updateContainerMountsAndExtraEnv line ~1740) + buildAmpCommonEnv.
+// mergeEnv is operator-wins on key collision (line 980-982), so operator-
+// declared extraEnv with these keys would override agent identity (AGENT_ID,
+// TMUX_SESSION_NAME, AI_TOOL, AIMAESTRO_HOST_URL) or AMP routing (AMP_*,
+// CLAUDE_AGENT_*, PATH, GEMINI_CLI_TRUST_WORKSPACE) inside the container —
+// every outbound AMP message becomes unverifiable.
+//
+// NOT reserved: HOME (legitimate operator override for Shape β agent-home),
+// GITHUB_TOKEN (operator may want to set/rotate via extraEnv as an alternative
+// to body.githubToken at create time).
+export const OPERATOR_RESERVED_ENV_KEYS: readonly string[] = [
+  'TMUX_SESSION_NAME',
+  'AI_TOOL',
+  'AGENT_ID',
+  'AIMAESTRO_HOST_URL',
+  'CLAUDE_AGENT_ID',
+  'CLAUDE_AGENT_NAME',
+  'AMP_AGENT_ID',
+  'AMP_DIR',
+  'AMP_MAESTRO_URL',
+  'PATH',
+  'GEMINI_CLI_TRUST_WORKSPACE',
+]
+
+function findReservedRoot(p: string, roots: readonly string[]): string | null {
+  for (const r of roots) {
+    if (p === r || p.startsWith(`${r}/`)) return r
+  }
+  return null
+}
+
 // Trusts the caller: sandbox.mounts is operator-declared today (e.g., agent
 // creation by the dashboard or a host operator). If this ever becomes user-
 // controlled (an agent mutating its own mounts, unprivileged operators), add
 // realpath + prefix-check against an allow-list of host roots before shelling.
-export function validateMounts(mounts: SandboxMount[] | undefined): string | null {
+//
+// `options.operatorSupplied` enables the reservation check against
+// OPERATOR_RESERVED_CONTAINER_PATH_ROOTS — call sites that hand internal
+// system-mount builders' output through this validator (tests, internal
+// merges) MUST omit the flag to avoid self-rejection.
+export function validateMounts(
+  mounts: SandboxMount[] | undefined,
+  options: { operatorSupplied?: boolean } = {}
+): string | null {
   if (!mounts) return null
   for (const [i, m] of mounts.entries()) {
     if (typeof m?.hostPath !== 'string' || typeof m?.containerPath !== 'string') {
@@ -81,14 +144,27 @@ export function validateMounts(mounts: SandboxMount[] | undefined): string | nul
     if (UNSAFE_PATH_CHARS.test(m.hostPath) || UNSAFE_PATH_CHARS.test(m.containerPath)) {
       return `mounts[${i}]: paths must not contain quotes, backticks, $, backslashes, or newlines`
     }
-    if (m.containerPath === '/workspace') {
-      return `mounts[${i}]: /workspace is reserved for the agent working directory`
+    const alwaysReserved = findReservedRoot(m.containerPath, ALWAYS_RESERVED_CONTAINER_PATH_ROOTS)
+    if (alwaysReserved) {
+      return `mounts[${i}]: containerPath "${m.containerPath}" is reserved (${alwaysReserved} is the agent working directory)`
+    }
+    if (options.operatorSupplied) {
+      const operatorReserved = findReservedRoot(m.containerPath, OPERATOR_RESERVED_CONTAINER_PATH_ROOTS)
+      if (operatorReserved) {
+        return `mounts[${i}]: containerPath "${m.containerPath}" is reserved by AI Maestro (matches "${operatorReserved}") — operator-declared mounts cannot shadow AMP common mounts or claude/gemini/codex state, these are managed automatically per-agent`
+      }
     }
   }
   return null
 }
 
-export function validateExtraEnv(env: Record<string, string> | undefined): string | null {
+// `options.operatorSupplied` enables the reservation check against
+// OPERATOR_RESERVED_ENV_KEYS — call sites that hand internal env (baseEnv,
+// buildAmpCommonEnv output) through this validator MUST omit the flag.
+export function validateExtraEnv(
+  env: Record<string, string> | undefined,
+  options: { operatorSupplied?: boolean } = {}
+): string | null {
   if (!env) return null
   for (const [key, value] of Object.entries(env)) {
     if (!ENV_KEY_RE.test(key)) {
@@ -99,6 +175,9 @@ export function validateExtraEnv(env: Record<string, string> | undefined): strin
     }
     if (UNSAFE_ENV_VALUE_CHARS.test(value)) {
       return `extraEnv["${key}"]: value must not contain quotes, backticks, $, backslashes, or newlines`
+    }
+    if (options.operatorSupplied && OPERATOR_RESERVED_ENV_KEYS.includes(key)) {
+      return `extraEnv["${key}"]: key is reserved by AI Maestro — operator-declared extraEnv cannot shadow agent identity (AGENT_ID, TMUX_SESSION_NAME, AI_TOOL, AIMAESTRO_HOST_URL) or AMP routing (AMP_*, CLAUDE_AGENT_*, PATH, GEMINI_CLI_TRUST_WORKSPACE)`
     }
   }
   return null
@@ -934,6 +1013,22 @@ export function buildCloudGeminiReadthroughMounts(
 // scripts-dir bind mount in buildAmpCommonMounts (kanban 0d80aed7).
 const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:${CONTAINER_HOME}/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
 
+// Per-container agent-identity env (TMUX session, AI program, agent id, host
+// URL) that every cloud agent needs regardless of provider. createDockerAgent
+// and updateContainerMountsAndExtraEnv both layer this in BEFORE buildAmpCommonEnv
+// + operator extraEnv. Operator override of these keys would fake agent identity
+// inside the container; the keys are reserved against operator override in
+// OPERATOR_RESERVED_ENV_KEYS (and the reservation-completeness test in
+// agents-docker-service.test.ts forces the two lists to stay in sync).
+export function buildBaseAgentEnv(agentName: string, aiTool: string, hostUrl: string): Record<string, string> {
+  return {
+    TMUX_SESSION_NAME: agentName,
+    AI_TOOL: aiTool,
+    AGENT_ID: agentName,
+    AIMAESTRO_HOST_URL: hostUrl,
+  }
+}
+
 // AMP common envs tell amp-helper.sh exactly which agent identity dir to use
 // (priority 1 of its resolution order) and where to reach the AI Maestro server
 // from inside the container (host.docker.internal is added via --add-host).
@@ -1136,12 +1231,12 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return missingField('name')
   }
 
-  const mountError = validateMounts(body.mounts)
+  const mountError = validateMounts(body.mounts, { operatorSupplied: true })
   if (mountError) {
     return invalidRequest(mountError)
   }
 
-  const envError = validateExtraEnv(body.extraEnv)
+  const envError = validateExtraEnv(body.extraEnv, { operatorSupplied: true })
   if (envError) {
     return invalidRequest(envError)
   }
@@ -1239,12 +1334,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const hostPort = process.env.PORT || '23000'
   const hostInternalUrl = `http://host.docker.internal:${hostPort}`
 
-  const baseEnv: Record<string, string> = {
-    TMUX_SESSION_NAME: name,
-    AI_TOOL: aiTool,
-    AGENT_ID: name,
-    AIMAESTRO_HOST_URL: hostInternalUrl,
-  }
+  const baseEnv: Record<string, string> = buildBaseAgentEnv(name, aiTool, hostInternalUrl)
   if (body.githubToken) {
     baseEnv.GITHUB_TOKEN = body.githubToken
   }
@@ -1685,11 +1775,11 @@ export async function updateContainerMountsAndExtraEnv(
   // docker work. Empty arrays/objects are valid (= "clear"), so only validate
   // when the caller actually supplied a value.
   if (config.mounts !== undefined) {
-    const mountError = validateMounts(config.mounts)
+    const mountError = validateMounts(config.mounts, { operatorSupplied: true })
     if (mountError) return invalidRequest(mountError)
   }
   if (config.extraEnv !== undefined) {
-    const envError = validateExtraEnv(config.extraEnv)
+    const envError = validateExtraEnv(config.extraEnv, { operatorSupplied: true })
     if (envError) return invalidRequest(envError)
   }
 
@@ -1737,12 +1827,7 @@ export async function updateContainerMountsAndExtraEnv(
   const hostPort = process.env.PORT || '23000'
   const hostInternalUrl = `http://host.docker.internal:${hostPort}`
 
-  const baseEnv: Record<string, string> = {
-    TMUX_SESSION_NAME: agent.name,
-    AI_TOOL: aiTool,
-    AGENT_ID: agent.name,
-    AIMAESTRO_HOST_URL: hostInternalUrl,
-  }
+  const baseEnv = buildBaseAgentEnv(agent.name, aiTool, hostInternalUrl)
   const ampEnv = buildAmpCommonEnv(agentId, agent.name, hostInternalUrl)
   const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, newExtraEnv)
 
