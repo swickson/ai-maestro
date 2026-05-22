@@ -870,6 +870,10 @@ export function buildCloudRestorationSentinelMount(
   return {
     hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'restoration'),
     containerPath: '/restoration-ready',
+    // Container side only READS the sentinel — principle of least privilege.
+    // Host owns all writes via writeRestorationSentinel / clearRestorationSentinel.
+    // CelestIA polish on PR #154 (kanban fcabb870).
+    readOnly: true,
   }
 }
 
