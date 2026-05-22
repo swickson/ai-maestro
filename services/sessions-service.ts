@@ -712,8 +712,15 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     console.warn(`[Sessions] Could not set up AMP for ${agentName}:`, ampError)
   }
 
-  // Launch program
-  const selectedProgram = (program || 'claude-code').toLowerCase()
+  // Launch program. Fall back to existingAgent.program BEFORE the
+  // 'claude-code' literal so a wake-path that doesn't forward the program
+  // field (UI-less reattach, scripted wake) picks up the registry's
+  // current program value. Without this, an antigravity agent woken via
+  // a no-program POST falls through to 'claude-code' and the dispatch
+  // launches `claude` instead of `agy`. agents-core-service.ts:1710 already
+  // does this for its wake path; mirroring here closes PR-3. Banked
+  // empirical: LucIA (dev-ziggy-fullstack, Milo) 2026-05-22.
+  const selectedProgram = (program || existingAgent?.program || 'claude-code').toLowerCase()
   if (selectedProgram !== 'none' && selectedProgram !== 'terminal') {
     let startCommand = ''
     if (selectedProgram.includes('claude')) startCommand = 'claude'

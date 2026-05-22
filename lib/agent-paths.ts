@@ -34,6 +34,48 @@ export interface AgentPathInput {
   preferences?: { defaultWorkingDirectory?: string }
 }
 
+/**
+ * Resolve a program identifier (agent.program — "antigravity", "claude",
+ * "gemini", "codex", "aider", "cursor", "opencode") to the actual binary
+ * name. Most identifiers happen to equal their binary; antigravity is the
+ * outlier (binary: `agy`) and is the load-bearing reason this resolver
+ * exists rather than callers using `program` verbatim.
+ *
+ * Two call sites consume this:
+ *   - services/agents-core-service.ts host-wake resolveStartCommand (legacy
+ *     site, kept as re-export for back-compat)
+ *   - services/agents-docker-service.ts cloud-agent AI_TOOL env
+ *     composition. Without applying this at composition time, AI_TOOL
+ *     bakes the program identifier verbatim into the container env, and
+ *     agent-container/agent-server.js:167's
+ *     `tmux send-keys "unset CI && ${AI_TOOL}"` wake-line fails with
+ *     `command not found: antigravity` on first wake. PR-3 hotfix.
+ *
+ * Lives in this lib leaf module (not in services/agents-core-service.ts
+ * where the host-wake resolveStartCommand previously sat) because importing
+ * agents-core-service into agents-docker-service drags the runtime/cozo
+ * import chain into otherwise-pure code, breaking the docker-service test
+ * file load.
+ */
+export function resolveStartCommand(program: string): string {
+  if (program.includes('claude') || program.includes('claude code')) {
+    return 'claude'
+  } else if (program.includes('codex')) {
+    return 'codex'
+  } else if (program.includes('aider')) {
+    return 'aider'
+  } else if (program.includes('cursor')) {
+    return 'cursor'
+  } else if (program.includes('antigravity')) {
+    return 'agy'
+  } else if (program.includes('gemini')) {
+    return 'gemini'
+  } else if (program.includes('opencode')) {
+    return 'opencode'
+  }
+  return 'claude' // Default
+}
+
 // Cloud-agent provider — normalized from agent.program (free-form values like
 // 'claude code', 'claude-code', 'gemini', 'codex' across the registry). The
 // resolver only needs to know "is this Claude, Gemini, or Codex" so it can
