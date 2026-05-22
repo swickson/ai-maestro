@@ -18,6 +18,7 @@ import { registerAgent } from '@/services/amp-service'
 import { type ServiceResult, missingField, operationFailed, invalidRequest, invalidState, notFound, gone, serviceError } from '@/services/service-errors'
 import type { Agent, SandboxMount } from '@/types/agent'
 import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
+import { resolveStartCommand } from '@/lib/agent-paths'
 
 const execAsync = promisify(exec)
 
@@ -1340,9 +1341,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return serviceError('operation_failed', 'No available ports in range 23001-23100', 503)
   }
 
-  // Build the AI_TOOL environment variable
+  // Build the AI_TOOL environment variable. Resolve the program identifier
+  // to its in-container binary name BEFORE composing — for most programs
+  // (claude/codex/gemini/aider/cursor/opencode) the identifier == binary, but
+  // antigravity → `agy` so a verbatim `program` would bake an unrunnable
+  // command into AI_TOOL and agent-server.js:167's `unset CI && ${AI_TOOL}`
+  // wake-line would fail with `command not found: antigravity`. PR-3 hotfix.
   const program = body.program || 'claude'
-  let aiTool = program
+  let aiTool = resolveStartCommand(program)
   if (body.yolo) {
     aiTool += ' --dangerously-skip-permissions'
   }
@@ -1853,9 +1859,11 @@ export async function updateContainerMountsAndExtraEnv(
 
   // Rebuild AI_TOOL from persisted fields. Matches recreate semantics — yolo,
   // prompt, and dashboard-supplied githubToken are NOT preserved (same gap
-  // as buildRecreateBody, tracked separately).
+  // as buildRecreateBody, tracked separately). Resolve the program identifier
+  // to its in-container binary name before composing — see createDockerAgent
+  // for the load-bearing reason (PR-3 hotfix).
   const program = agent.program || 'claude'
-  let aiTool = program
+  let aiTool = resolveStartCommand(program)
   if (agent.programArgs) {
     const sanitizedArgs = agent.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
     if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`

@@ -146,6 +146,7 @@ import {
   MESH_PRIMER,
   loadMeshPrimer,
   FIRST_RUN_MODAL_PATTERN,
+  resolveStartCommand,
 } from '@/services/agents-core-service'
 
 // ============================================================================
@@ -1667,5 +1668,49 @@ describe('FIRST_RUN_MODAL_PATTERN', () => {
   it('does not match an empty bash shell prompt', () => {
     const pane = 'claude@aim-test:/workspace$ '
     expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(false)
+  })
+})
+
+// ============================================================================
+// resolveStartCommand (PR-3 hotfix coverage)
+// ============================================================================
+
+describe('resolveStartCommand', () => {
+  // Mostly-identity mappings — program identifier equals binary name.
+  it('claude → claude', () => {
+    expect(resolveStartCommand('claude')).toBe('claude')
+    expect(resolveStartCommand('claude-code')).toBe('claude')
+    expect(resolveStartCommand('claude code')).toBe('claude')
+  })
+
+  it('codex → codex', () => {
+    expect(resolveStartCommand('codex')).toBe('codex')
+  })
+
+  it('aider / cursor / gemini / opencode → themselves', () => {
+    expect(resolveStartCommand('aider')).toBe('aider')
+    expect(resolveStartCommand('cursor')).toBe('cursor')
+    expect(resolveStartCommand('gemini')).toBe('gemini')
+    expect(resolveStartCommand('opencode')).toBe('opencode')
+  })
+
+  // The load-bearing case for the PR-3 hotfix: program identifier
+  // "antigravity" MUST resolve to the binary name "agy". Without this
+  // remap, services/agents-docker-service.ts composed AI_TOOL=`antigravity
+  // <args>`, baked it into the container env, and agent-container/
+  // agent-server.js:167's `tmux send-keys "unset CI && ${AI_TOOL}"`
+  // wake-line fired `command not found: antigravity` on first wake of
+  // cloud antigravity agents. Verified empirically on Han 2026-05-22.
+  it('antigravity → agy (PR-3 hotfix — binary name, not identifier)', () => {
+    expect(resolveStartCommand('antigravity')).toBe('agy')
+    // Resolver matches lowercase substrings, mirroring host-wake call sites
+    // that lowercase before calling. The cloud-side caller (agents-docker-
+    // service.ts) passes agent.program which is the dropdown `value` field
+    // (lowercase 'antigravity'), so no defensive lowercasing here.
+  })
+
+  it('falls back to claude for unknown programs', () => {
+    expect(resolveStartCommand('mystery')).toBe('claude')
+    expect(resolveStartCommand('')).toBe('claude')
   })
 })

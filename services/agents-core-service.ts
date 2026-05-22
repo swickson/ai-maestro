@@ -187,25 +187,13 @@ function sanitizeArgs(args: string): string {
   return args.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
 }
 
-/** Resolve program name to CLI command */
-function resolveStartCommand(program: string): string {
-  if (program.includes('claude') || program.includes('claude code')) {
-    return 'claude'
-  } else if (program.includes('codex')) {
-    return 'codex'
-  } else if (program.includes('aider')) {
-    return 'aider'
-  } else if (program.includes('cursor')) {
-    return 'cursor'
-  } else if (program.includes('antigravity')) {
-    return 'agy'
-  } else if (program.includes('gemini')) {
-    return 'gemini'
-  } else if (program.includes('opencode')) {
-    return 'opencode'
-  }
-  return 'claude' // Default
-}
+/** Resolve program name to CLI command. Imported + re-exported from
+ * lib/agent-paths.ts — lives there now so services/agents-docker-service.ts
+ * can import the resolver without dragging the cozo-node / runtime chain
+ * that agents-core-service pulls in. PR-3 hotfix kept the export so test
+ * call sites in tests/services/agents-core-service.test.ts don't churn. */
+import { resolveStartCommand } from '@/lib/agent-paths'
+export { resolveStartCommand }
 
 /**
  * Wait until the CLI program in a tmux session is ready to accept input.
