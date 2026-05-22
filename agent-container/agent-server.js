@@ -18,6 +18,7 @@ const pty = require('node-pty')
 const { spawn } = require('child_process')
 const { promisify } = require('util')
 const exec = promisify(require('child_process').exec)
+const { ensureClaudeHomeTheme } = require('./claude-home-merge.cjs')
 
 // Configuration from environment variables
 const PORT = process.env.AGENT_PORT || 23000
@@ -433,6 +434,21 @@ Waiting for browser connections...
 
   // Configure git with credentials
   await configureGit()
+
+  // Defense-in-depth: re-inject theme=dark into ~/.claude.json if claude-code
+  // dropped it on its last shutdown. Host-side provisionCloudClaudeConfig
+  // (services/agents-docker-service.ts:413-438, PR #120 / kanban 406ff85d)
+  // seeds the field on create + on /recreate-via-migrateAgentPersistence so
+  // the first-launch theme picker doesn't fire. But empirical 2026-05-22
+  // mesh survey: 4-of-4 cloud claude agents post-launch (numStartups ≥ 22)
+  // have theme MISSING, while 4-of-4 non-claude agents (claude never ran)
+  // have theme intact — claude-code rewrites ~/.claude.json on launch and
+  // doesn't preserve our seed. Running the same shape-aware merge here pre-
+  // tmux means claude's next read always sees a complete shape, defending
+  // against any future claude behavior that re-triggers the picker on the
+  // missing-field signal. Idempotent + safe on non-claude programs (file
+  // is bind-mounted unconditionally; no-op if theme already a string).
+  ensureClaudeHomeTheme('/home/claude/.claude.json')
 
   // Initialize tmux session
   await initializeTmuxSession()

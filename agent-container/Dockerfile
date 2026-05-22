@@ -117,6 +117,7 @@ RUN npm install -g \
 
 # Copy agent server code
 COPY agent-server.js ./
+COPY claude-home-merge.cjs ./
 RUN chmod +x agent-server.js
 
 # Create workspace directory
