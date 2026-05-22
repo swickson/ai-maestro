@@ -307,6 +307,12 @@ export interface AgentDeployment {
       autoRemove?: boolean
       extraEnv?: Record<string, string>
     }
+    // Set when a PATCH mutates an AI_TOOL-composing field (program, programArgs,
+    // model) on this cloud agent. Indicates the running container's baked-in
+    // env diverges from the registry — /update-runtime (or /recreate) rebuilds
+    // the container and clears this. Treat presence as "container restart
+    // required to surface the registry change at runtime." See kanban aa2953b0.
+    containerStaleSince?: number
   }
 
   // Sandbox configuration (currently consumed by cloud/container deployments)

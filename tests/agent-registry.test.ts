@@ -91,6 +91,8 @@ import {
   addSessionToAgent,
   incrementAgentMetric,
   updateAgentRuntimeConfig,
+  markCloudContainerStale,
+  clearCloudContainerStale,
 } from '@/lib/agent-registry'
 import type { Agent, CreateAgentRequest } from '@/types/agent'
 
@@ -1236,5 +1238,106 @@ describe('updateAgentRuntimeConfig', () => {
       const reloaded = getAgent(agent.id)
       expect(reloaded?.deployment?.cloud?.runtime).toEqual({ autoRemove: true })
     })
+  })
+})
+
+// ============================================================================
+// kanban aa2953b0 — containerStaleSince helpers
+// ============================================================================
+
+describe('markCloudContainerStale + clearCloudContainerStale', () => {
+  function makeCloudAgent(name: string): Agent {
+    const agent = createAgent(makeCreateRequest({ name, deploymentType: 'cloud' }))
+    const agents = loadAgents()
+    const idx = agents.findIndex(a => a.id === agent.id)
+    agents[idx].deployment = {
+      type: 'cloud',
+      cloud: {
+        provider: 'local-container',
+        containerName: `aim-${name}`,
+        websocketUrl: 'ws://localhost:23001/term',
+        status: 'running',
+      },
+    }
+    saveAgents(agents)
+    return agents[idx]
+  }
+
+  it('markCloudContainerStale sets containerStaleSince to a recent epoch ms', () => {
+    const agent = makeCloudAgent('stale-1')
+    const before = Date.now()
+    const marked = markCloudContainerStale(agent.id)
+    const after = Date.now()
+    expect(marked?.deployment?.cloud?.containerStaleSince).toBeDefined()
+    expect(marked!.deployment!.cloud!.containerStaleSince!).toBeGreaterThanOrEqual(before)
+    expect(marked!.deployment!.cloud!.containerStaleSince!).toBeLessThanOrEqual(after)
+  })
+
+  it('markCloudContainerStale persists across reload', () => {
+    const agent = makeCloudAgent('stale-2')
+    markCloudContainerStale(agent.id)
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.containerStaleSince).toBeDefined()
+  })
+
+  it('markCloudContainerStale is idempotent (re-marking overwrites)', () => {
+    const agent = makeCloudAgent('stale-3')
+    markCloudContainerStale(agent.id)
+    const first = getAgent(agent.id)!.deployment!.cloud!.containerStaleSince!
+    // Wait briefly to ensure a later Date.now() value
+    const second = markCloudContainerStale(agent.id)!.deployment!.cloud!.containerStaleSince!
+    expect(second).toBeGreaterThanOrEqual(first)
+  })
+
+  it('markCloudContainerStale is a no-op for local agents (no cloud block)', () => {
+    // Local agent has no `cloud` block — marking should preserve identity, not
+    // synthesize a cloud block from thin air. Returns the agent unchanged.
+    const agent = createAgent(makeCreateRequest({ name: 'local-mark', deploymentType: 'local' }))
+    const result = markCloudContainerStale(agent.id)
+    expect(result?.deployment?.cloud).toBeUndefined()
+  })
+
+  it('markCloudContainerStale returns null for unknown id', () => {
+    expect(markCloudContainerStale('nonexistent-id')).toBeNull()
+  })
+
+  it('clearCloudContainerStale removes the flag', () => {
+    const agent = makeCloudAgent('stale-clear-1')
+    markCloudContainerStale(agent.id)
+    expect(getAgent(agent.id)?.deployment?.cloud?.containerStaleSince).toBeDefined()
+    clearCloudContainerStale(agent.id)
+    expect(getAgent(agent.id)?.deployment?.cloud?.containerStaleSince).toBeUndefined()
+  })
+
+  it('clearCloudContainerStale preserves other cloud fields (runtime, containerName)', () => {
+    const agent = makeCloudAgent('stale-clear-2')
+    // Seed a runtime block + extraEnv first
+    updateAgentRuntimeConfig(agent.id, {
+      cpus: 4,
+      memory: '8g',
+      extraEnv: { FOO: 'bar' },
+    })
+    markCloudContainerStale(agent.id)
+    clearCloudContainerStale(agent.id)
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.containerStaleSince).toBeUndefined()
+    expect(reloaded?.deployment?.cloud?.containerName).toBe('aim-stale-clear-2')
+    expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+      cpus: 4,
+      memory: '8g',
+      extraEnv: { FOO: 'bar' },
+    })
+  })
+
+  it('clearCloudContainerStale is a no-op when flag was not set', () => {
+    const agent = makeCloudAgent('stale-clear-3')
+    const before = getAgent(agent.id)
+    clearCloudContainerStale(agent.id)
+    const after = getAgent(agent.id)
+    expect(after?.deployment?.cloud).toEqual(before?.deployment?.cloud)
+  })
+
+  it('clearCloudContainerStale returns null for unknown id', () => {
+    expect(clearCloudContainerStale('nonexistent-id')).toBeNull()
   })
 })
