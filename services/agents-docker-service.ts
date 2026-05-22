@@ -856,6 +856,84 @@ export function buildCloudAntigravityAppDataMount(
   }
 }
 
+// Bind-mount for the post-restoration-ready sentinel (kanban fcabb870). The
+// host writes `${agentDir}/restoration/complete` at the end of
+// createDockerAgent / updateContainerMountsAndExtraEnv, after all mount prep
+// and registry writes resolve. The container's agent-server.js polls
+// /restoration-ready/complete pre-tmux-init and blocks AI_TOOL launch until
+// it appears (or its 10s timeout elapses). Closes the Han EACCES race where
+// docker run + tmux send-keys would fire before host-side prep finished.
+export function buildCloudRestorationSentinelMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'restoration'),
+    containerPath: '/restoration-ready',
+  }
+}
+
+const RESTORATION_SENTINEL_FILENAME = 'complete'
+
+/**
+ * Remove a stale restoration-ready sentinel so the next container start
+ * observes only the fresh write. Called by updateContainerMountsAndExtraEnv
+ * BEFORE `docker stop` so the new container coming up after `docker run`
+ * can't false-positive on the previous run's sentinel during its boot
+ * window. Best-effort: missing file (ENOENT) is the success case and not
+ * logged. Real failures (permission) are logged warning, not thrown — the
+ * worst case is the new container observes a stale sentinel and skips its
+ * wait, which is the pre-fcabb870 behavior we're already living with.
+ */
+export function clearRestorationSentinel(agentId: string, hostHome: string = os.homedir()): void {
+  const sentinelPath = path.join(
+    hostHome,
+    '.aimaestro',
+    'agents',
+    agentId,
+    'restoration',
+    RESTORATION_SENTINEL_FILENAME,
+  )
+  try {
+    fs.unlinkSync(sentinelPath)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') {
+      console.warn(
+        `[restoration-sentinel] could not unlink ${sentinelPath}:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
+}
+
+/**
+ * Write the restoration-ready sentinel to signal the container that all
+ * host-side prep is complete and the AI tool can safely launch. Called
+ * at the END of createDockerAgent and updateContainerMountsAndExtraEnv,
+ * after mount mkdirSync, provisioning, registry writes, and stale-flag
+ * clears all resolve. mkdirSync first to handle fresh-create (no prior
+ * mount-prep loop ran for the sentinel dir). Best-effort: a write failure
+ * leaves the container blocked on its 10s timeout — fail-loud both sides,
+ * but startup recovers.
+ */
+export function writeRestorationSentinel(agentId: string, hostHome: string = os.homedir()): void {
+  const sentinelDir = path.join(hostHome, '.aimaestro', 'agents', agentId, 'restoration')
+  try {
+    fs.mkdirSync(sentinelDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(sentinelDir, RESTORATION_SENTINEL_FILENAME),
+      new Date().toISOString() + '\n',
+      { mode: 0o644 },
+    )
+  } catch (err) {
+    console.warn(
+      `[restoration-sentinel] could not write sentinel for ${agentId}:`,
+      err instanceof Error ? err.message : err,
+    )
+  }
+}
+
 // Migrate per-agent persisted claude/gh state from a predecessor UUID dir to
 // a new agent's dir. Used by recreateDockerAgent to bridge the UUID rotation:
 // /recreate soft-deletes the old agent (rotating to a fresh UUID per audit-
@@ -1394,13 +1472,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
   const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
   const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
+  const restorationSentinelMount = buildCloudRestorationSentinelMount(agentId)
 
   // Pre-create host-side dirs that are about to be bind-mounted. If the host
   // path doesn't exist, docker creates it as a root-owned empty directory,
   // which (a) leaves the container's claude (uid 1000) unable to write keys
   // and (b) silently masks the missing-identity failure. We create them as the
   // server process user (uid matches the container's claude user by convention).
-  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount]) {
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount, restorationSentinelMount]) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -1469,6 +1548,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
+      restorationSentinelMount,
     ],
     body.mounts
   )
@@ -1559,6 +1639,13 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   } catch (err) {
     console.warn('[Docker Service] AMP bootstrap threw:', err instanceof Error ? err.message : err)
   }
+
+  // Signal the running container that all host-side prep is done. agent-server.js
+  // (via restoration-gate.cjs) is polling for this sentinel before tmux init
+  // fires AI_TOOL. Best-effort write — a failure here leaves the container
+  // blocked on its 10s timeout, then it proceeds with a warning. See kanban
+  // fcabb870.
+  writeRestorationSentinel(agentId)
 
   return {
     data: {
@@ -1888,16 +1975,23 @@ export async function updateContainerMountsAndExtraEnv(
   const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
   const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
   const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
+  const restorationSentinelMount = buildCloudRestorationSentinelMount(agentId)
 
   // Pre-create host-side mount sources so docker doesn't materialize them as
   // root-owned dirs at run time. Same pattern as createDockerAgent.
-  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount]) {
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount, restorationSentinelMount]) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
       console.warn(`[update-runtime] Could not pre-create mount source ${m.hostPath}:`, err)
     }
   }
+
+  // Clear any stale restoration sentinel from the previous container's run
+  // BEFORE docker stop. Without this, the new container coming up after
+  // docker run would observe the old sentinel during its boot window and
+  // skip the wait, racing host-side prep again. See kanban fcabb870.
+  clearRestorationSentinel(agentId)
 
   const mergedMounts = mergeMounts(
     [
@@ -1912,6 +2006,7 @@ export async function updateContainerMountsAndExtraEnv(
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
+      restorationSentinelMount,
     ],
     newMounts
   )
@@ -1990,6 +2085,12 @@ export async function updateContainerMountsAndExtraEnv(
       err instanceof Error ? err.message : err
     )
   }
+
+  // Signal the new container that host-side prep is complete and it can
+  // proceed past the restoration-ready gate (kanban fcabb870). Mirrors the
+  // createDockerAgent tail. Best-effort; failure here leaves the container
+  // blocked on its 10s timeout, then it proceeds with a warning.
+  writeRestorationSentinel(agentId)
 
   return {
     data: {

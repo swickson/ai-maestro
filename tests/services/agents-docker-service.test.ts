@@ -9,7 +9,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   validateMounts,
   validateExtraEnv,
@@ -29,6 +29,9 @@ import {
   buildCloudCodexVersionMount,
   buildCloudCodexAuthMount,
   buildCloudCodexConfigTomlMount,
+  buildCloudRestorationSentinelMount,
+  clearRestorationSentinel,
+  writeRestorationSentinel,
   migrateAgentPersistence,
   provisionCloudClaudeConfig,
   provisionCloudGeminiConfig,
@@ -1952,5 +1955,151 @@ describe('formatMemoryBytesToString (kanban 1ef9eabd)', () => {
     expect(() => formatMemoryBytesToString(-1)).toThrow(/invalid byte count/)
     expect(() => formatMemoryBytesToString(NaN)).toThrow(/invalid byte count/)
     expect(() => formatMemoryBytesToString(Infinity)).toThrow(/invalid byte count/)
+  })
+})
+
+// ============================================================================
+// kanban fcabb870 — restoration-ready sentinel host helpers
+// ============================================================================
+
+describe('buildCloudRestorationSentinelMount', () => {
+  it('binds per-agent restoration dir to /restoration-ready in the container', () => {
+    const mount = buildCloudRestorationSentinelMount('agent-uuid', '/tmp/test-home')
+    expect(mount).toEqual({
+      hostPath: '/tmp/test-home/.aimaestro/agents/agent-uuid/restoration',
+      containerPath: '/restoration-ready',
+    })
+  })
+
+  it('hostPath is namespaced per agentId so multiple agents do not collide', () => {
+    const a = buildCloudRestorationSentinelMount('agent-a', '/tmp/home')
+    const b = buildCloudRestorationSentinelMount('agent-b', '/tmp/home')
+    expect(a.hostPath).not.toBe(b.hostPath)
+    expect(a.containerPath).toBe(b.containerPath) // same container-side endpoint
+  })
+})
+
+describe('writeRestorationSentinel', () => {
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-sentinel-write-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('creates restoration/complete with an ISO timestamp body', () => {
+    writeRestorationSentinel('agent-1', tmpHome)
+    const sentinelPath = path.join(tmpHome, '.aimaestro/agents/agent-1/restoration/complete')
+    expect(fs.existsSync(sentinelPath)).toBe(true)
+    const body = fs.readFileSync(sentinelPath, 'utf8')
+    expect(body).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+  })
+
+  it('creates the parent restoration/ dir if missing (fresh-agent shape)', () => {
+    const restorationDir = path.join(tmpHome, '.aimaestro/agents/fresh/restoration')
+    expect(fs.existsSync(restorationDir)).toBe(false)
+    writeRestorationSentinel('fresh', tmpHome)
+    expect(fs.existsSync(restorationDir)).toBe(true)
+  })
+
+  it('overwrites an existing sentinel (idempotent for repeated /update-runtime)', () => {
+    writeRestorationSentinel('agent-2', tmpHome)
+    const sentinelPath = path.join(tmpHome, '.aimaestro/agents/agent-2/restoration/complete')
+    const first = fs.readFileSync(sentinelPath, 'utf8')
+    // 5ms gap ensures a measurably-later ISO timestamp
+    return new Promise<void>(resolve => setTimeout(() => {
+      writeRestorationSentinel('agent-2', tmpHome)
+      const second = fs.readFileSync(sentinelPath, 'utf8')
+      expect(second).not.toBe(first)
+      expect(second).toMatch(/^\d{4}-\d{2}-\d{2}/)
+      resolve()
+    }, 5))
+  })
+
+  it('is best-effort: a write failure logs warning but does not throw', () => {
+    // Point at a read-only-ish parent that mkdirSync can't create. /proc/1 is a
+    // standard sentinel for "real path that cannot be a parent of new dirs."
+    // Using mocked path with a guaranteed mkdir error keeps the test portable.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {
+      throw new Error('EACCES: permission denied')
+    })
+    try {
+      expect(() => writeRestorationSentinel('agent-fail', tmpHome)).not.toThrow()
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/could not write sentinel for agent-fail/),
+        expect.stringMatching(/EACCES/),
+      )
+    } finally {
+      mkdirSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+  })
+})
+
+describe('clearRestorationSentinel', () => {
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-sentinel-clear-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('removes an existing sentinel file', () => {
+    writeRestorationSentinel('agent-c1', tmpHome)
+    const sentinelPath = path.join(tmpHome, '.aimaestro/agents/agent-c1/restoration/complete')
+    expect(fs.existsSync(sentinelPath)).toBe(true)
+
+    clearRestorationSentinel('agent-c1', tmpHome)
+    expect(fs.existsSync(sentinelPath)).toBe(false)
+  })
+
+  it('is silent + does not throw when the sentinel is already absent (ENOENT)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(() => clearRestorationSentinel('never-existed', tmpHome)).not.toThrow()
+      // ENOENT is the success case for clear — we should NOT log a warning,
+      // otherwise every fresh-create's no-op clear floods the log.
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('logs warning on non-ENOENT failure (e.g. EACCES) but does not throw', () => {
+    writeRestorationSentinel('agent-c2', tmpHome)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {
+      const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException
+      err.code = 'EACCES'
+      throw err
+    })
+    try {
+      expect(() => clearRestorationSentinel('agent-c2', tmpHome)).not.toThrow()
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/could not unlink/),
+        expect.stringMatching(/EACCES/),
+      )
+    } finally {
+      unlinkSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('does not remove sibling files in the restoration/ dir', () => {
+    writeRestorationSentinel('agent-c3', tmpHome)
+    const restorationDir = path.join(tmpHome, '.aimaestro/agents/agent-c3/restoration')
+    const sibling = path.join(restorationDir, 'sibling.txt')
+    fs.writeFileSync(sibling, 'untouched')
+
+    clearRestorationSentinel('agent-c3', tmpHome)
+    expect(fs.existsSync(path.join(restorationDir, 'complete'))).toBe(false)
+    expect(fs.existsSync(sibling)).toBe(true)
   })
 })

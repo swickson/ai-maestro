@@ -19,6 +19,7 @@ const { spawn } = require('child_process')
 const { promisify } = require('util')
 const exec = promisify(require('child_process').exec)
 const { ensureClaudeHomeTheme } = require('./claude-home-merge.cjs')
+const { waitForRestorationReady } = require('./restoration-gate.cjs')
 
 // Configuration from environment variables
 const PORT = process.env.AGENT_PORT || 23000
@@ -449,6 +450,16 @@ Waiting for browser connections...
   // missing-field signal. Idempotent + safe on non-claude programs (file
   // is bind-mounted unconditionally; no-op if theme already a string).
   ensureClaudeHomeTheme('/home/claude/.claude.json')
+
+  // Gate AI_TOOL autostart behind the host-written restoration-ready sentinel.
+  // Closes the Han EACCES race (kanban fcabb870) where docker-run-then-tmux-
+  // send-keys fires before host-side mount prep + registry writes finish, so
+  // the AI tool's first reads land on a workspace dir that's momentarily
+  // root-owned or on bind targets that haven't been populated yet. Host writes
+  // the sentinel at the end of createDockerAgent / updateContainerMountsAndExtraEnv;
+  // this poll loop times out and proceeds anyway (fail-loud) if the writer
+  // doesn't run for any reason — startup never blocks indefinitely.
+  await waitForRestorationReady()
 
   // Initialize tmux session
   await initializeTmuxSession()
