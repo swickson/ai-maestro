@@ -11,7 +11,7 @@ import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { v4 as uuidv4 } from 'uuid'
-import { createAgent, deleteAgent, getAgent, loadAgents, saveAgents, updateAgent, updateAgentRuntimeConfig } from '@/lib/agent-registry'
+import { createAgent, deleteAgent, getAgent, loadAgents, saveAgents, updateAgent, updateAgentRuntimeConfig, clearCloudContainerStale } from '@/lib/agent-registry'
 import { getHosts, isSelf, getOrganization } from '@/lib/hosts-config'
 import { generateKeyPair, saveKeyPair } from '@/lib/amp-keys'
 import { registerAgent } from '@/services/amp-service'
@@ -1974,6 +1974,19 @@ export async function updateContainerMountsAndExtraEnv(
   } catch (err) {
     console.warn(
       `[update-runtime] registry update failed for ${agentId} after successful container rebuild — drift between container and registry:`,
+      err instanceof Error ? err.message : err
+    )
+  }
+
+  // Container was just rebuilt with the current registry's AI_TOOL fields, so
+  // any prior PATCH-induced staleness is now resolved. See kanban aa2953b0.
+  // No-op if the flag wasn't set; never fails fatally (mirrors the registry-
+  // update try/catch above).
+  try {
+    clearCloudContainerStale(agentId)
+  } catch (err) {
+    console.warn(
+      `[update-runtime] clearCloudContainerStale failed for ${agentId} — flag may linger until next /update-runtime:`,
       err instanceof Error ? err.message : err
     )
   }

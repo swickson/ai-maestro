@@ -648,6 +648,69 @@ export function updateAgentRuntimeConfig(
 }
 
 /**
+ * Mark a cloud agent's running container as stale relative to the registry
+ * (e.g., after a PATCH mutated an AI_TOOL-composing field). No-op for local
+ * agents and for cloud agents whose `cloud` block was never persisted. Idempotent
+ * — re-marking just overwrites the timestamp.
+ *
+ * See kanban aa2953b0. Cleared by `clearCloudContainerStale` once the container
+ * is rebuilt via /update-runtime.
+ */
+export function markCloudContainerStale(id: string): Agent | null {
+  const agents = loadAgents()
+  const index = agents.findIndex(a => a.id === id)
+  if (index === -1) return null
+
+  const agent = agents[index]
+  const cloud = agent.deployment?.cloud
+  if (!cloud) return agent // no cloud block — nothing to mark stale
+
+  agents[index] = {
+    ...agent,
+    deployment: {
+      ...agent.deployment!,
+      cloud: { ...cloud, containerStaleSince: Date.now() },
+    },
+    lastActive: new Date().toISOString(),
+  }
+  saveAgents(agents)
+  invalidateAgentCache()
+  return agents[index]
+}
+
+/**
+ * Clear the `containerStaleSince` flag on a cloud agent. Called by
+ * /update-runtime (and /recreate) after a successful container rebuild —
+ * the running container is now back in sync with the registry's AI_TOOL
+ * fields, so the stale signal is no longer accurate.
+ *
+ * No-op if no flag is set, no `cloud` block exists, or agent is missing.
+ */
+export function clearCloudContainerStale(id: string): Agent | null {
+  const agents = loadAgents()
+  const index = agents.findIndex(a => a.id === id)
+  if (index === -1) return null
+
+  const agent = agents[index]
+  const cloud = agent.deployment?.cloud
+  if (!cloud || cloud.containerStaleSince === undefined) return agent
+
+  const { containerStaleSince: _drop, ...cloudWithoutFlag } = cloud
+  void _drop
+  agents[index] = {
+    ...agent,
+    deployment: {
+      ...agent.deployment!,
+      cloud: cloudWithoutFlag,
+    },
+    lastActive: new Date().toISOString(),
+  }
+  saveAgents(agents)
+  invalidateAgentCache()
+  return agents[index]
+}
+
+/**
  * Update agent metrics
  */
 export function updateAgentMetrics(id: string, metrics: UpdateAgentMetricsRequest): Agent | null {

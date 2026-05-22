@@ -55,6 +55,7 @@ const {
       searchAgents: vi.fn().mockReturnValue([]),
       linkSession: vi.fn(),
       unlinkSession: vi.fn(),
+      markCloudContainerStale: vi.fn(),
     },
     mockHostsConfig: {
       getHosts: vi.fn().mockReturnValue([{ id: 'test-host', name: 'Test Host', url: 'http://localhost:23000' }]),
@@ -406,6 +407,129 @@ describe('updateAgentById', () => {
 
     expect(result.status).toBe(400)
     expect((result.data as ServiceError).message).toBe('Name taken')
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // kanban aa2953b0 — mark cloud container stale on AI_TOOL-composing change
+  // ──────────────────────────────────────────────────────────────────────────
+
+  it('marks cloud container stale when program changes', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, program: 'antigravity' }
+    const stale = {
+      ...updated,
+      deployment: {
+        ...updated.deployment!,
+        cloud: { ...updated.deployment!.cloud!, containerStaleSince: 1700000000000 },
+      },
+    }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+    mockAgentRegistry.markCloudContainerStale.mockReturnValue(stale)
+
+    const result = updateAgentById('agent-cloud', { program: 'antigravity' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).toHaveBeenCalledWith('agent-cloud')
+    expect(result.status).toBe(200)
+    expect((result.data as any)?.agent.deployment.cloud.containerStaleSince).toBe(1700000000000)
+  })
+
+  it('marks cloud container stale when programArgs changes', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      programArgs: '--yolo',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, programArgs: '--dangerously-skip-permissions' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+    mockAgentRegistry.markCloudContainerStale.mockReturnValue(updated)
+
+    updateAgentById('agent-cloud', { programArgs: '--dangerously-skip-permissions' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).toHaveBeenCalledWith('agent-cloud')
+  })
+
+  it('marks cloud container stale when model changes', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      model: 'claude-sonnet-4-6',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, model: 'claude-opus-4-7' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+    mockAgentRegistry.markCloudContainerStale.mockReturnValue(updated)
+
+    updateAgentById('agent-cloud', { model: 'claude-opus-4-7' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).toHaveBeenCalledWith('agent-cloud')
+  })
+
+  it('does NOT mark stale when only non-AI_TOOL fields change (name, tags)', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, taskDescription: 'new task' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+
+    updateAgentById('agent-cloud', { taskDescription: 'new task' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
+  })
+
+  it('does NOT mark stale when PATCH supplies same value for program (no real change)', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    // updateAgent returns the agent with program unchanged
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(existing)
+
+    updateAgentById('agent-cloud', { program: 'claude' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
+  })
+
+  it('does NOT mark stale for local (non-cloud) agents even when program changes', () => {
+    const existing = makeAgent({
+      id: 'agent-local',
+      program: 'claude',
+      deployment: { type: 'local', local: { hostname: 'host', platform: 'linux' } },
+    })
+    const updated = { ...existing, program: 'antigravity' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+
+    updateAgentById('agent-local', { program: 'antigravity' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
+  })
+
+  it('does NOT mark stale for cloud agents with non-local-container provider', () => {
+    // Future-proofing: aws/gcp/digitalocean/azure providers go through their
+    // own rebuild path, not /update-runtime, so this gap doesn't apply.
+    const existing = makeAgent({
+      id: 'agent-aws',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'aws', websocketUrl: 'wss://aws/term' } },
+    })
+    const updated = { ...existing, program: 'antigravity' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+
+    updateAgentById('agent-aws', { program: 'antigravity' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
   })
 })
 

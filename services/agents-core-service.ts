@@ -54,6 +54,7 @@ import {
   searchAgents,
   linkSession,
   unlinkSession,
+  markCloudContainerStale,
 } from '@/lib/agent-registry'
 import { resolveAgentIdentifier } from '@/lib/messageQueue'
 import { getHosts, getSelfHost, getSelfHostId, isSelf } from '@/lib/hosts-config'
@@ -908,9 +909,30 @@ export function updateAgentById(id: string, body: UpdateAgentRequest): ServiceRe
       return gone('Agent')
     }
 
+    // Detect mutation of an AI_TOOL-composing field on a cloud agent — see
+    // kanban aa2953b0. PATCH updates the registry but does NOT rebuild the
+    // running container, so the container's baked-in AI_TOOL env can diverge
+    // silently. Mark the cloud block stale here; /update-runtime clears it
+    // on successful rebuild. Compared post-PATCH (not by inspecting `body`)
+    // because `body.program === existing.program` is a no-op, not a stale
+    // mutation — only real value changes set the flag.
+    const isCloudContainer =
+      existing.deployment?.type === 'cloud' &&
+      existing.deployment.cloud?.provider === 'local-container'
+
     const agent = updateAgent(id, body)
     if (!agent) {
       return notFound('Agent', id)
+    }
+
+    if (
+      isCloudContainer &&
+      (agent.program !== existing.program ||
+        agent.programArgs !== existing.programArgs ||
+        agent.model !== existing.model)
+    ) {
+      const marked = markCloudContainerStale(id)
+      if (marked) return { data: { agent: marked }, status: 200 }
     }
 
     return { data: { agent }, status: 200 }

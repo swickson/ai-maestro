@@ -188,6 +188,33 @@ When promoting, document the daemon's host-side lifecycle (systemd unit or equiv
 
 (Tier 3 — system package, image rebuild required.)
 
+### "I want to change `program`, `programArgs`, or `model` on an existing cloud agent."
+
+PATCH-then-/update-runtime is the canonical sequence. `PATCH /api/agents/<id>` updates the agent registry, but the running container's `AI_TOOL` env was baked at the previous `/update-runtime` (or `/recreate`). Without the rebuild step, the container keeps running the old AI tool with the old args even though the registry shows the new ones — silent divergence.
+
+```bash
+# Single PATCH carries all changing fields atomically.
+curl -X PATCH http://localhost:23000/api/agents/<id> \
+  -H 'Content-Type: application/json' \
+  -d '{"program":"antigravity","programArgs":"--dangerously-skip-permissions"}'
+
+# Then rebuild the container so the new AI_TOOL env takes effect.
+curl -X POST http://localhost:23000/api/agents/<id>/update-runtime \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+**`deployment.cloud.containerStaleSince` is the signal that the rebuild step is pending.** Any PATCH that mutates `program`, `programArgs`, or `model` on a `local-container` cloud agent sets this field to the current epoch ms; the next `/update-runtime` clears it. Operator UIs and scripts can read it from `GET /api/agents/<id>` to detect "registry says X, container still runs Y":
+
+```bash
+# Returns "STALE" or "OK" for a given agent.
+curl -s http://localhost:23000/api/agents/<id> \
+  | jq -r '.agent.deployment.cloud.containerStaleSince // "OK" | if . == "OK" then "OK" else "STALE since \(.|todate)" end'
+```
+
+Multi-field migrations should batch fields into a single PATCH body — every additional PATCH that touches an AI_TOOL field re-stamps the `containerStaleSince` timestamp without re-rebuilding. Issuing the PATCHes one-at-a-time still works (`containerStaleSince` is idempotent), but a single PATCH is cheaper and atomic.
+
+This is **only** an issue for `provider: 'local-container'` cloud agents — host (`deployment.type === 'local'`) agents launch the AI tool directly via tmux, so PATCH followed by the next wake/restart picks up the new fields without a separate rebuild step. (See kanban aa2953b0 for the underlying gap discussion.)
+
 ### "I need to migrate an existing agent to Pattern A (local → cloud, or pre-schema cloud → cloud)."
 
 `createDockerAgent` only creates new records — it throws on duplicate names by design. There is no in-place "redeploy this agent's container" flow yet (tracked as `2db1aa3b`). Until that lands, the migration path is **snapshot → clobber → recreate → restore**, with deliberate UUID churn:
