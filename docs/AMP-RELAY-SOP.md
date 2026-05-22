@@ -55,7 +55,7 @@ Shane replies in the existing DM thread. The discord-bot bridges it back as an A
 
 ## Caveats
 
-- **Discord gateway dependency (step 5).** The Shane → discord-bot → LeoAI return path requires the `discord-bot` agent (`discord-bot@n4x-corp.aimaestro.local`, host: Holmes) to be online. If discord-bot is offline, the answer loop breaks at step 5 — agents should be aware that the ack at step 4 may be the last signal they get until the gateway comes back up. For destructive-action confirmations during a discord-bot outage, expect Shane to resolve out-of-band (in-person, separate channel) and back-fill via AMP later.
+- **Discord gateway dependency (step 5).** The Shane → discord-bot → LeoAI return path requires the `discord-bot` agent (`discord-bot@n4x-corp.aimaestro.local`, host: holmes) to be online. If discord-bot is offline, the answer loop breaks at step 5 — agents should be aware that the ack at step 4 may be the last signal they get until the gateway comes back up. For destructive-action confirmations during a discord-bot outage, expect Shane to resolve out-of-band (in-person, separate channel) and back-fill via AMP later.
 
 ## Confirmed working
 
