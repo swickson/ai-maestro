@@ -1963,11 +1963,12 @@ describe('formatMemoryBytesToString (kanban 1ef9eabd)', () => {
 // ============================================================================
 
 describe('buildCloudRestorationSentinelMount', () => {
-  it('binds per-agent restoration dir to /restoration-ready in the container', () => {
+  it('binds per-agent restoration dir to /restoration-ready in the container, read-only', () => {
     const mount = buildCloudRestorationSentinelMount('agent-uuid', '/tmp/test-home')
     expect(mount).toEqual({
       hostPath: '/tmp/test-home/.aimaestro/agents/agent-uuid/restoration',
       containerPath: '/restoration-ready',
+      readOnly: true,
     })
   })
 
@@ -1976,6 +1977,14 @@ describe('buildCloudRestorationSentinelMount', () => {
     const b = buildCloudRestorationSentinelMount('agent-b', '/tmp/home')
     expect(a.hostPath).not.toBe(b.hostPath)
     expect(a.containerPath).toBe(b.containerPath) // same container-side endpoint
+  })
+
+  it('is read-only (least-privilege — container reads, host writes)', () => {
+    // CelestIA polish on PR #154: container only polls existsSync, never
+    // writes. RW would expose the sentinel to in-container tampering that
+    // could prematurely unblock the gate or stall it.
+    const mount = buildCloudRestorationSentinelMount('agent-x')
+    expect(mount.readOnly).toBe(true)
   })
 })
 
