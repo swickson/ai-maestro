@@ -72,6 +72,26 @@ describe('resolveConversationDir', () => {
     )
   })
 
+  it('cloud Antigravity agent: derives from per-agent antigravity-app-data/conversations path (kanban 49cc27d7, single-dir OPT-B mount)', () => {
+    const agent = {
+      id: 'b1c2d3e4-fake-uuid-antigravity-pilot',
+      program: 'antigravity',
+      workingDirectory: '/home/operator/code/n4-armory',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-pilot-antigravity' } },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    expect(dir).toBe(
+      path.join(
+        HOST_HOME,
+        '.aimaestro',
+        'agents',
+        'b1c2d3e4-fake-uuid-antigravity-pilot',
+        'antigravity-app-data',
+        'conversations',
+      ),
+    )
+  })
+
   it('cloud Codex agent: returns null (deferred to its own kanban when Vance migrates to Codex)', () => {
     const agent = {
       id: 'future-codex-uuid',

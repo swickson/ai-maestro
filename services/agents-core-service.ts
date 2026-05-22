@@ -197,6 +197,8 @@ function resolveStartCommand(program: string): string {
     return 'aider'
   } else if (program.includes('cursor')) {
     return 'cursor'
+  } else if (program.includes('antigravity')) {
+    return 'agy'
   } else if (program.includes('gemini')) {
     return 'gemini'
   } else if (program.includes('opencode')) {

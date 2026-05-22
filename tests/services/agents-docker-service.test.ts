@@ -25,6 +25,7 @@ import {
   buildCloudGeminiSettingsMount,
   buildCloudGeminiOAuthMount,
   buildCloudGeminiReadthroughMounts,
+  buildCloudAntigravityAppDataMount,
   buildCloudCodexVersionMount,
   buildCloudCodexAuthMount,
   buildCloudCodexConfigTomlMount,
@@ -148,6 +149,7 @@ describe('validateMounts', () => {
         buildCloudGeminiSettingsMount(uuid, home),
         buildCloudGeminiOAuthMount(uuid, home),
         ...buildCloudGeminiReadthroughMounts(uuid, home),
+        buildCloudAntigravityAppDataMount(uuid, home),
         buildCloudCodexVersionMount(uuid, home),
         buildCloudCodexAuthMount(uuid, home),
         buildCloudCodexConfigTomlMount(uuid, home),
@@ -205,6 +207,7 @@ describe('validateMounts', () => {
         buildCloudGeminiSettingsMount(uuid, home),
         buildCloudGeminiOAuthMount(uuid, home),
         ...buildCloudGeminiReadthroughMounts(uuid, home),
+        buildCloudAntigravityAppDataMount(uuid, home),
         buildCloudCodexVersionMount(uuid, home),
         buildCloudCodexAuthMount(uuid, home),
         buildCloudCodexConfigTomlMount(uuid, home),
@@ -1063,6 +1066,37 @@ describe('buildCloudGeminiSettingsMount', () => {
     const uuid = '77777777-aaaa-7777-aaaa-777777777777'
     const home = '/home/operator'
     expect(validateMounts([buildCloudGeminiSettingsMount(uuid, home)])).toBeNull()
+  })
+})
+
+describe('buildCloudAntigravityAppDataMount (kanban 49cc27d7, OPT-B single-dir)', () => {
+  it('returns a dir-level bind mount sourced at <agent>/antigravity-app-data and targeting /home/claude/.gemini/antigravity-cli', () => {
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const home = '/home/operator'
+    const m = buildCloudAntigravityAppDataMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/antigravity-app-data`)
+    expect(m.containerPath).toBe('/home/claude/.gemini/antigravity-cli')
+    // Dir-mount over the entire CLI app-data tree is RW by design — agy
+    // rotates oauth-token via temp+rename on refresh, which would silently
+    // stale a file-level mount but works inside a dir-mount.
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts as a non-operator-supplied system mount', () => {
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const home = '/home/operator'
+    expect(validateMounts([buildCloudAntigravityAppDataMount(uuid, home)])).toBeNull()
+  })
+
+  it('is operator-reserved (containerPath descends from CONTAINER_HOME/.gemini, which is in OPERATOR_RESERVED_CONTAINER_PATH_ROOTS)', () => {
+    // Operator-supplied flag must reject this path so an operator-declared
+    // mount cannot shadow the system mount of antigravity state.
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const home = '/home/operator'
+    const mount = buildCloudAntigravityAppDataMount(uuid, home)
+    expect(
+      validateMounts([mount], { operatorSupplied: true }),
+    ).toMatch(/reserved by AI Maestro/)
   })
 })
 

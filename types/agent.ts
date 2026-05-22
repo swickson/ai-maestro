@@ -524,6 +524,7 @@ export interface UpdateAgentRequest {
   label?: string                // Update display override (was displayName)
   avatar?: string
   model?: string
+  program?: string              // AI program (e.g., "claude-code", "antigravity") — added to enable non-destructive program swap for the gemini→antigravity migration. Pre-PR-1 path was /recreate, which rotates UUID + AMP keypair.
   taskDescription?: string
   programArgs?: string          // CLI arguments passed to the program on launch
   tags?: string[]

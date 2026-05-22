@@ -17,6 +17,7 @@ import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/se
 import { resolveConversationDir, resolveChatStateFile, cloudProgram } from '@/lib/agent-paths'
 import { capturePaneFromContainer } from '@/lib/container-utils'
 import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
+import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
 import * as fs from 'fs'
 import * as path from 'path'
 import { type ServiceResult, notFound, invalidRequest, invalidField, missingField } from '@/services/service-errors'
@@ -96,7 +97,9 @@ export async function getConversationMessages(
 
   const sinceTime = since ? new Date(since).getTime() : 0
   const messages: any[] = []
-  const isGemini = cloudProgram(agent) === 'gemini'
+  const program = cloudProgram(agent)
+  const isGemini = program === 'gemini'
+  const isAntigravity = program === 'antigravity'
 
   for (const line of lines) {
     try {
@@ -109,6 +112,15 @@ export async function getConversationMessages(
 
       if (isGemini) {
         const normalized = normalizeGeminiLine(raw)
+        if (normalized) messages.push(normalized)
+        continue
+      }
+
+      if (isAntigravity) {
+        // Stub normalizer in v0.30.87 — returns null for every line until a
+        // logged-in cloud agent generates real conversation files we can spec.
+        // Follow-up PR slots a real implementation in once a sample lands.
+        const normalized = normalizeAntigravityLine(raw)
         if (normalized) messages.push(normalized)
         continue
       }
