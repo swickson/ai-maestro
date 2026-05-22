@@ -40,8 +40,12 @@ export interface AgentPathInput {
 // pick the right per-program bind-mount source. Exported so the chat-service
 // can branch on the same single source of truth instead of re-deriving the
 // substring match inline.
-export function cloudProgram(agent: AgentPathInput): 'claude' | 'gemini' | 'codex' {
+export function cloudProgram(agent: AgentPathInput): 'claude' | 'gemini' | 'codex' | 'antigravity' {
   const raw = (agent.program || '').toLowerCase()
+  // Check 'antigravity' BEFORE 'gemini' — they don't overlap substring-wise, but
+  // agy stores under ~/.gemini/antigravity-cli/ so any future label that
+  // combines tokens stays unambiguous.
+  if (raw.includes('antigravity')) return 'antigravity'
   if (raw.includes('gemini')) return 'gemini'
   if (raw.includes('codex')) return 'codex'
   return 'claude' // default — pre-PR-#117 agents without an explicit program field
@@ -77,6 +81,16 @@ export function resolveConversationDir(
         // Note Gemini does NOT slash-encode the cwd; project key is the literal
         // value from ~/.gemini/projects.json (CONTAINER_CWD_GEMINI_PROJECT).
         return path.join(agentDir, 'gemini-chats')
+      case 'antigravity':
+        // Antigravity (agy) writes conversation JSONL under
+        // ~/.gemini/antigravity-cli/conversations/. The whole antigravity-cli/
+        // dir is bind-mounted single-source (OPT-B) at
+        // <agentDir>/antigravity-app-data/ → /home/claude/.gemini/antigravity-cli/.
+        // Returns the conversations subdir so the chat-history reader scans
+        // matching files. Format normalization is currently a stub in
+        // lib/antigravity-message-normalizer.ts — real implementation lands
+        // once a logged-in cloud agent generates sample conversation files.
+        return path.join(agentDir, 'antigravity-app-data', 'conversations')
       case 'codex':
         // No cloud-Codex agent in mesh; row deferred to its own kanban
         // when Vance migrates to Codex.

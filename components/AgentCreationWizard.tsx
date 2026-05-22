@@ -28,7 +28,7 @@ const PROGRAM_OPTIONS = [
   { value: 'codex', label: 'Codex CLI', desc: "OpenAI's coding tool" },
   { value: 'aider', label: 'Aider', desc: 'AI pair programming' },
   { value: 'cursor', label: 'Cursor', desc: 'AI-first code editor' },
-  { value: 'gemini', label: 'Gemini CLI', desc: "Google's AI assistant" },
+  { value: 'antigravity', label: 'Antigravity CLI', desc: "Google's Antigravity AI CLI" },
   { value: 'opencode', label: 'OpenCode', desc: 'Open-source AI coding' },
   { value: 'terminal', label: 'Terminal Only', desc: 'Plain shell, no AI' },
 ]

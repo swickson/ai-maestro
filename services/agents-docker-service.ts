@@ -818,6 +818,43 @@ export function buildCloudGeminiOAuthMount(
   }
 }
 
+// Single-dir bind mount (OPT-B, kanban 49cc27d7) for Antigravity CLI (`agy`)
+// app-data. agy stores conversations + auth + settings + brain/knowledge/
+// implicit state under ~/.gemini/antigravity-cli/ — coexists with
+// gemini-cli's tree but in a separate subdir owned by a different vendor
+// (Codeium). Single mount over the entire dir intentionally:
+//
+//   - Inode-safe under OAuth token refresh. agy's antigravity-oauth-token
+//     rotates atomically via temp+rename; file-level bind mounts (as used
+//     for gemini oauth_creds.json) would stale silently on rename. Dir-mount
+//     survives because the rename happens INSIDE the bind-mount surface.
+//     See [[feedback_docker_file_mount_inode]].
+//
+//   - Insulates against future agy-internal-layout drift. v1.0.1 is brand-new
+//     and the on-disk layout under antigravity-cli/ will shift in early
+//     releases — single dir-mount captures whatever shape the binary writes
+//     without per-file plumbing churn.
+//
+//   - No provisioning hook today. agy's settings.json starts empty/76B and
+//     conversations/ starts empty. Add provisionCloudAntigravityConfig only
+//     when a real seed need surfaces (e.g., agy ships an auto-update we want
+//     to suppress, sibling to provisionCloudGeminiConfig's enableAutoUpdate
+//     seed).
+//
+//   - Operator-reserved-path coverage: CONTAINER_HOME/.gemini already
+//     blocks operator-declared mounts under .gemini/ (line 86), so this
+//     mount's containerPath descends from a reserved root automatically.
+//     No new entry needed in OPERATOR_RESERVED_CONTAINER_PATH_ROOTS.
+export function buildCloudAntigravityAppDataMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'antigravity-app-data'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.gemini', 'antigravity-cli'),
+  }
+}
+
 // Migrate per-agent persisted claude/gh state from a predecessor UUID dir to
 // a new agent's dir. Used by recreateDockerAgent to bridge the UUID rotation:
 // /recreate soft-deletes the old agent (rotating to a fresh UUID per audit-
@@ -897,6 +934,12 @@ export function migrateAgentPersistence(
     // same survival-on-recreate semantic as claude-projects but for the
     // ~/.gemini/tmp/<project>/chats/ bind-mount source.
     'gemini-chats',
+    // Antigravity (agy) full app-data tree under ~/.gemini/antigravity-cli/
+    // — single-dir OPT-B mount (kanban 49cc27d7). Carries forward
+    // antigravity-oauth-token, conversations/, brain/, knowledge/,
+    // implicit/, settings.json, installation_id, keybindings.json so a
+    // logged-in agy session survives /recreate UUID rotation.
+    'antigravity-app-data',
   ]
   for (const name of dirAssets) {
     const src = path.join(fromDir, name)
@@ -1344,13 +1387,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const ampMounts = buildAmpCommonMounts(agentId)
   const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
   const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
+  const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
 
   // Pre-create host-side dirs that are about to be bind-mounted. If the host
   // path doesn't exist, docker creates it as a root-owned empty directory,
   // which (a) leaves the container's claude (uid 1000) unable to write keys
   // and (b) silently masks the missing-identity failure. We create them as the
   // server process user (uid matches the container's claude user by convention).
-  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts]) {
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount]) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -1415,6 +1459,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       buildCloudGeminiSettingsMount(agentId),
       buildCloudGeminiOAuthMount(agentId),
       ...geminiReadthroughMounts,
+      buildCloudAntigravityAppDataMount(agentId),
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
@@ -1834,10 +1879,11 @@ export async function updateContainerMountsAndExtraEnv(
   const ampMounts = buildAmpCommonMounts(agentId)
   const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
   const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
+  const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
 
   // Pre-create host-side mount sources so docker doesn't materialize them as
   // root-owned dirs at run time. Same pattern as createDockerAgent.
-  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts]) {
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount]) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -1854,6 +1900,7 @@ export async function updateContainerMountsAndExtraEnv(
       buildCloudGeminiSettingsMount(agentId),
       buildCloudGeminiOAuthMount(agentId),
       ...geminiReadthroughMounts,
+      buildCloudAntigravityAppDataMount(agentId),
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),

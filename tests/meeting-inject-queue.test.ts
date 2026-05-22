@@ -76,6 +76,18 @@ describe('meeting-inject-queue', () => {
       expect(inferKindFromProgram('Gemini CLI')).toBe('gemini')
     })
 
+    it('recognizes Antigravity', () => {
+      expect(inferKindFromProgram('Antigravity CLI')).toBe('antigravity')
+      expect(inferKindFromProgram('antigravity')).toBe('antigravity')
+    })
+
+    it('antigravity wins over gemini when both substrings could match (defensive — they do not in practice, but agy state lives under .gemini/antigravity-cli/)', () => {
+      // Even if a future label includes both tokens, antigravity must win
+      // so the runtime dispatches to `agy`, not `gemini`. Pinned by the
+      // matching check-order in inferKindFromProgram (lib/meeting-inject-queue.ts).
+      expect(inferKindFromProgram('antigravity-cli')).toBe('antigravity')
+    })
+
     it('falls back to unknown', () => {
       expect(inferKindFromProgram('Aider')).toBe('unknown')
       expect(inferKindFromProgram(undefined)).toBe('unknown')

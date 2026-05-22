@@ -52,13 +52,14 @@ export function clearAll(): void {
 
 // ─── Agent kind + feature flag ──────────────────────────────────────────────
 
-export type AgentKind = 'claude' | 'codex' | 'gemini' | 'unknown'
+export type AgentKind = 'claude' | 'codex' | 'gemini' | 'antigravity' | 'unknown'
 
 export function inferKindFromProgram(program: string | undefined): AgentKind {
   if (!program) return 'unknown'
   const p = program.toLowerCase()
   if (p.includes('claude')) return 'claude'
   if (p.includes('codex') || p.includes('gpt')) return 'codex'
+  if (p.includes('antigravity')) return 'antigravity'
   if (p.includes('gemini')) return 'gemini'
   return 'unknown'
 }

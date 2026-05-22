@@ -43,11 +43,11 @@ const CLI_OPTIONS = [
     command: 'cursor'
   },
   {
-    id: 'gemini',
-    name: 'Gemini CLI',
-    description: 'Google\'s AI coding assistant',
+    id: 'antigravity',
+    name: 'Antigravity CLI',
+    description: 'Google\'s Antigravity AI CLI',
     icon: Sparkles,
-    command: 'gemini'
+    command: 'agy'
   },
   {
     id: 'opencode',
