@@ -997,7 +997,7 @@ The cross-review batch pattern is: peer A authors, peer B reviews, maintainer C 
 
 Three repeatable deploy gotchas across host syncs (Milo, Holmes, bananajr). Documented after CelestIA's third recurrence of the NODE_ENV pattern on bananajr v0.30.91 deploy 2026-05-22.
 
-**1. `NODE_ENV=production` strips devDeps at `yarn install` time.** Even on production hosts, the build chain needs `vitest`, `typescript`, `tailwindcss`, etc. If `NODE_ENV=production` is set in the shell (often inherited from pm2 or `~/.zshenv`), `yarn install` skips devDependencies. Downstream `yarn build` fails with cryptic missing-module errors (most commonly `Cannot find module 'tailwindcss'`).
+**1. `NODE_ENV=production` strips devDeps at `yarn install` time.** Even on production hosts, the build chain needs `vitest`, `typescript`, `tailwindcss`, etc. If `NODE_ENV=production` is set in the shell (leak sources observed: pm2 process inheritance, shell rc files — `~/.zshenv` / `~/.bashrc` / `~/.profile` — or a parent shell that exported it earlier in the session), `yarn install` skips devDependencies. Downstream `yarn build` fails with cryptic missing-module errors (most commonly `Cannot find module 'tailwindcss'`, then a downstream `next/font` error, then a misleading `@/hooks/...` resolver cascade).
 
 Mitigation:
 ```bash
@@ -1010,7 +1010,7 @@ yarn build
 
 pm2 picks up `NODE_ENV=production` at *runtime* separately via `ecosystem.config.cjs`. The shell-env override is only needed for the `install + build` phase.
 
-**2. Don't preemptively delete `.next/` before pulling.** pm2 serves the old build until restart; deleting it pre-build creates a 5-30s blank window where the dashboard 404s. Order: pull → rm -rf .next → build → restart, all sequenced tight.
+**2. Don't delete `.next/` until after `git pull` lands the new source.** pm2 serves the old build until restart; deleting it pre-pull creates a 5-30s blank window where the dashboard 404s. Order: pull → rm -rf .next → build → restart, all sequenced tight.
 
 **3. `pm2 restart --update-env` does NOT re-read `ecosystem.config.cjs`.** New `.env.local` vars silently won't reach the process. If the env shape changed, use `pm2 reload` or `pm2 delete + pm2 start` — `restart` alone preserves the old env block.
 
