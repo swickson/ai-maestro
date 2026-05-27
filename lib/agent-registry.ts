@@ -589,6 +589,10 @@ export function updateAgentRuntimeConfig(
     cpus?: number
     memory?: string
     autoRemove?: boolean
+    // Toggle sandbox.ziggy on the agent record. Drives --network ziggy_default
+    // attach + Ziggy MCP overlay mounts on the next container redeploy. Omit
+    // to leave untouched; true to set; false to clear.
+    ziggy?: boolean
   }
 ): Agent | null {
   const agents = loadAgents()
@@ -604,8 +608,35 @@ export function updateAgentRuntimeConfig(
   if (config.mounts !== undefined) {
     deployment.sandbox =
       config.mounts.length === 0
-        ? undefined
+        ? { ...(deployment.sandbox ?? {}), mounts: undefined }
         : { ...(deployment.sandbox ?? {}), mounts: config.mounts }
+    // Drop the mounts field entirely when cleared so the persisted shape stays
+    // tidy. We retain the sandbox object itself in case other fields (ziggy)
+    // are also being set — the empty-sandbox cleanup below handles total
+    // removal when no fields remain.
+    if (deployment.sandbox?.mounts === undefined) {
+      const { mounts: _drop, ...rest } = deployment.sandbox ?? {}
+      deployment.sandbox = rest
+    }
+  }
+
+  if (config.ziggy !== undefined) {
+    if (config.ziggy === true) {
+      deployment.sandbox = { ...(deployment.sandbox ?? {}), ziggy: true }
+    } else {
+      // false → remove the field. Strip it explicitly so the persisted shape
+      // doesn't carry an explicit `ziggy: false` (matches mounts semantics).
+      const { ziggy: _drop, ...rest } = deployment.sandbox ?? {}
+      deployment.sandbox = rest
+    }
+  }
+
+  // Sandbox cleanup: if all sub-fields ended up undefined, drop the whole
+  // sandbox block so the agent record's on-disk shape stays identical to
+  // pre-existing no-sandbox agents (e.g. matters for shape-diff tooling +
+  // golden-file tests).
+  if (deployment.sandbox && Object.keys(deployment.sandbox).length === 0) {
+    deployment.sandbox = undefined
   }
 
   const writesRuntime =
