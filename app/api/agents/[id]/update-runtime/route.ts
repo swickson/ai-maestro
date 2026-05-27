@@ -17,9 +17,11 @@
  *   {
  *     mounts?: SandboxMount[],            // Replace operator mounts wholesale ([] to clear)
  *     extraEnv?: Record<string, string>,  // Replace operator extraEnv wholesale ({} to clear)
+ *     ziggy?: boolean,                    // Toggle ziggy_default attach + Ziggy MCP overlay mounts
+ *                                         //   (true requires /opt/stacks/ai-maestro/agent-envs/<name>.env)
  *   }
  *
- * Either or both fields may be omitted to leave that aspect untouched.
+ * Any field may be omitted to leave that aspect untouched.
  *
  * Thin wrapper — business logic in services/agents-docker-service.ts.
  */
@@ -36,7 +38,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params
-    let body: { mounts?: unknown; extraEnv?: unknown } = {}
+    let body: { mounts?: unknown; extraEnv?: unknown; ziggy?: unknown } = {}
     try {
       body = await request.json()
     } catch {
@@ -48,6 +50,7 @@ export async function POST(
     const result = await updateContainerMountsAndExtraEnv(id, {
       mounts: body.mounts as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['mounts'],
       extraEnv: body.extraEnv as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['extraEnv'],
+      ziggy: typeof body.ziggy === 'boolean' ? body.ziggy : undefined,
     })
     return toResponse(result)
   } catch (error) {

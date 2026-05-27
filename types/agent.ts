@@ -272,6 +272,11 @@ export interface SandboxMount {
 
 export interface SandboxConfig {
   mounts?: SandboxMount[]           // Bind mounts applied at container creation
+  // When true, the container is attached to the `ziggy_default` docker network
+  // (where ziggy-postgres + ziggy-web live) and ZIGGY_PROFILE=default is seeded
+  // into the env. Use for cloud agents that need to reach the Ziggy MCP server
+  // via docker DNS rather than via Tailscale-IP/host-port. Default: false.
+  ziggy?: boolean
 }
 
 export interface AgentDeployment {

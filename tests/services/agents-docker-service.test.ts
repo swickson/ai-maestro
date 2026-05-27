@@ -29,6 +29,13 @@ import {
   buildCloudCodexVersionMount,
   buildCloudCodexAuthMount,
   buildCloudCodexConfigTomlMount,
+  buildCloudCodexHooksMount,
+  buildZiggyCodeMount,
+  buildZiggyEnvOverlayMount,
+  provisionCloudCodexZiggyMcpEntry,
+  ZIGGY_NETWORK,
+  ZIGGY_CODE_PATH,
+  ZIGGY_AGENT_ENVS_DIR,
   buildCloudRestorationSentinelMount,
   clearRestorationSentinel,
   writeRestorationSentinel,
@@ -1055,6 +1062,164 @@ describe('buildCloudCodexConfigTomlMount', () => {
   })
 })
 
+describe('buildCloudCodexHooksMount', () => {
+  it('returns a file-level bind mount for /home/claude/.codex/hooks.json', () => {
+    const uuid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+    const home = '/home/operator'
+    const m = buildCloudCodexHooksMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-hooks.json`)
+    expect(m.containerPath).toBe('/home/claude/.codex/hooks.json')
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+    const uuid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+    expect(validateMounts([buildCloudCodexHooksMount(uuid, '/home/operator')])).toBeNull()
+  })
+})
+
+describe('provisionCloudCodexConfig — codex-hooks.json skeleton', () => {
+  const uuid = '99999999-9999-9999-9999-999999999999'
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-codex-hooks-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('writes codex-hooks.json with empty {} skeleton when missing', () => {
+    const { hooksPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(hooksPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-hooks.json'))
+    expect(fs.readFileSync(hooksPath, 'utf8')).toBe('{}\n')
+  })
+
+  it('seeds hooks.json with restrictive 0600 perms', () => {
+    const { hooksPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.statSync(hooksPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('preserves existing codex-hooks.json content across re-runs (operator-written hooks intent)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const hooksPath = path.join(agentDir, 'codex-hooks.json')
+    const existing = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/opt/recall.sh"}]}]}}\n'
+    fs.writeFileSync(hooksPath, existing)
+    provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.readFileSync(hooksPath, 'utf8')).toBe(existing)
+  })
+})
+
+describe('Ziggy MCP integration helpers', () => {
+  describe('constants', () => {
+    it('uses ziggy_default as the docker network name', () => {
+      // Verified live 2026-05-27 — docker network ls + ziggy-postgres container
+      // present at 172.19.0.3. Pinning the literal here so a rename surfaces at
+      // CI rather than during a deploy.
+      expect(ZIGGY_NETWORK).toBe('ziggy_default')
+    })
+
+    it('uses /home/gosub/code/ziggy as the canonical ziggy repo path', () => {
+      // The path MUST match host-side absolute path verbatim because start.sh
+      // derives ZIGGY_ROOT from its own location via $(dirname). A path remap
+      // (e.g. /opt/ziggy-mcp/) would break the .env-loading + DATABASE_URL
+      // construction logic.
+      expect(ZIGGY_CODE_PATH).toBe('/home/gosub/code/ziggy')
+    })
+
+    it('uses /opt/stacks/ai-maestro/agent-envs as the per-agent env directory', () => {
+      // Operator-owned; ai-maestro reads <name>.env files but never writes.
+      expect(ZIGGY_AGENT_ENVS_DIR).toBe('/opt/stacks/ai-maestro/agent-envs')
+    })
+  })
+
+  describe('buildZiggyCodeMount', () => {
+    it('returns a read-only same-path bind for the ziggy repo', () => {
+      const m = buildZiggyCodeMount()
+      expect(m.hostPath).toBe('/home/gosub/code/ziggy')
+      expect(m.containerPath).toBe('/home/gosub/code/ziggy')
+      expect(m.readOnly).toBe(true)
+    })
+
+    it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+      expect(validateMounts([buildZiggyCodeMount()])).toBeNull()
+    })
+  })
+
+  describe('buildZiggyEnvOverlayMount', () => {
+    it('returns a read-only file overlay shadowing the host ziggy .env', () => {
+      const m = buildZiggyEnvOverlayMount('ops-homelab-nodie')
+      expect(m.hostPath).toBe('/opt/stacks/ai-maestro/agent-envs/ops-homelab-nodie.env')
+      expect(m.containerPath).toBe('/home/gosub/code/ziggy/.env')
+      expect(m.readOnly).toBe(true)
+    })
+
+    it('uses agent name verbatim — agent names are slug-validated upstream', () => {
+      const m = buildZiggyEnvOverlayMount('my-agent_42')
+      expect(m.hostPath).toBe('/opt/stacks/ai-maestro/agent-envs/my-agent_42.env')
+    })
+
+    it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+      expect(validateMounts([buildZiggyEnvOverlayMount('nodie')])).toBeNull()
+    })
+  })
+
+  describe('provisionCloudCodexZiggyMcpEntry', () => {
+    const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    let tmpHome: string
+
+    beforeEach(() => {
+      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-ziggy-mcp-'))
+    })
+
+    afterEach(() => {
+      fs.rmSync(tmpHome, { recursive: true, force: true })
+    })
+
+    it('appends [mcp_servers.ziggy] block pointing at the canonical start.sh', () => {
+      // Pre-seed config.toml as provisionCloudCodexConfig would have written it.
+      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+      fs.mkdirSync(agentDir, { recursive: true })
+      const configTomlPath = path.join(agentDir, 'codex-config.toml')
+      fs.writeFileSync(configTomlPath, '[projects."/workspace"]\ntrust_level = "trusted"\n')
+
+      const { mcpBlockAdded } = provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      expect(mcpBlockAdded).toBe(true)
+      const body = fs.readFileSync(configTomlPath, 'utf8')
+      expect(body).toContain('[mcp_servers.ziggy]')
+      expect(body).toContain('command = "/home/gosub/code/ziggy/apps/mcp-server/bin/start.sh"')
+      // Pre-existing trust block must be preserved (operator config compat).
+      expect(body).toContain('[projects."/workspace"]')
+    })
+
+    it('is idempotent — re-running short-circuits and does not duplicate', () => {
+      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+      fs.mkdirSync(agentDir, { recursive: true })
+      const configTomlPath = path.join(agentDir, 'codex-config.toml')
+      fs.writeFileSync(configTomlPath, '[projects."/workspace"]\ntrust_level = "trusted"\n')
+
+      provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      const { mcpBlockAdded } = provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      expect(mcpBlockAdded).toBe(false)
+      const body = fs.readFileSync(configTomlPath, 'utf8')
+      // Block appears exactly once.
+      expect(body.match(/\[mcp_servers\.ziggy\]/g) ?? []).toHaveLength(1)
+    })
+
+    it('writes a minimal config.toml if no pre-existing file (defensive — provisionCloudCodexConfig should run first)', () => {
+      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+      fs.mkdirSync(agentDir, { recursive: true })
+      // Do NOT pre-seed config.toml — test the defensive branch.
+      const { mcpBlockAdded, configTomlPath } = provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      expect(mcpBlockAdded).toBe(true)
+      const body = fs.readFileSync(configTomlPath, 'utf8')
+      expect(body).toContain('[mcp_servers.ziggy]')
+    })
+  })
+})
+
 describe('buildCloudGeminiSettingsMount', () => {
   it('returns a file-level bind mount for /home/claude/.gemini/settings.json', () => {
     const uuid = '77777777-aaaa-7777-aaaa-777777777777'
@@ -1813,6 +1978,18 @@ describe('buildRecreateBody', () => {
   it('handles missing deployment.sandbox without throwing', () => {
     const agent = makeCloudAgent() // no sandbox key at all
     expect(buildRecreateBody(agent).mounts).toBeUndefined()
+    expect(buildRecreateBody(agent).ziggy).toBeUndefined()
+  })
+
+  it('preserves sandbox.ziggy=true through recreate so the network attach survives UUID rotation', () => {
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        sandbox: { ziggy: true },
+      },
+    })
+    expect(buildRecreateBody(agent).ziggy).toBe(true)
   })
 
   it('maps deployment.cloud.runtime fields back into the create body', () => {

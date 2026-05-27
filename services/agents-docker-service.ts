@@ -40,6 +40,14 @@ export interface DockerCreateRequest {
   avatar?: string
   mounts?: SandboxMount[]
   extraEnv?: Record<string, string>
+  // When true, attach the container to the `ziggy_default` docker network,
+  // overlay-mount a per-agent .env at /home/gosub/code/ziggy/.env, and add a
+  // [mcp_servers.ziggy] entry to the per-agent codex config.toml so Codex
+  // launches the Ziggy MCP server as a STDIO subprocess. Requires
+  // /opt/stacks/ai-maestro/agent-envs/<name>.env to exist on the host with
+  // ZIGGY_PROFILE + DATABASE_URL set; createDockerAgent fails loudly if
+  // missing. See sandbox.ziggy on the persisted agent record.
+  ziggy?: boolean
   // Internal — set by recreateDockerAgent to migrate persisted claude/gh state
   // from the soft-deleted predecessor's per-UUID dir into the new agent's dir
   // BEFORE the container starts. Without this, /recreate's UUID rotation
@@ -651,7 +659,7 @@ export function buildCloudGeminiSettingsMount(
 export function provisionCloudCodexConfig(
   agentId: string,
   hostHome: string = os.homedir()
-): { versionPath: string; configTomlPath: string } {
+): { versionPath: string; configTomlPath: string; hooksPath: string } {
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
   fs.mkdirSync(agentDir, { recursive: true })
   const versionPath = path.join(agentDir, 'codex-version.json')
@@ -670,7 +678,11 @@ export function provisionCloudCodexConfig(
       'trust_level = "trusted"\n'
     fs.writeFileSync(configTomlPath, configToml, { mode: 0o600 })
   }
-  return { versionPath, configTomlPath }
+  const hooksPath = path.join(agentDir, 'codex-hooks.json')
+  if (!fs.existsSync(hooksPath)) {
+    fs.writeFileSync(hooksPath, '{}\n', { mode: 0o600 })
+  }
+  return { versionPath, configTomlPath, hooksPath }
 }
 
 // File-level bind mount for the per-agent codex config.toml. Mount target
@@ -685,6 +697,31 @@ export function buildCloudCodexConfigTomlMount(
   return {
     hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-config.toml'),
     containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'config.toml'),
+  }
+}
+
+// File-level bind mount for the per-agent codex hooks.json. Mount target
+// parent (/home/claude/.codex) is pre-created in agent-container/Dockerfile
+// alongside config.toml + auth.json.
+//
+// Codex reads hook definitions from ~/.codex/hooks.json at session start
+// (verified against developers.openai.com/codex/hooks 2026-05-27). Schema:
+// { "hooks": { "<EventName>": [ { "hooks": [ { "type": "command", "command": "..." } ] } ] } }
+//
+// RW: codex itself doesn't rewrite hooks.json today, but the operator (or
+// a future ai-maestro helper) may edit it from inside the container; RW
+// keeps that path open and matches the config.toml mount mode.
+//
+// Default skeleton is "{}" — no hooks active. Operators wiring a
+// UserPromptSubmit recall hook (e.g., Ziggy memory injection) populate
+// this file post-create. Per-agent isolation unchanged.
+export function buildCloudCodexHooksMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-hooks.json'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'hooks.json'),
   }
 }
 
@@ -854,6 +891,118 @@ export function buildCloudAntigravityAppDataMount(
     hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'antigravity-app-data'),
     containerPath: path.posix.join(CONTAINER_HOME, '.gemini', 'antigravity-cli'),
   }
+}
+
+// ─── Ziggy MCP integration (sandbox.ziggy=true) ──────────────────────────
+//
+// Mounts + provisioning that wire a cloud agent to reach the host's Ziggy MCP
+// server. Gate: agent.deployment.sandbox.ziggy === true. Composed at create
+// time and on every /update-runtime so /recreate is naturally idempotent.
+//
+// Design summary (Hutch + Watson 2026-05-27, kanban TBD):
+//
+//   - Codex (or any MCP-aware program) spawns the Ziggy MCP server as a STDIO
+//     subprocess via [mcp_servers.ziggy] in ~/.codex/config.toml. The command
+//     points at `/home/gosub/code/ziggy/apps/mcp-server/bin/start.sh` — the
+//     same script Rollie (host agent) uses today.
+//
+//   - The MCP server reads creds + workspace routing from
+//     /home/gosub/code/ziggy/.env. That host file is currently Rollie-flavored
+//     (DATABASE_URL points at the rollie-specific Postgres DB on port 5434),
+//     so we OVERLAY a per-agent .env at the same in-container path. Docker
+//     file-bind shadows the underlying file from Mount A; start.sh sources
+//     the overlay and has no awareness of the host's Rollie defaults.
+//
+//   - The MCP server connects to Postgres via the docker bridge network
+//     `ziggy_default` where `ziggy-postgres` resolves by service name. That
+//     requires the agent container to attach to the network (--network
+//     ziggy_default in dockerCmd composition).
+//
+// Operator pre-flight: /opt/stacks/ai-maestro/agent-envs/<agent-name>.env must
+// exist on host with at least ZIGGY_PROFILE and DATABASE_URL. ai-maestro
+// REFUSES to start the container if missing (silent-empty-mount creation was
+// the codex-auth.json bug Shane hit at create time; not repeating it).
+
+// Network name used by docker compose for the Ziggy stack (ziggy-web +
+// ziggy-postgres). Verified live 2026-05-27 — bridge driver, 172.19.0.0/16.
+export const ZIGGY_NETWORK = 'ziggy_default'
+
+// Host path where the Ziggy repo lives. start.sh derives ZIGGY_ROOT from its
+// own location, so the in-container path MUST match the host path verbatim
+// (no `/opt/ziggy-mcp` remap). Bind-mount source AND target use this path.
+export const ZIGGY_CODE_PATH = '/home/gosub/code/ziggy'
+
+// Directory on host where ai-maestro looks for per-agent .env overlay files.
+// One file per agent, named `<agent.name>.env` (agent.name is already a slug
+// matching `^[a-zA-Z0-9_-]+$` so it's safe in a filesystem path without
+// further escaping). Owner: operator (Shane / Hutch). ai-maestro never
+// writes to this directory — only reads at update-runtime/create time to
+// verify the file exists before adding the overlay mount.
+export const ZIGGY_AGENT_ENVS_DIR = '/opt/stacks/ai-maestro/agent-envs'
+
+// Read-only bind of the Ziggy repo into the container at the same absolute
+// path as on host. start.sh expects to find apps/mcp-server siblings (..bin,
+// ../src, ../node_modules, ../../.env). Read-only: agents never mutate the
+// shared Ziggy source.
+export function buildZiggyCodeMount(): SandboxMount {
+  return {
+    hostPath: ZIGGY_CODE_PATH,
+    containerPath: ZIGGY_CODE_PATH,
+    readOnly: true,
+  }
+}
+
+// Per-agent .env overlay. Source: /opt/stacks/ai-maestro/agent-envs/<name>.env.
+// Target: ${ZIGGY_CODE_PATH}/.env (shadows the host file from buildZiggyCodeMount
+// for this container only). Read-only — start.sh only sources it.
+export function buildZiggyEnvOverlayMount(agentName: string): SandboxMount {
+  return {
+    hostPath: path.join(ZIGGY_AGENT_ENVS_DIR, `${agentName}.env`),
+    containerPath: path.posix.join(ZIGGY_CODE_PATH, '.env'),
+    readOnly: true,
+  }
+}
+
+// Append a [mcp_servers.ziggy] block to the per-agent codex config.toml if
+// not already present. Idempotent — safe to call on every recreate /
+// update-runtime. The block uses STDIO transport per
+// developers.openai.com/codex/mcp (verified 2026-05-27):
+//
+//   [mcp_servers.ziggy]
+//   command = "<ZIGGY_CODE_PATH>/apps/mcp-server/bin/start.sh"
+//
+// ZIGGY_PROFILE + DATABASE_URL come from the overlay-mounted .env, NOT from
+// codex's [mcp_servers.ziggy].env — start.sh's `set -a` env-loop would
+// clobber any env var we pass via Codex anyway. Centralizing all env in the
+// overlay .env is the cleaner single-source.
+export function provisionCloudCodexZiggyMcpEntry(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { configTomlPath: string; mcpBlockAdded: boolean } {
+  const configTomlPath = path.join(
+    hostHome,
+    '.aimaestro',
+    'agents',
+    agentId,
+    'codex-config.toml',
+  )
+  // provisionCloudCodexConfig must have run first (it creates the file with
+  // the [projects."/workspace"] trust block). If absent, write a minimal
+  // file containing only the MCP block — codex tolerates missing trust block.
+  let existing = ''
+  if (fs.existsSync(configTomlPath)) {
+    existing = fs.readFileSync(configTomlPath, 'utf-8')
+    if (existing.includes('[mcp_servers.ziggy]')) {
+      return { configTomlPath, mcpBlockAdded: false }
+    }
+  }
+  const startScript = path.posix.join(ZIGGY_CODE_PATH, 'apps', 'mcp-server', 'bin', 'start.sh')
+  const block =
+    (existing.endsWith('\n') || existing === '' ? '' : '\n') +
+    '\n[mcp_servers.ziggy]\n' +
+    `command = "${startScript}"\n`
+  fs.writeFileSync(configTomlPath, existing + block, { mode: 0o600 })
+  return { configTomlPath, mcpBlockAdded: true }
 }
 
 // Bind-mount for the post-restoration-ready sentinel (kanban fcabb870). The
@@ -1450,6 +1599,35 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const workDir = body.workingDirectory || '/tmp'
   const cpus = body.cpus || 2
   const memory = body.memory || '4g'
+  const useZiggy = body.ziggy === true
+
+  // Validate the operator pre-flight for Ziggy MCP integration BEFORE doing
+  // any destructive docker work or registry writes. The per-agent .env at
+  // /opt/stacks/ai-maestro/agent-envs/<name>.env must exist with at least
+  // ZIGGY_PROFILE + DATABASE_URL — start.sh sources it via the overlay mount,
+  // and a missing file would either make docker create the mount source as a
+  // root-owned empty dir (breaking the bind) or yield an MCP server that
+  // silently inherits Rollie's host .env. Fail loudly here is better than
+  // either failure mode.
+  if (useZiggy) {
+    try {
+      fs.mkdirSync(ZIGGY_AGENT_ENVS_DIR, { recursive: true })
+    } catch (err) {
+      console.warn(
+        `[Docker Service] Could not mkdir ${ZIGGY_AGENT_ENVS_DIR}:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+    const envFilePath = path.join(ZIGGY_AGENT_ENVS_DIR, `${name}.env`)
+    if (!fs.existsSync(envFilePath)) {
+      return invalidRequest(
+        `sandbox.ziggy=true requires a per-agent env file at ${envFilePath}. ` +
+          'Create it on the host with ZIGGY_PROFILE=default and ' +
+          `DATABASE_URL=postgresql://ziggy:<password>@ziggy-postgres:5432/ziggy (pw from /opt/stacks/ziggy/.env), ` +
+          'then retry. See services/agents-docker-service.ts ZIGGY_AGENT_ENVS_DIR comment for the design.',
+      )
+    }
+  }
 
   // Pre-generate the agent UUID so AMP common mounts and CLAUDE_AGENT_ID can
   // reference it on first container start. createAgent below accepts an
@@ -1539,6 +1717,13 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud codex auth:', err instanceof Error ? err.message : err)
   }
+  if (useZiggy) {
+    try {
+      provisionCloudCodexZiggyMcpEntry(agentId)
+    } catch (err) {
+      console.warn('[Docker Service] Could not provision cloud codex ziggy MCP entry:', err instanceof Error ? err.message : err)
+    }
+  }
   const mergedMounts = mergeMounts(
     [
       ...ampMounts,
@@ -1552,6 +1737,8 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
+      buildCloudCodexHooksMount(agentId),
+      ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(name)] : []),
       restorationSentinelMount,
     ],
     body.mounts
@@ -1562,6 +1749,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
     body.autoRemove ? '' : '--restart unless-stopped',
+    useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
     ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,
     ...buildMountFlags(mergedMounts),
@@ -1616,6 +1804,16 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       if (body.extraEnv && Object.keys(body.extraEnv).length > 0) runtime.extraEnv = body.extraEnv
       const hasRuntime = Object.keys(runtime).length > 0
 
+      // Persisted sandbox block: operator mounts (recreated from body.mounts
+      // on recreate) + ziggy flag (drives --network ziggy_default attach +
+      // overlay-mount provisioning). AMP/program-specific common mounts are
+      // re-synthesized deterministically at every redeploy and never stored
+      // here — see the comment block on this function and the helper docstrings.
+      const sandboxBlock: NonNullable<Agent['deployment']>['sandbox'] = {}
+      if (body.mounts && body.mounts.length > 0) sandboxBlock.mounts = body.mounts
+      if (useZiggy) sandboxBlock.ziggy = true
+      const hasSandbox = Object.keys(sandboxBlock).length > 0
+
       agents[idx].deployment = {
         type: 'cloud',
         cloud: {
@@ -1626,9 +1824,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
           status: 'running',
           ...(hasRuntime ? { runtime } : {}),
         },
-        ...(body.mounts && body.mounts.length > 0
-          ? { sandbox: { mounts: body.mounts } }
-          : {}),
+        ...(hasSandbox ? { sandbox: sandboxBlock } : {}),
       }
       saveAgents(agents)
     }
@@ -1686,6 +1882,7 @@ export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
     model: oldAgent.model,
     workingDirectory: oldAgent.workingDirectory,
     mounts: oldAgent.deployment?.sandbox?.mounts,
+    ziggy: oldAgent.deployment?.sandbox?.ziggy,
     cpus: runtime?.cpus,
     memory: runtime?.memory,
     autoRemove: runtime?.autoRemove,
@@ -1863,6 +2060,11 @@ export function parsePortFromWebsocketUrl(url: string | undefined): number | nul
 export interface UpdateRuntimeConfig {
   mounts?: SandboxMount[]            // Replace operator-supplied mounts wholesale (omit to keep existing)
   extraEnv?: Record<string, string>  // Replace operator-supplied extraEnv wholesale (omit to keep existing)
+  // Toggle ziggy_default network attach + Ziggy MCP overlay mounts. Omit to
+  // leave the existing agent.deployment.sandbox.ziggy untouched. Explicit
+  // false clears the flag; true sets it and requires the per-agent env file
+  // at /opt/stacks/ai-maestro/agent-envs/<name>.env to exist on host.
+  ziggy?: boolean
 }
 
 /**
@@ -1947,6 +2149,32 @@ export async function updateContainerMountsAndExtraEnv(
   const newMounts = config.mounts !== undefined ? config.mounts : agent.deployment.sandbox?.mounts
   const existingRuntime = agent.deployment.cloud.runtime ?? {}
   const newExtraEnv = config.extraEnv !== undefined ? config.extraEnv : existingRuntime.extraEnv
+  const useZiggy = config.ziggy !== undefined ? config.ziggy : (agent.deployment.sandbox?.ziggy === true)
+
+  // Validate the operator pre-flight for Ziggy MCP integration BEFORE docker
+  // stop+rm. Same loud-fail-on-missing-env-file contract as createDockerAgent.
+  // Skipped when useZiggy is false — recreate-with-ziggy=false on a previously-
+  // ziggy=true agent is a valid operation that should succeed without needing
+  // the env file (the network attach + overlay mount just won't be applied).
+  if (useZiggy) {
+    try {
+      fs.mkdirSync(ZIGGY_AGENT_ENVS_DIR, { recursive: true })
+    } catch (err) {
+      console.warn(
+        `[update-runtime] Could not mkdir ${ZIGGY_AGENT_ENVS_DIR}:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+    const envFilePath = path.join(ZIGGY_AGENT_ENVS_DIR, `${agent.name}.env`)
+    if (!fs.existsSync(envFilePath)) {
+      return invalidRequest(
+        `ziggy=true requires a per-agent env file at ${envFilePath}. ` +
+          'Create it on the host with ZIGGY_PROFILE=default and ' +
+          'DATABASE_URL=postgresql://ziggy:<password>@ziggy-postgres:5432/ziggy (pw from /opt/stacks/ziggy/.env), ' +
+          'then retry.',
+      )
+    }
+  }
 
   // Rebuild AI_TOOL from persisted fields. Matches recreate semantics — yolo,
   // prompt, and dashboard-supplied githubToken are NOT preserved (same gap
@@ -1997,6 +2225,19 @@ export async function updateContainerMountsAndExtraEnv(
   // skip the wait, racing host-side prep again. See kanban fcabb870.
   clearRestorationSentinel(agentId)
 
+  // (Re-)provision Codex Ziggy MCP entry if ziggy=true. Idempotent — the
+  // helper short-circuits when the [mcp_servers.ziggy] block already exists
+  // in config.toml. Mirrors the createDockerAgent provisioning sequence so
+  // /update-runtime applied to a not-yet-Ziggy agent (flipping the flag on)
+  // adds the MCP entry in-place.
+  if (useZiggy) {
+    try {
+      provisionCloudCodexZiggyMcpEntry(agentId)
+    } catch (err) {
+      console.warn('[update-runtime] Could not provision cloud codex ziggy MCP entry:', err instanceof Error ? err.message : err)
+    }
+  }
+
   const mergedMounts = mergeMounts(
     [
       ...ampMounts,
@@ -2010,6 +2251,8 @@ export async function updateContainerMountsAndExtraEnv(
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
+      buildCloudCodexHooksMount(agentId),
+      ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(agent.name)] : []),
       restorationSentinelMount,
     ],
     newMounts
@@ -2043,6 +2286,7 @@ export async function updateContainerMountsAndExtraEnv(
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
     autoRemove ? '' : '--restart unless-stopped',
+    useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
     ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,
     ...buildMountFlags(mergedMounts),
@@ -2069,6 +2313,7 @@ export async function updateContainerMountsAndExtraEnv(
     updateAgentRuntimeConfig(agentId, {
       mounts: config.mounts,
       extraEnv: config.extraEnv,
+      ziggy: config.ziggy,
     })
   } catch (err) {
     console.warn(

@@ -1239,6 +1239,66 @@ describe('updateAgentRuntimeConfig', () => {
       expect(reloaded?.deployment?.cloud?.runtime).toEqual({ autoRemove: true })
     })
   })
+
+  describe('ziggy field (Phase 2 Ziggy MCP integration)', () => {
+    it('persists ziggy=true on deployment.sandbox.ziggy', () => {
+      const agent = makeCloudAgent('ziggy-1')
+      const updated = updateAgentRuntimeConfig(agent.id, { ziggy: true })
+      expect(updated?.deployment?.sandbox?.ziggy).toBe(true)
+
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('ziggy=false clears the field (not stored as explicit false)', () => {
+      const agent = makeCloudAgent('ziggy-2')
+      updateAgentRuntimeConfig(agent.id, { ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { ziggy: false })
+      const reloaded = getAgent(agent.id)
+      // Cleared field — and since it was the only sandbox key, the whole
+      // sandbox block is dropped to match pre-existing no-sandbox shape.
+      expect(reloaded?.deployment?.sandbox).toBeUndefined()
+    })
+
+    it('ziggy=undefined leaves existing flag untouched', () => {
+      const agent = makeCloudAgent('ziggy-3')
+      updateAgentRuntimeConfig(agent.id, { ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('ziggy + mounts coexist on the same sandbox block', () => {
+      const agent = makeCloudAgent('ziggy-4')
+      const mounts = [{ hostPath: '/etc/ssl', containerPath: '/certs', readOnly: true }]
+      updateAgentRuntimeConfig(agent.id, { mounts, ziggy: true })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.mounts).toEqual(mounts)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('clearing mounts preserves ziggy=true on the same agent', () => {
+      const agent = makeCloudAgent('ziggy-5')
+      const mounts = [{ hostPath: '/x', containerPath: '/x' }]
+      updateAgentRuntimeConfig(agent.id, { mounts, ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { mounts: [] })
+      const reloaded = getAgent(agent.id)
+      // mounts gone, ziggy still set — sandbox block survives because ziggy
+      // is non-empty.
+      expect(reloaded?.deployment?.sandbox?.mounts).toBeUndefined()
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('clearing ziggy preserves mounts on the same agent', () => {
+      const agent = makeCloudAgent('ziggy-6')
+      const mounts = [{ hostPath: '/y', containerPath: '/y' }]
+      updateAgentRuntimeConfig(agent.id, { mounts, ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { ziggy: false })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.mounts).toEqual(mounts)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBeUndefined()
+    })
+  })
 })
 
 // ============================================================================
