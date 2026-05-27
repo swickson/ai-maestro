@@ -938,6 +938,14 @@ export const ZIGGY_CODE_PATH = '/home/gosub/code/ziggy'
 // further escaping). Owner: operator (Shane / Hutch). ai-maestro never
 // writes to this directory — only reads at update-runtime/create time to
 // verify the file exists before adding the overlay mount.
+//
+// Operator note on RENAMES: the env file is keyed on agent.name, NOT
+// agent.id. If an agent is renamed, the operator must rename the env file
+// to match — the next /update-runtime or /recreate will loud-fail with a
+// clear error message until they do. Intentional: keying on the operator-
+// readable name keeps the env files discoverable and the loud-fail catches
+// the missed rename immediately rather than silently sourcing an empty
+// overlay. Per Hutch ops review PR #157.
 export const ZIGGY_AGENT_ENVS_DIR = '/opt/stacks/ai-maestro/agent-envs'
 
 // Read-only bind of the Ziggy repo into the container at the same absolute
@@ -1749,6 +1757,12 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
     body.autoRemove ? '' : '--restart unless-stopped',
+    // Single-network attach when useZiggy=true: container joins ziggy_default
+    // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
+    // filesystem (not Docker DNS), so isolation is fine today. If a future
+    // feature needs container-to-container DNS for non-Ziggy agents, attach
+    // the default bridge via `docker network connect bridge <container>`
+    // post-create. Per Hutch ops review PR #157 note A.
     useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
     ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,
@@ -2286,6 +2300,12 @@ export async function updateContainerMountsAndExtraEnv(
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
     autoRemove ? '' : '--restart unless-stopped',
+    // Single-network attach when useZiggy=true: container joins ziggy_default
+    // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
+    // filesystem (not Docker DNS), so isolation is fine today. If a future
+    // feature needs container-to-container DNS for non-Ziggy agents, attach
+    // the default bridge via `docker network connect bridge <container>`
+    // post-create. Per Hutch ops review PR #157 note A.
     useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
     ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,
