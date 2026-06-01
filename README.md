@@ -6,9 +6,9 @@
 
 *I was running 35 AI agents across multiple terminals and became the human mailman between them. So I built AI Maestro.*
 
-**Orchestrate your AI coding agents from one dashboard — with persistent memory, agent-to-agent messaging, and multi-machine support.**
+**The OS for AI-first organizations — orchestrate any AI agent with persistent memory, agent-to-agent messaging, and multi-machine support.**
 
-[![Version](https://img.shields.io/badge/version-0.29.9-blue)](https://github.com/23blocks-OS/ai-maestro/releases)
+[![Version](https://img.shields.io/badge/version-0.29.16-blue)](https://github.com/23blocks-OS/ai-maestro/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL2)-lightgrey)](https://github.com/23blocks-OS/ai-maestro)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/23blocks-OS/ai-maestro?style=social)](https://github.com/23blocks-OS/ai-maestro)
@@ -30,7 +30,7 @@ Within a week I was running 35 agents across terminals. They were productive, bu
 **So I built AI Maestro** — one dashboard to see every agent, on every machine, with persistent memory and direct agent-to-agent communication. Today I run 80+ agents across multiple computers, building real companies with them every day.
 
 **What makes this different:**
-- **Works with any AI agent** — Claude Code, Aider, Cursor, Copilot, your own scripts. We don't lock you in.
+- **Works with any AI agent** — Claude Code, Codex, Aider, Cursor, OpenClaw, Hermes, Droid, or any terminal-based agent. We don't lock you in.
 - **Multi-machine from day one** — Peer mesh network with no central server. Nobody else does this.
 - **Agents that communicate** — The Agent Messaging Protocol (AMP) lets agents coordinate directly. You orchestrate, they collaborate.
 
@@ -82,13 +82,13 @@ Dashboard opens at `http://localhost:23000`
 
 ## Features
 
-Every feature was born from a real problem. We built them in the order we needed them.
+Every feature was born from running a real AI-first organization. We built them in the order we needed them.
 
 ### One Dashboard
 
 *I had 35 terminals and couldn't tell which was which.*
 
-See and manage all your AI agents in one place. Create agents from the UI, organize them with smart naming (`project-backend-api` becomes a 3-level tree with auto-coloring), and switch between any agent with a click. Auto-discovers tmux sessions, Docker containers, cloud deployments, and standalone agents (plain terminals, API-only agents, or remote hosts that register via heartbeat).
+See and manage all your AI agents in one place. Create agents from the UI with a guided wizard, organize them with smart naming (`project-backend-api` becomes a 3-level tree with auto-coloring), and switch between any agent with a click. Four deployment modes: **tmux** (local), **Docker** (containerized), **AWS EC2** (dedicated instance), and **AWS ECS Fargate** (serverless). Auto-discovers tmux sessions, Docker containers, cloud deployments, and standalone agents.
 
 ### Any Machine
 
@@ -129,11 +129,68 @@ Assemble agents into teams, run meetings in split-pane war rooms, and track task
 
 Custom avatars, personality profiles, and visual presence for every agent. When an agent has a face and a role, you instinctively assign it the right work — just like a real team.
 
+### Agent Deployment
+
+*One agent on my laptop. Another on EC2. A third on Fargate. All in the same dashboard.*
+
+Four ways to run agents, each for a different need:
+
+| Mode | What | Best For |
+|------|------|----------|
+| **tmux** | Direct terminal sessions on your machine | Local development, zero setup |
+| **Docker** | Containerized agents with resource limits | Isolation, reproducibility, multi-project |
+| **AWS EC2** | Dedicated Graviton instance with native install, Nginx + SSL | Always-on agents, SSH access, persistent workloads |
+| **AWS ECS Fargate** | Serverless containers, auto-built Docker image | Burst scaling, zero maintenance, pay-per-use |
+
+Cloud agents are Terraform-managed. EC2 installs Node.js, tmux, and AI CLIs directly on ARM64 hardware (no Docker overhead). ECS auto-builds your Docker image, pushes to ECR, and runs on Fargate. Both deploy with one command from the dashboard or CLI.
+
+```bash
+# EC2: dedicated instance with SSL
+aimaestro-agent.sh create my-api --ec2 \
+  --domain api.example.com --ssl-email admin@example.com --key-name my-key
+
+# ECS Fargate: serverless (auto-builds image)
+aimaestro-agent.sh create worker --ecs
+```
+
+---
+
+## Meet Lola — Your First Hire
+
+Every AI-first organization starts with one agent. **Lola** is yours — a batteries-included Chief of Staff framework built for AI Maestro. She handles email triage, semantic memory, task management, and content security out of the box. Install the platform, deploy Lola, and you have your first employee on day one.
+
+```bash
+# Clone and deploy Lola on AI Maestro
+git clone https://github.com/23blocks-OS/lolabot.git
+cd lolabot && ./setup.sh
+```
+
+[Learn more about Lola →](https://github.com/23blocks-OS/lolabot)
+
+---
+
+## The Agent Ecosystem
+
+Every agent is built from four dimensions:
+
+| | Dimension | What | Where |
+|-|-----------|------|-------|
+| **WHO** | Personality | Domain expertise, workflows, deliverables | [Agent Library](https://github.com/msitarzewski/agency-agents) (150+) |
+| **HOW** | Capabilities | Skills, scripts, CLI tools | [Plugin Builder](https://github.com/23blocks-OS/ai-maestro-plugins) |
+| **TRUST** | Identity | Cryptographic keys, OAuth tokens | [AID](https://agentids.org) |
+| **TALK** | Communication | Agent-to-agent messaging | [AMP](https://agentmessaging.org) |
+
+AI Maestro is the stage. Pick personalities, give them skills, and run them from one dashboard.
+
+[Read the full ecosystem guide →](./docs/ECOSYSTEM.md)
+
 ---
 
 ## Who Is This For
 
-**Developers running multiple AI agents.** If you have 3+ agents and you're switching between terminals, losing context, and playing messenger — this is for you. Works with Claude Code, Aider, Cursor, GitHub Copilot, or any terminal-based AI.
+**Founders building AI-first organizations.** You're the CEO, your agents are the team. Solo operators, agency owners, and anyone running a business where AI agents do the work and you drive the strategy. Start with Lola, add specialists, scale your AI workforce.
+
+**Developers running multiple AI agents.** If you have 3+ agents and you're switching between terminals, losing context, and playing messenger — this is for you. Works with Claude Code, Codex, Aider, Cursor, or any terminal-based AI.
 
 **Teams coordinating AI-assisted work.** Multiple developers, multiple agents, multiple machines. One dashboard. Agent-to-agent messaging replaces you as the bottleneck.
 
@@ -170,6 +227,7 @@ Custom avatars, personality profiles, and visual presence for every agent. When 
 
 **Going deeper:**
 - [Multi-Machine Setup](./docs/SETUP-TUTORIAL.md) · [Network Access](./docs/NETWORK-ACCESS.md)
+- [Cloud Deployment (AWS)](./docs/cloud-aws.html) · [Docker Agents](./docs/docker-local.html)
 - [Agent Messaging Guide](./docs/AGENT-MESSAGING-GUIDE.md) · [Architecture](./docs/AGENT-COMMUNICATION-ARCHITECTURE.md)
 - [Intelligence Guide](./docs/AGENT-INTELLIGENCE.md) · [Code Graph](./docs/images/code_graph01.png)
 - [Operations Guide](./docs/OPERATIONS-GUIDE.md)
@@ -199,58 +257,6 @@ We love contributions. See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 - [Report a bug](https://github.com/23blocks-OS/ai-maestro/issues)
 - [Request a feature](https://github.com/23blocks-OS/ai-maestro/issues/new?labels=enhancement)
 
-
----
-
-## FAQ
-
-### What is AI Maestro?
-
-AI Maestro is an open-source orchestration dashboard for AI coding agents. It lets you manage multiple AI agents (Claude Code, Aider, Cursor, Copilot, etc.) from a single interface, with persistent memory, agent-to-agent messaging, and multi-machine support — no central server required.
-
-### How is it different from running agents in separate terminals?
-
-AI Maestro centralizes visibility and coordination. Instead of switching between dozens of terminals, you get one dashboard showing all agents, their status, and outputs. Agents can also communicate directly via the Agent Messaging Protocol (AMP), eliminating the need to manually copy-paste context between them.
-
-### Which AI agents are supported?
-
-Any terminal-based AI agent works, including Claude Code, Aider, Cursor, GitHub Copilot, and custom scripts. AI Maestro discovers tmux sessions automatically and works with Docker containers, cloud deployments, and standalone terminals.
-
-### How does the multi-machine setup work?
-
-AI Maestro uses a peer mesh network where every machine is equal — no central server. Add a computer and it joins the mesh automatically. You can run agents across Mac, Linux, and cloud machines from one dashboard, using each for its strengths.
-
-### What is the Agent Messaging Protocol (AMP)?
-
-AMP gives agents email-like communication with priority levels, message types, cryptographic signatures, and push notifications. Agents coordinate directly while you manage the big picture from the dashboard.
-
-### How does persistent memory work?
-
-Three layers grow over time: **Memory** (agents remember past conversations and decisions), **Code Graph** (interactive visualization of your codebase with delta indexing), and **Documentation** (auto-generated searchable docs from your code).
-
-### What are Gateways?
-
-Gateways connect your AI agents to external platforms like Slack, Discord, Email, and WhatsApp. They include smart routing (`@AIM:agent-name`), thread-aware responses, and content security with prompt injection detection.
-
-### What are the system requirements?
-
-- **Node.js 18+** and **tmux**
-- macOS, Linux, or Windows (WSL2)
-- Installation takes 5-10 minutes via the remote install script
-
-### How do I get started?
-
-Run the install script: `curl -fsSL https://raw.githubusercontent.com/23blocks-OS/ai-maestro/main/scripts/remote-install.sh | sh`
-
-The dashboard opens at `http://localhost:23000`. See the [Quick Start Guide](./docs/QUICKSTART.md) for detailed setup.
-
-### Where can I get help?
-
-- [Documentation](./docs/) — Guides for core concepts, multi-machine setup, agent messaging, and operations
-- [Troubleshooting](./docs/TROUBLESHOOTING.md) — Common issues and solutions
-- [GitHub Issues](https://github.com/23blocks-OS/ai-maestro/issues) — Report bugs or request features
-- [Discussions](https://github.com/23blocks-OS/ai-maestro/discussions) — Join the community conversation
-
 <details>
 <summary><b>Acknowledgments</b></summary>
 
@@ -277,3 +283,58 @@ MIT — see [LICENSE](./LICENSE). Free for any purpose, including commercial.
 [Star us on GitHub](https://github.com/23blocks-OS/ai-maestro)
 
 </div>
+
+## FAQ
+
+### What is AI Maestro?
+
+**AI Maestro** is the operating system for AI-first organizations — orchestrate any AI agent with **persistent memory**, **agent-to-agent messaging**, and **multi-machine support**. Built from real experience running 80+ agents across multiple computers.
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **One Dashboard** | See and manage all AI agents in one place with smart naming and auto-coloring |
+| **Multi-Machine** | Peer mesh network — every machine is equal, no central server required |
+| **Agent Messaging (AMP)** | Agents communicate directly via email-like messaging protocol |
+| **Persistent Memory** | Three layers: Memory, Code Graph, Documentation — agents get smarter over time |
+| **Work Coordination** | Teams, Kanban boards, drag-and-drop task management |
+| **Any Agent** | Works with Claude Code, Codex, Aider, Cursor, OpenClaw, Hermes, Droid, or any terminal-based agent |
+| **Multi-Deployment** | tmux (local), Docker, AWS EC2, AWS ECS Fargate |
+| **Gateways** | Slack, Discord, Email, WhatsApp integrations with smart routing |
+
+### How to Get Started
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/23blocks-OS/ai-maestro/main/scripts/remote-install.sh | sh
+```
+
+Dashboard opens at `http://localhost:23000`
+
+**Time:** 5-10 minutes · **Requires:** Node.js 18+, tmux
+
+### Agent Deployment Modes
+
+| Mode | Best For |
+|------|----------|
+| **tmux** | Local development, zero setup |
+| **Docker** | Isolation, reproducibility, multi-project |
+| **AWS EC2** | Always-on agents, SSH access, persistent workloads |
+| **AWS ECS Fargate** | Burst scaling, zero maintenance, pay-per-use |
+
+### What is AMP (Agent Messaging Protocol)?
+
+AMP gives your agents email-like communication. Priority levels, message types, cryptographic signatures, and push notifications. Tell your agent *"send a message to backend about the deployment"* — it just works.
+
+### Help Resources
+
+| Resource | Link |
+|----------|------|
+| **Quick Start Guide** | ./docs/QUICKSTART.md |
+| **Windows Installation** | ./docs/WINDOWS-INSTALLATION.md |
+| **Contributing** | ./CONTRIBUTING.md |
+| **AMP Protocol** | https://agentmessaging.org |
+
+### License
+
+MIT License - Open source and free to use.
