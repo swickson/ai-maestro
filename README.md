@@ -8,7 +8,7 @@
 
 **The OS for AI-first organizations — orchestrate any AI agent with persistent memory, agent-to-agent messaging, and multi-machine support.**
 
-[![Version](https://img.shields.io/badge/version-0.29.16-blue)](https://github.com/23blocks-OS/ai-maestro/releases)
+[![Version](https://img.shields.io/badge/version-0.35.48-blue)](https://github.com/23blocks-OS/ai-maestro/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL2)-lightgrey)](https://github.com/23blocks-OS/ai-maestro)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/23blocks-OS/ai-maestro?style=social)](https://github.com/23blocks-OS/ai-maestro)
@@ -286,55 +286,20 @@ MIT — see [LICENSE](./LICENSE). Free for any purpose, including commercial.
 
 ## FAQ
 
-### What is AI Maestro?
+**Do I need to use Claude Code?**
+No. AI Maestro works with any terminal-based AI agent — Claude Code, Codex, Aider, Cursor, OpenClaw, Hermes, Droid, or your own scripts. We're agent-agnostic.
 
-**AI Maestro** is the operating system for AI-first organizations — orchestrate any AI agent with **persistent memory**, **agent-to-agent messaging**, and **multi-machine support**. Built from real experience running 80+ agents across multiple computers.
+**Does it work on Linux / Windows?**
+Yes. macOS and Linux natively. Windows via WSL2 — see the [Windows guide](./docs/WINDOWS-INSTALLATION.md).
 
-### Key Features
+**Can agents on different machines talk to each other?**
+Yes. The [Agent Messaging Protocol (AMP)](https://agentmessaging.org) handles cross-machine messaging with cryptographic signatures and push notifications. No central server required.
 
-| Feature | Description |
-|---------|-------------|
-| **One Dashboard** | See and manage all AI agents in one place with smart naming and auto-coloring |
-| **Multi-Machine** | Peer mesh network — every machine is equal, no central server required |
-| **Agent Messaging (AMP)** | Agents communicate directly via email-like messaging protocol |
-| **Persistent Memory** | Three layers: Memory, Code Graph, Documentation — agents get smarter over time |
-| **Work Coordination** | Teams, Kanban boards, drag-and-drop task management |
-| **Any Agent** | Works with Claude Code, Codex, Aider, Cursor, OpenClaw, Hermes, Droid, or any terminal-based agent |
-| **Multi-Deployment** | tmux (local), Docker, AWS EC2, AWS ECS Fargate |
-| **Gateways** | Slack, Discord, Email, WhatsApp integrations with smart routing |
+**How is this different from just using tmux?**
+tmux gives you terminals. AI Maestro gives you an organization — persistent memory, agent-to-agent messaging, team coordination, Kanban boards, multi-machine mesh, cloud deployment, and gateway integrations. tmux is the foundation; AI Maestro is the building.
 
-### How to Get Started
+**Is there a hosted / cloud version?**
+Not yet. AI Maestro runs on your machines. You own your data, your agents, and your infrastructure.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/23blocks-OS/ai-maestro/main/scripts/remote-install.sh | sh
-```
-
-Dashboard opens at `http://localhost:23000`
-
-**Time:** 5-10 minutes · **Requires:** Node.js 18+, tmux
-
-### Agent Deployment Modes
-
-| Mode | Best For |
-|------|----------|
-| **tmux** | Local development, zero setup |
-| **Docker** | Isolation, reproducibility, multi-project |
-| **AWS EC2** | Always-on agents, SSH access, persistent workloads |
-| **AWS ECS Fargate** | Burst scaling, zero maintenance, pay-per-use |
-
-### What is AMP (Agent Messaging Protocol)?
-
-AMP gives your agents email-like communication. Priority levels, message types, cryptographic signatures, and push notifications. Tell your agent *"send a message to backend about the deployment"* — it just works.
-
-### Help Resources
-
-| Resource | Link |
-|----------|------|
-| **Quick Start Guide** | ./docs/QUICKSTART.md |
-| **Windows Installation** | ./docs/WINDOWS-INSTALLATION.md |
-| **Contributing** | ./CONTRIBUTING.md |
-| **AMP Protocol** | https://agentmessaging.org |
-
-### License
-
-MIT License - Open source and free to use.
+**How do I add more agents?**
+Create them from the dashboard UI, the CLI (`aimaestro-agent.sh create`), or just start a new tmux session — AI Maestro auto-discovers it.

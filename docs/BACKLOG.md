@@ -2843,6 +2843,37 @@ Modified files:
 
 ## Later (Future Considerations)
 
+### wterm Terminal Renderer (xterm.js Alternative)
+
+**Status:** On Hold — revisit when wterm reaches v1.0
+**Priority:** Low
+**Effort:** Medium (2-3 days)
+
+**Problem:**
+xterm.js uses Canvas/WebGL rendering which prevents native text selection, browser Cmd+F search, and accessibility. wterm (vercel-labs/wterm) uses DOM rendering, solving all three.
+
+**What we built:**
+- `components/WtermView.tsx` — full integration with WebSocket PTY bridge, scoped CSS, custom ResizeObserver
+- "Terminal v2" tab for side-by-side comparison with xterm.js
+- Packages installed: `@wterm/core@0.3.0`, `@wterm/dom@0.3.0`, `@wterm/react@0.3.0`
+
+**Why paused:**
+Our container/CSS/resize integration had bugs (half-width content, scroll position, content duplication on reconnect). These are solvable but need focused effort. wterm v0.3.0 also has open issues (#56 MAX_COLS=256, #57 no synchronized output, #49 tmux DEC alt charset, #43 scrollback corruption on resize) — none are blockers individually but add up.
+
+**What to do when revisiting:**
+1. Fix container sizing: wterm's `autoResize` ResizeObserver needs the container to have definite dimensions before init. Use the pattern from `examples/local/` — `flex h-screen flex-col` parent, `flex-1` on Terminal
+2. Handle reconnect: clear wterm buffer before replaying history to avoid duplication
+3. Clamp cols to 256 until #56 is fixed
+4. Scroll to bottom after writes (wterm's `_scrollToBottom` doesn't always fire)
+5. Scope CSS carefully — wterm's global CSS import (`@wterm/dom/css`) leaks to other tabs
+
+**Key advantages worth preserving:**
+- DOM rendering: native text selection, Cmd+F, accessibility
+- 12KB WASM core vs ~1MB xterm.js
+- Clean API: `new WTerm(el, opts)` → `await wt.init()` → `wt.write(data)`
+
+---
+
 ### Professional Distribution System
 
 **Status:** Planned
