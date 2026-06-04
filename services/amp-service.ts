@@ -40,6 +40,9 @@ import { saveKeyPair, loadKeyPair, calculateFingerprint, verifySignature, genera
 import { canonicalStringify } from '@/lib/amp-canonical-json'
 import { queueMessage, getPendingMessages, acknowledgeMessage, acknowledgeMessages, cleanupAllExpiredMessages } from '@/lib/amp-relay'
 import { deliver } from '@/lib/message-delivery'
+import { retrieveMemories } from '@/lib/memory/retrieval-middleware'
+import type { MessageContext } from '@/lib/memory/entity-extractor'
+import { agentRegistry } from '@/lib/agent'
 import { initAgentAMPHome } from '@/lib/amp-inbox-writer'
 import { deliverViaWebSocket } from '@/lib/amp-websocket'
 import { resolveAgentIdentifier } from '@/lib/messageQueue'
@@ -393,13 +396,49 @@ interface LocalDeliveryOptions {
 
 /**
  * Deliver a message to a local agent via unified deliver() function.
+ * Enriches the payload with relevant long-term memories before delivery.
  */
 async function deliverLocally(opts: LocalDeliveryOptions): Promise<void> {
   const { envelope, payload, recipientAgentName, senderAgent, senderName, forwardedFrom, senderPublicKeyHex, body } = opts
 
+  // ── Memory Retrieval ──────────────────────────────────────────────
+  // Inject relevant long-term memories into the payload before delivery.
+  // Best-effort: failures are non-fatal and fall through to plain delivery.
+  let enrichedPayload = payload
+  try {
+    const agent = await agentRegistry.getAgent(opts.localAgent.id)
+    const agentDb = await agent.getDatabase()
+
+    // Build message context from AMP envelope + gateway enrichment
+    const ctx = body.payload?.context as Record<string, any> | undefined
+    const messageContext: MessageContext = {
+      messageText: payload.message || '',
+      senderId: ctx?.sender?.platformUserId || envelope.from,
+      senderName: ctx?.sender?.displayName || senderName,
+      senderPlatform: ctx?.sender?.platform,
+      threadId: ctx?.thread?.threadId || envelope.thread_id,
+      isNewConversation: ctx?.thread?.isNewConversation ?? !envelope.in_reply_to,
+      topicHints: ctx?.topicHints,
+    }
+
+    const retrieval = await retrieveMemories({
+      agentId: opts.localAgent.id,
+      agentDb,
+      message: messageContext,
+    })
+
+    if (retrieval.contextBlock) {
+      enrichedPayload = { ...payload, message: `${retrieval.contextBlock}\n\n${payload.message}` }
+      console.log(`[AMP Route] Injected ${retrieval.memories.length} memories for ${recipientAgentName} (cache: ${retrieval.cacheKey ? 'hit' : 'miss'})`)
+    }
+  } catch (err) {
+    // Non-fatal — deliver without memory enrichment
+    console.warn('[AMP Route] Memory retrieval failed (non-fatal):', err)
+  }
+
   await deliver({
     envelope,
-    payload,
+    payload: enrichedPayload,
     recipientAgentName,
     senderPublicKeyHex,
     senderName,

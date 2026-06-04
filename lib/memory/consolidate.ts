@@ -7,7 +7,6 @@
 
 import { v4 as uuidv4 } from 'uuid'
 import { AgentDatabase } from '../cozo-db'
-import { escapeForCozo } from '../cozo-utils'
 import { embedTexts } from '../rag/embeddings'
 
 // Helper to embed a single text
@@ -385,11 +384,11 @@ export async function promoteMemories(
   const result = await agentDb.run(`
     ?[memory_id, reinforcement_count, created_at] :=
       *memories{memory_id, agent_id, tier, reinforcement_count, created_at},
-      agent_id = ${escapeForCozo(agentId)},
+      agent_id = $agent_id,
       tier = 'warm',
       reinforcement_count >= ${minReinforcements},
       created_at <= ${cutoffTime}
-  `)
+  `, { agent_id: agentId })
 
   const eligible = result.rows.length
   let promoted = 0
@@ -400,12 +399,12 @@ export async function promoteMemories(
       try {
         await agentDb.run(`
           ?[memory_id, tier, promoted_at] <- [[
-            ${escapeForCozo(memoryId)},
+            $memory_id,
             'long',
-            ${Date.now()}
+            $now
           ]]
           :update memories
-        `)
+        `, { memory_id: memoryId, now: Date.now() })
         promoted++
         console.log(`[CONSOLIDATE] Promoted to long-term: ${memoryId}`)
       } catch (error: any) {
@@ -447,8 +446,8 @@ export async function pruneShortTermMemory(
       *messages{msg_id, conversation_file, ts},
       ts < ${cutoffTime},
       *consolidated_conversations{conversation_file, agent_id},
-      agent_id = ${escapeForCozo(agentId)}
-  `)
+      agent_id = $agent_id
+  `, { agent_id: agentId })
 
   const toPrune = result.rows.length
 
@@ -458,14 +457,14 @@ export async function pruneShortTermMemory(
       const msgId = row[0] as string
       try {
         await agentDb.run(`
-          ?[msg_id] <- [[${escapeForCozo(msgId)}]]
+          ?[msg_id] <- [[$msg_id]]
           :delete messages
-        `)
+        `, { msg_id: msgId })
         // Also delete embeddings
         await agentDb.run(`
-          ?[msg_id] <- [[${escapeForCozo(msgId)}]]
+          ?[msg_id] <- [[$msg_id]]
           :delete msg_vec
-        `)
+        `, { msg_id: msgId })
       } catch (error: any) {
         console.error(`[CONSOLIDATE] Failed to delete ${msgId}:`, error.message)
       }
@@ -489,9 +488,9 @@ export async function pruneShortTermMemory(
             const orphanMsgId = row[0] as string
             const orphanTerm = row[1] as string
             await agentDb.run(`
-              ?[msg_id, term] <- [[${escapeForCozo(orphanMsgId)}, ${escapeForCozo(orphanTerm)}]]
+              ?[msg_id, term] <- [[$msg_id, $term]]
               :delete msg_terms
-            `)
+            `, { msg_id: orphanMsgId, term: orphanTerm })
           }
           console.log(`[CONSOLIDATE] Deleted ${orphanedTerms.rows.length} orphaned msg_terms rows`)
         }
@@ -511,9 +510,9 @@ export async function pruneShortTermMemory(
             const orphanMsgId = row[0] as string
             const orphanSymbol = row[1] as string
             await agentDb.run(`
-              ?[msg_id, symbol] <- [[${escapeForCozo(orphanMsgId)}, ${escapeForCozo(orphanSymbol)}]]
+              ?[msg_id, symbol] <- [[$msg_id, $symbol]]
               :delete code_symbols
-            `)
+            `, { msg_id: orphanMsgId, symbol: orphanSymbol })
           }
           console.log(`[CONSOLIDATE] Deleted ${orphanedSymbols.rows.length} orphaned code_symbols rows`)
         }

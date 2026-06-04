@@ -197,26 +197,39 @@ export async function createMemory(agentDb: AgentDatabase, memory: {
       source_conversations, source_message_ids, related_memories,
       confidence, created_at, last_reinforced_at, reinforcement_count,
       access_count, last_accessed_at, promoted_at] <- [[
-      ${escapeForCozo(memory.memory_id)},
-      ${escapeForCozo(memory.agent_id)},
-      ${escapeForCozo(memory.tier)},
-      ${memory.system},
-      ${escapeForCozo(memory.category)},
-      ${escapeForCozo(memory.content)},
-      ${escapeForCozo(memory.context)},
-      ${escapeForCozo(memory.source_conversations ? JSON.stringify(memory.source_conversations) : undefined)},
-      ${escapeForCozo(memory.source_message_ids ? JSON.stringify(memory.source_message_ids) : undefined)},
-      ${escapeForCozo(memory.related_memories ? JSON.stringify(memory.related_memories) : undefined)},
-      ${memory.confidence},
-      ${now},
-      ${now},
+      $memory_id,
+      $agent_id,
+      $tier,
+      $system,
+      $category,
+      $content,
+      $context,
+      $source_conversations,
+      $source_message_ids,
+      $related_memories,
+      $confidence,
+      $now,
+      $now,
       1,
       0,
       null,
       null
     ]]
     :put memories
-  `)
+  `, {
+    memory_id: memory.memory_id,
+    agent_id: memory.agent_id,
+    tier: memory.tier,
+    system: memory.system,
+    category: memory.category,
+    content: memory.content,
+    context: memory.context || null,
+    source_conversations: memory.source_conversations ? JSON.stringify(memory.source_conversations) : null,
+    source_message_ids: memory.source_message_ids ? JSON.stringify(memory.source_message_ids) : null,
+    related_memories: memory.related_memories ? JSON.stringify(memory.related_memories) : null,
+    confidence: memory.confidence,
+    now,
+  })
 }
 
 /**
@@ -227,16 +240,13 @@ export async function storeMemoryEmbedding(
   memoryId: string,
   embedding: number[]
 ): Promise<void> {
-  // Convert embedding array to CozoDB vector format
-  const vecString = `<${embedding.join(', ')}>`
-
   await agentDb.run(`
     ?[memory_id, vec] <- [[
-      ${escapeForCozo(memoryId)},
-      ${vecString}
+      $memory_id,
+      $vec
     ]]
     :put memory_vec
-  `)
+  `, { memory_id: memoryId, vec: embedding })
 }
 
 /**
@@ -253,8 +263,8 @@ export async function reinforceMemory(
   const result = await agentDb.run(`
     ?[context, reinforcement_count] :=
       *memories{memory_id, context, reinforcement_count},
-      memory_id = ${escapeForCozo(memoryId)}
-  `)
+      memory_id = $memory_id
+  `, { memory_id: memoryId })
 
   if (result.rows.length === 0) {
     throw new Error(`Memory ${memoryId} not found`)
@@ -273,13 +283,18 @@ export async function reinforceMemory(
 
   await agentDb.run(`
     ?[memory_id, last_reinforced_at, reinforcement_count, context] <- [[
-      ${escapeForCozo(memoryId)},
-      ${now},
-      ${currentCount + 1},
-      ${escapeForCozo(newContext)}
+      $memory_id,
+      $now,
+      $new_count,
+      $context
     ]]
     :update memories
-  `)
+  `, {
+    memory_id: memoryId,
+    now,
+    new_count: currentCount + 1,
+    context: newContext || null,
+  })
 }
 
 /**
@@ -295,13 +310,18 @@ export async function linkMemories(
 
   await agentDb.run(`
     ?[from_memory_id, to_memory_id, relationship, created_at] <- [[
-      ${escapeForCozo(fromMemoryId)},
-      ${escapeForCozo(toMemoryId)},
-      ${escapeForCozo(relationship)},
-      ${now}
+      $from_memory_id,
+      $to_memory_id,
+      $relationship,
+      $now
     ]]
     :put memory_links
-  `)
+  `, {
+    from_memory_id: fromMemoryId,
+    to_memory_id: toMemoryId,
+    relationship,
+    now,
+  })
 }
 
 /**
@@ -328,7 +348,20 @@ export async function searchMemoriesByEmbedding(
 }>> {
   const limit = options.limit || 10
   const minConfidence = options.minConfidence || 0.5
-  const vecString = `<${queryEmbedding.join(', ')}>`
+
+  // CozoDB HNSW queries fail on empty indexes — check first
+  const countResult = await agentDb.run('?[count(memory_id)] := *memory_vec{memory_id}')
+  if (!countResult.rows?.[0]?.[0] || countResult.rows[0][0] === 0) {
+    return []
+  }
+
+  // CozoDB's node binding doesn't support passing vectors as parameters for
+  // HNSW queries (arrays aren't coerced to vector type). Workaround: store
+  // the query vector temporarily, reference it in the HNSW query, then delete.
+  const queryVecId = `__query_${Date.now()}`
+  await agentDb.run(`
+    ?[memory_id, vec] <- [[$mid, $v]] :put memory_vec
+  `, { mid: queryVecId, v: queryEmbedding })
 
   // Build category filter
   let categoryFilter = ''
@@ -343,20 +376,27 @@ export async function searchMemoriesByEmbedding(
     tierFilter = `, tier = ${escapeForCozo(options.tier)}`
   }
 
-  const query = `
-    ?[memory_id, category, content, context, confidence, reinforcement_count, similarity] :=
-      ~memory_vec:hnsw{memory_id, vec | query: ${vecString}, k: ${limit * 2}, ef: 50, bind_distance: similarity},
-      *memories{memory_id, agent_id, category, content, context, confidence, reinforcement_count, tier},
-      agent_id = ${escapeForCozo(agentId)},
-      confidence >= ${minConfidence}
-      ${categoryFilter}
-      ${tierFilter}
+  try {
+    const query = `
+      ?[memory_id, category, content, context, confidence, reinforcement_count, similarity] :=
+        *memory_vec{memory_id: $query_vec_id, vec: qvec},
+        ~memory_vec:hnsw{memory_id | query: qvec, k: ${limit * 2}, ef: 50, bind_distance: similarity},
+        memory_id != $query_vec_id,
+        *memories{memory_id, agent_id, category, content, context, confidence, reinforcement_count, tier},
+        agent_id = $agent_id,
+        confidence >= ${minConfidence}
+        ${categoryFilter}
+        ${tierFilter}
 
-    :order similarity
-    :limit ${limit}
-  `
+      :order similarity
+      :limit ${limit}
+    `
 
-  const result = await agentDb.run(query)
+    var result = await agentDb.run(query, { agent_id: agentId, query_vec_id: queryVecId })
+  } finally {
+    // Always clean up the temporary query vector
+    await agentDb.run(`?[memory_id] <- [[$mid]] :delete memory_vec`, { mid: queryVecId })
+  }
 
   // Update access counts for returned memories
   const now = Date.now()
@@ -365,11 +405,11 @@ export async function searchMemoriesByEmbedding(
     await agentDb.run(`
       ?[memory_id, access_count, last_accessed_at] :=
         *memories{memory_id, access_count: old_count},
-        memory_id = ${escapeForCozo(memId)},
+        memory_id = $memory_id,
         access_count = old_count + 1,
         last_accessed_at = ${now}
       :update memories
-    `)
+    `, { memory_id: memId })
   }
 
   return result.rows.map((row: unknown[]) => ({
@@ -402,12 +442,12 @@ export async function getMemoriesByCategory(
   const result = await agentDb.run(`
     ?[memory_id, content, context, confidence, reinforcement_count, created_at] :=
       *memories{memory_id, agent_id, category, content, context, confidence, reinforcement_count, created_at},
-      agent_id = ${escapeForCozo(agentId)},
-      category = ${escapeForCozo(category)}
+      agent_id = $agent_id,
+      category = $category
 
     :order -reinforcement_count, -created_at
     :limit ${limit}
-  `)
+  `, { agent_id: agentId, category })
 
   return result.rows.map((row: unknown[]) => ({
     memory_id: row[0] as string,
@@ -435,7 +475,7 @@ export async function getRelatedMemories(
   // Use CozoDB's graph traversal
   const result = await agentDb.run(`
     related[memory_id, relationship, distance] :=
-      from_id = ${escapeForCozo(memoryId)},
+      from_id = $from_memory_id,
       *memory_links{from_memory_id: from_id, to_memory_id: memory_id, relationship},
       distance = 1
 
@@ -450,7 +490,7 @@ export async function getRelatedMemories(
       *memories{memory_id, content}
 
     :order distance
-  `)
+  `, { from_memory_id: memoryId })
 
   return result.rows.map((row: unknown[]) => ({
     memory_id: row[0] as string,
@@ -477,20 +517,25 @@ export async function recordConsolidationRun(
     ?[run_id, agent_id, started_at, completed_at, status,
       conversations_processed, memories_created, memories_reinforced,
       memories_linked, llm_provider, error] <- [[
-      ${escapeForCozo(run.run_id)},
-      ${escapeForCozo(run.agent_id)},
-      ${now},
+      $run_id,
+      $agent_id,
+      $now,
       null,
       'running',
       0,
       0,
       0,
       0,
-      ${escapeForCozo(run.llm_provider)},
+      $llm_provider,
       null
     ]]
     :put consolidation_runs
-  `)
+  `, {
+    run_id: run.run_id,
+    agent_id: run.agent_id,
+    now,
+    llm_provider: run.llm_provider,
+  })
 }
 
 /**
@@ -510,48 +555,55 @@ export async function updateConsolidationRun(
 ): Promise<void> {
   const now = Date.now()
 
-  // Build update fields
-  const fields: string[] = []
-  const values: string[] = []
+  // Build update fields and params dynamically
+  const fields: string[] = ['run_id']
+  const paramRefs: string[] = ['$run_id']
+  const params: Record<string, any> = { run_id: runId }
 
   if (updates.status) {
     fields.push('status')
-    values.push(escapeForCozo(updates.status))
+    paramRefs.push('$status')
+    params.status = updates.status
     if (updates.status === 'completed' || updates.status === 'failed') {
       fields.push('completed_at')
-      values.push(`${now}`)
+      paramRefs.push('$completed_at')
+      params.completed_at = now
     }
   }
   if (updates.conversations_processed !== undefined) {
     fields.push('conversations_processed')
-    values.push(`${updates.conversations_processed}`)
+    paramRefs.push('$conversations_processed')
+    params.conversations_processed = updates.conversations_processed
   }
   if (updates.memories_created !== undefined) {
     fields.push('memories_created')
-    values.push(`${updates.memories_created}`)
+    paramRefs.push('$memories_created')
+    params.memories_created = updates.memories_created
   }
   if (updates.memories_reinforced !== undefined) {
     fields.push('memories_reinforced')
-    values.push(`${updates.memories_reinforced}`)
+    paramRefs.push('$memories_reinforced')
+    params.memories_reinforced = updates.memories_reinforced
   }
   if (updates.memories_linked !== undefined) {
     fields.push('memories_linked')
-    values.push(`${updates.memories_linked}`)
+    paramRefs.push('$memories_linked')
+    params.memories_linked = updates.memories_linked
   }
   if (updates.error) {
     fields.push('error')
-    values.push(escapeForCozo(updates.error))
+    paramRefs.push('$error')
+    params.error = updates.error
   }
 
-  if (fields.length === 0) return
+  if (fields.length <= 1) return  // Only run_id, nothing to update
 
   await agentDb.run(`
-    ?[run_id, ${fields.join(', ')}] <- [[
-      ${escapeForCozo(runId)},
-      ${values.join(', ')}
+    ?[${fields.join(', ')}] <- [[
+      ${paramRefs.join(', ')}
     ]]
     :update consolidation_runs
-  `)
+  `, params)
 }
 
 /**
@@ -569,15 +621,22 @@ export async function markConversationConsolidated(
 
   await agentDb.run(`
     ?[conversation_file, agent_id, run_id, consolidated_at, message_count, memories_extracted] <- [[
-      ${escapeForCozo(conversationFile)},
-      ${escapeForCozo(agentId)},
-      ${escapeForCozo(runId)},
-      ${now},
-      ${messageCount},
-      ${memoriesExtracted}
+      $conversation_file,
+      $agent_id,
+      $run_id,
+      $now,
+      $message_count,
+      $memories_extracted
     ]]
     :put consolidated_conversations
-  `)
+  `, {
+    conversation_file: conversationFile,
+    agent_id: agentId,
+    run_id: runId,
+    now,
+    message_count: messageCount,
+    memories_extracted: memoriesExtracted,
+  })
 }
 
 /**
@@ -590,13 +649,13 @@ export async function isConversationConsolidated(
   const result = await agentDb.run(`
     ?[exists] :=
       *consolidated_conversations{conversation_file},
-      conversation_file = ${escapeForCozo(conversationFile)},
+      conversation_file = $conversation_file,
       exists = true
 
     ?[exists] :=
-      not *consolidated_conversations{conversation_file: ${escapeForCozo(conversationFile)}},
+      not *consolidated_conversations{conversation_file: $conversation_file},
       exists = false
-  `)
+  `, { conversation_file: conversationFile })
 
   return result.rows.length > 0 && result.rows[0][0] === true
 }
@@ -616,6 +675,8 @@ export async function getMemoryStats(
   total_reinforcements: number
   total_accesses: number
 }> {
+  // Note: CozoDB aggregates (count, sum) don't work with parameterized queries.
+  // agentId is a UUID so escapeForCozo is safe here.
   const result = await agentDb.run(`
     stats[category, tier, system, count, conf_sum, reinf_sum, access_sum] :=
       *memories{agent_id, category, tier, system, confidence, reinforcement_count, access_count},
@@ -673,12 +734,12 @@ export async function promoteMemory(
 
   await agentDb.run(`
     ?[memory_id, tier, promoted_at] <- [[
-      ${escapeForCozo(memoryId)},
+      $memory_id,
       'long',
-      ${now}
+      $now
     ]]
     :update memories
-  `)
+  `, { memory_id: memoryId, now })
 }
 
 /**
@@ -705,11 +766,11 @@ export async function getConsolidationRuns(
       *consolidation_runs{run_id, agent_id, started_at, completed_at, status,
         conversations_processed, memories_created, memories_reinforced,
         llm_provider, error},
-      agent_id = ${escapeForCozo(agentId)}
+      agent_id = $agent_id
 
     :order -started_at
     :limit ${limit}
-  `)
+  `, { agent_id: agentId })
 
   return result.rows.map((row: unknown[]) => ({
     run_id: row[0] as string,
