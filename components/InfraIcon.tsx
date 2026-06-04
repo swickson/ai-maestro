@@ -16,7 +16,10 @@ export function getInfraType(agent: Agent): InfraType {
     if (cloud.provider === 'local-container') return 'docker'
 
     if (cloud.provider === 'aws') {
-      if (cloud.runtime === 'ecs-fargate') return 'ecs'
+      // RECONCILE: AWS deployment-variant tag moved from `runtime` to
+      // `runtimeVariant` so the `runtime` key can hold our local-container
+      // runtime-config object. See types/agent.ts deployment.cloud.
+      if (cloud.runtimeVariant === 'ecs-fargate') return 'ecs'
       return 'ec2'
     }
 

@@ -1080,3 +1080,79 @@ Questions or issues?
 ---
 
 **Happy coding with your AI agents! 🤖**
+
+## Mesh-Coordination Patterns
+
+> **Audience:** AI Maestro peer agents (KAI, Watson, CelestIA, Hutch, future team members) coordinating PRs and deploys on this repo. See `docs/AMP-RELAY-SOP.md` for the Agent→Shane Discord relay, and `CLAUDE.md §4` for the Pre-PR Checklist.
+
+Two repeatable failure shapes surfaced enough times in cross-review batch sprints to earn canonical documentation: PR-merge race conditions and deploy-time NODE_ENV shadowing. Both are mesh-coordination patterns — they break when peer agents work async without explicit handoff signals.
+
+### Merge coordination (peer-reviewed PRs)
+
+The cross-review batch pattern is: peer A authors, peer B reviews, maintainer C clears + merges. This works cleanly when reviewer signals are explicit and author push-windows are respected. It breaks when a maintainer merges too eagerly during an in-flight author push, stranding the polish commit on a deleted-from-PR branch.
+
+**Protocol by reviewer signal:**
+
+| Signal | Maintainer action |
+|--------|-------------------|
+| **Clean LGTM (no flags)** | Merge immediately. No hold-window needed. |
+| **Non-blocker polish flagged** | Ping the author "polish-then-merge or merge-then-polish?" with a 5-minute hold-window before pulling the merge trigger. |
+| **Blocker flagged** | Wait for author confirmation regardless of how long. Merge only after the author addresses + reviewer re-confirms. |
+
+**Author signaling tokens** (for the non-blocker case):
+
+- `:polish-pending:` — push imminent, maintainer waits.
+- `:merge-now:` — punting the polish, maintainer merges + author files a follow-up PR.
+- **Silence past the 5-minute window** — default to `:merge-now:`. Avoids indefinite blocks if the author is hibernated or offline.
+
+**Caching gotcha:** `gh pr view --json mergeable` returns a **cached** mergeability state. A `MERGEABLE` response does NOT guarantee no in-flight pushes. Use `gh pr view <N> --json headRefOid` for the in-flight HEAD (not cached) and compare against the last-known author push timestamp before merging. If HEAD has advanced since the merge-now signal, treat as a fresh polish push and re-ping the author.
+
+**Precipitating incident:** 2026-05-22 cross-review batch sprint, PR #154. CelestIA reviewed Watson's fcabb870 sentinel preflight PR, posted LGTM with a non-blocker `readOnly:true` polish flag. KAI ran `gh pr merge 154` at 22:40:23Z, taking the pre-polish state. Watson pushed polish commit 02e9b65 at ~22:41:00Z — 37 seconds AFTER the merge had already completed. Polish stranded on the feature branch. Recovery cost: PR #155 (v0.30.92) cherry-picking 02e9b65 onto fresh main. One extra version increment, one extra PR cycle.
+
+### Deploy hygiene
+
+Three repeatable deploy gotchas across host syncs (Milo, Holmes, bananajr). Documented after CelestIA's third recurrence of the NODE_ENV pattern on bananajr v0.30.91 deploy 2026-05-22.
+
+**1. `NODE_ENV=production` strips devDeps at `yarn install` time.** Even on production hosts, the build chain needs `vitest`, `typescript`, `tailwindcss`, etc. If `NODE_ENV=production` is set in the shell (leak sources observed: pm2 process inheritance, shell rc files — `~/.zshenv` / `~/.bashrc` / `~/.profile` — or a parent shell that exported it earlier in the session), `yarn install` skips devDependencies. Downstream `yarn build` fails with cryptic missing-module errors (most commonly `Cannot find module 'tailwindcss'`, then a downstream `next/font` error, then a misleading `@/hooks/...` resolver cascade).
+
+Mitigation:
+```bash
+echo $NODE_ENV                        # canary — if "production", fix before continuing
+unset NODE_ENV                        # OR
+NODE_ENV=development yarn install --production=false
+ls node_modules/tailwindcss           # post-install canary, confirms devDeps landed
+yarn build
+```
+
+pm2 picks up `NODE_ENV=production` at *runtime* separately via `ecosystem.config.cjs`. The shell-env override is only needed for the `install + build` phase.
+
+**2. Don't delete `.next/` until after `git pull` lands the new source.** pm2 serves the old build until restart; deleting it pre-pull creates a 5-30s blank window where the dashboard 404s. Order: pull → rm -rf .next → build → restart, all sequenced tight.
+
+**3. `pm2 restart --update-env` does NOT re-read `ecosystem.config.cjs`.** New `.env.local` vars silently won't reach the process. If the env shape changed, use `pm2 reload` or `pm2 delete + pm2 start` — `restart` alone preserves the old env block.
+
+**Post-deploy verification** (per `[[build-verification-requires-chunk-assertion]]` discipline):
+```bash
+# Necessary
+curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:23000/api/sessions   # → 200
+pm2 describe ai-maestro | grep version                                              # → expected version
+
+# Sufficient (the load-bearing checks)
+cat .next/BUILD_ID                                                                  # → new ID, not stale
+grep -lE "<feature-keyword>" .next/server/chunks/*.js                               # → feature shipped
+```
+
+pm2 ONLINE + version match is necessary but NOT sufficient. The BUILD_ID + chunk-grep are the load-bearing checks.
+
+### Cross-references
+
+- `CLAUDE.md §4` — Pre-PR Checklist (test, bump, build, PR).
+- `docs/AMP-RELAY-SOP.md` — Agent→Shane Discord relay (for blocker escalation).
+- Banked methodology memories used in drafting this section: `polish-then-merge-handoff`, `audit-kanban-before-author`, `rebase-inverts-ours-theirs`, `gh-self-approve-shared-auth`, `deploy-gotchas-ai-maestro`, `build-verification-requires-chunk-assertion`, `background-shell-yarn-path`.
+
+### Authors
+
+- **Merge coordination protocol:** KAI (incident retrospective + initial sketch), Watson (signaling tokens, hold-window-timeout fallback, headRefOid diagnostic), CelestIA (discipline application on PR #155 under the new protocol).
+- **Deploy hygiene protocol:** Watson (draft text for NODE_ENV / `.next` / pm2-reload), CelestIA (third-recurrence empirical + canary command sequence + shell-env angle).
+
+---
+

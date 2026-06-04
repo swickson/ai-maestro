@@ -91,6 +91,9 @@ import {
   getAgentBySession,
   addSessionToAgent,
   incrementAgentMetric,
+  updateAgentRuntimeConfig,
+  markCloudContainerStale,
+  clearCloudContainerStale,
 } from '@/lib/agent-registry'
 import type { Agent, CreateAgentRequest } from '@/types/agent'
 
@@ -1026,5 +1029,394 @@ describe('incrementAgentMetric', () => {
   it('returns false for non-existent agent', () => {
     const result = incrementAgentMetric('nonexistent', 'totalApiCalls')
     expect(result).toBe(false)
+  })
+})
+
+describe('deployment.sandbox.mounts', () => {
+  it('persists sandbox.mounts on the agent record across save/load', () => {
+    const agent = createAgent(makeCreateRequest({ name: 'sandbox-agent' }))
+    const loaded = loadAgents()
+    const idx = loaded.findIndex(a => a.id === agent.id)
+    loaded[idx].deployment = {
+      type: 'cloud',
+      cloud: {
+        provider: 'local-container',
+        containerName: 'aim-sandbox-agent',
+        websocketUrl: 'ws://localhost:23001/term',
+        status: 'running',
+      },
+      sandbox: {
+        mounts: [
+          { hostPath: '/home/user/code', containerPath: '/work/code' },
+          { hostPath: '/etc/ssl/certs', containerPath: '/certs', readOnly: true },
+        ],
+      },
+    }
+    saveAgents(loaded)
+
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual([
+      { hostPath: '/home/user/code', containerPath: '/work/code' },
+      { hostPath: '/etc/ssl/certs', containerPath: '/certs', readOnly: true },
+    ])
+  })
+
+  it('keeps deployment.sandbox optional — agents without it round-trip cleanly', () => {
+    const agent = createAgent(makeCreateRequest({ name: 'no-sandbox' }))
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox).toBeUndefined()
+  })
+})
+
+describe('updateAgentRuntimeConfig', () => {
+  function makeCloudAgent(name: string): Agent {
+    const agent = createAgent(makeCreateRequest({ name, deploymentType: 'cloud' }))
+    const agents = loadAgents()
+    const idx = agents.findIndex(a => a.id === agent.id)
+    agents[idx].deployment = {
+      type: 'cloud',
+      cloud: {
+        provider: 'local-container',
+        containerName: `aim-${name}`,
+        websocketUrl: 'ws://localhost:23001/term',
+        status: 'running',
+      },
+    }
+    saveAgents(agents)
+    return agents[idx]
+  }
+
+  it('returns null for unknown agent id', () => {
+    expect(updateAgentRuntimeConfig('nonexistent', { mounts: [] })).toBeNull()
+  })
+
+  it('persists operator mounts on deployment.sandbox.mounts', () => {
+    const agent = makeCloudAgent('runtime-1')
+    const mounts = [
+      { hostPath: '/home/op/code', containerPath: '/work/code' },
+      { hostPath: '/etc/ssl/certs', containerPath: '/certs', readOnly: true },
+    ]
+    const updated = updateAgentRuntimeConfig(agent.id, { mounts })
+    expect(updated?.deployment?.sandbox?.mounts).toEqual(mounts)
+
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual(mounts)
+  })
+
+  it('replaces existing mounts wholesale (not merge)', () => {
+    const agent = makeCloudAgent('runtime-2')
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/a', containerPath: '/a' }],
+    })
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/b', containerPath: '/b' }],
+    })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual([
+      { hostPath: '/b', containerPath: '/b' },
+    ])
+  })
+
+  it('mounts:[] clears the sandbox block entirely', () => {
+    const agent = makeCloudAgent('runtime-3')
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/a', containerPath: '/a' }],
+    })
+    updateAgentRuntimeConfig(agent.id, { mounts: [] })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox).toBeUndefined()
+  })
+
+  it('mounts:undefined leaves existing mounts untouched', () => {
+    const agent = makeCloudAgent('runtime-4')
+    const original = [{ hostPath: '/x', containerPath: '/x' }]
+    updateAgentRuntimeConfig(agent.id, { mounts: original })
+    updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual(original)
+    expect(reloaded?.deployment?.cloud?.runtime?.extraEnv).toEqual({ FOO: 'bar' })
+  })
+
+  it('persists extraEnv into deployment.cloud.runtime', () => {
+    const agent = makeCloudAgent('runtime-5')
+    const updated = updateAgentRuntimeConfig(agent.id, {
+      extraEnv: { HOME: '/workspace/myagent', FOO: 'bar' },
+    })
+    expect(updated?.deployment?.cloud?.runtime?.extraEnv).toEqual({
+      HOME: '/workspace/myagent',
+      FOO: 'bar',
+    })
+  })
+
+  it('extraEnv:{} clears the persisted extraEnv', () => {
+    const agent = makeCloudAgent('runtime-6')
+    updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+    updateAgentRuntimeConfig(agent.id, { extraEnv: {} })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.runtime?.extraEnv).toBeUndefined()
+  })
+
+  it('preserves other runtime fields (cpus/memory) when only extraEnv changes', () => {
+    const agent = makeCloudAgent('runtime-7')
+    // Seed pre-existing runtime config via direct save
+    const agents = loadAgents()
+    const idx = agents.findIndex(a => a.id === agent.id)
+    agents[idx].deployment!.cloud!.runtime = { cpus: 4, memory: '8g' }
+    saveAgents(agents)
+
+    updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+      cpus: 4,
+      memory: '8g',
+      extraEnv: { FOO: 'bar' },
+    })
+  })
+
+  it('updates mounts and extraEnv together in one call', () => {
+    const agent = makeCloudAgent('runtime-8')
+    updateAgentRuntimeConfig(agent.id, {
+      mounts: [{ hostPath: '/y', containerPath: '/y' }],
+      extraEnv: { BAR: 'baz' },
+    })
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.sandbox?.mounts).toEqual([
+      { hostPath: '/y', containerPath: '/y' },
+    ])
+    expect(reloaded?.deployment?.cloud?.runtime?.extraEnv).toEqual({ BAR: 'baz' })
+  })
+
+  it('no-op (empty config) still bumps lastActive', async () => {
+    const agent = makeCloudAgent('runtime-9')
+    const before = agent.lastActive
+    await new Promise(r => setTimeout(r, 5))
+    const updated = updateAgentRuntimeConfig(agent.id, {})
+    expect(updated?.lastActive).not.toBe(before)
+  })
+
+  describe('cpus / memory / autoRemove fields (kanban 1ef9eabd)', () => {
+    it('persists cpus + memory + autoRemove into deployment.cloud.runtime', () => {
+      const agent = makeCloudAgent('rt-fields-1')
+      const updated = updateAgentRuntimeConfig(agent.id, {
+        cpus: 4,
+        memory: '8g',
+        autoRemove: true,
+      })
+      expect(updated?.deployment?.cloud?.runtime).toEqual({
+        cpus: 4,
+        memory: '8g',
+        autoRemove: true,
+      })
+    })
+
+    it('field-level merge: setting only cpus preserves existing memory + extraEnv', () => {
+      const agent = makeCloudAgent('rt-fields-2')
+      updateAgentRuntimeConfig(agent.id, {
+        memory: '4g',
+        extraEnv: { FOO: 'bar' },
+      })
+      updateAgentRuntimeConfig(agent.id, { cpus: 2 })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+        cpus: 2,
+        memory: '4g',
+        extraEnv: { FOO: 'bar' },
+      })
+    })
+
+    it('overwriting cpus replaces only that field', () => {
+      const agent = makeCloudAgent('rt-fields-3')
+      updateAgentRuntimeConfig(agent.id, { cpus: 2, memory: '4g', autoRemove: false })
+      updateAgentRuntimeConfig(agent.id, { cpus: 8 })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+        cpus: 8,
+        memory: '4g',
+        autoRemove: false,
+      })
+    })
+
+    it('only writes cloud.runtime when the agent already has a cloud deployment block', () => {
+      // Mirrors the existing extraEnv-only branch behavior — this helper isn't
+      // a vehicle for converting a local agent into a cloud one.
+      const localAgent = createAgent(makeCreateRequest({ name: 'rt-local', deploymentType: 'local' }))
+      const updated = updateAgentRuntimeConfig(localAgent.id, {
+        cpus: 4,
+        memory: '4g',
+      })
+      // Helper does not create a cloud block; runtime is dropped.
+      expect(updated?.deployment?.cloud).toBeUndefined()
+    })
+
+    it('writesRuntime gate fires when any of cpus/memory/autoRemove is set, with no extraEnv', () => {
+      // Pre-#1ef9eabd, only `config.extraEnv !== undefined` triggered the
+      // runtime block write. Backfill needs the gate to also fire for
+      // cpus/memory/autoRemove-only updates.
+      const agent = makeCloudAgent('rt-fields-5')
+      updateAgentRuntimeConfig(agent.id, { autoRemove: true })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.cloud?.runtime).toEqual({ autoRemove: true })
+    })
+  })
+
+  describe('ziggy field (Phase 2 Ziggy MCP integration)', () => {
+    it('persists ziggy=true on deployment.sandbox.ziggy', () => {
+      const agent = makeCloudAgent('ziggy-1')
+      const updated = updateAgentRuntimeConfig(agent.id, { ziggy: true })
+      expect(updated?.deployment?.sandbox?.ziggy).toBe(true)
+
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('ziggy=false clears the field (not stored as explicit false)', () => {
+      const agent = makeCloudAgent('ziggy-2')
+      updateAgentRuntimeConfig(agent.id, { ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { ziggy: false })
+      const reloaded = getAgent(agent.id)
+      // Cleared field — and since it was the only sandbox key, the whole
+      // sandbox block is dropped to match pre-existing no-sandbox shape.
+      expect(reloaded?.deployment?.sandbox).toBeUndefined()
+    })
+
+    it('ziggy=undefined leaves existing flag untouched', () => {
+      const agent = makeCloudAgent('ziggy-3')
+      updateAgentRuntimeConfig(agent.id, { ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('ziggy + mounts coexist on the same sandbox block', () => {
+      const agent = makeCloudAgent('ziggy-4')
+      const mounts = [{ hostPath: '/etc/ssl', containerPath: '/certs', readOnly: true }]
+      updateAgentRuntimeConfig(agent.id, { mounts, ziggy: true })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.mounts).toEqual(mounts)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('clearing mounts preserves ziggy=true on the same agent', () => {
+      const agent = makeCloudAgent('ziggy-5')
+      const mounts = [{ hostPath: '/x', containerPath: '/x' }]
+      updateAgentRuntimeConfig(agent.id, { mounts, ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { mounts: [] })
+      const reloaded = getAgent(agent.id)
+      // mounts gone, ziggy still set — sandbox block survives because ziggy
+      // is non-empty.
+      expect(reloaded?.deployment?.sandbox?.mounts).toBeUndefined()
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+    })
+
+    it('clearing ziggy preserves mounts on the same agent', () => {
+      const agent = makeCloudAgent('ziggy-6')
+      const mounts = [{ hostPath: '/y', containerPath: '/y' }]
+      updateAgentRuntimeConfig(agent.id, { mounts, ziggy: true })
+      updateAgentRuntimeConfig(agent.id, { ziggy: false })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.mounts).toEqual(mounts)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBeUndefined()
+    })
+  })
+})
+
+// ============================================================================
+// kanban aa2953b0 — containerStaleSince helpers
+// ============================================================================
+
+describe('markCloudContainerStale + clearCloudContainerStale', () => {
+  function makeCloudAgent(name: string): Agent {
+    const agent = createAgent(makeCreateRequest({ name, deploymentType: 'cloud' }))
+    const agents = loadAgents()
+    const idx = agents.findIndex(a => a.id === agent.id)
+    agents[idx].deployment = {
+      type: 'cloud',
+      cloud: {
+        provider: 'local-container',
+        containerName: `aim-${name}`,
+        websocketUrl: 'ws://localhost:23001/term',
+        status: 'running',
+      },
+    }
+    saveAgents(agents)
+    return agents[idx]
+  }
+
+  it('markCloudContainerStale sets containerStaleSince to a recent epoch ms', () => {
+    const agent = makeCloudAgent('stale-1')
+    const before = Date.now()
+    const marked = markCloudContainerStale(agent.id)
+    const after = Date.now()
+    expect(marked?.deployment?.cloud?.containerStaleSince).toBeDefined()
+    expect(marked!.deployment!.cloud!.containerStaleSince!).toBeGreaterThanOrEqual(before)
+    expect(marked!.deployment!.cloud!.containerStaleSince!).toBeLessThanOrEqual(after)
+  })
+
+  it('markCloudContainerStale persists across reload', () => {
+    const agent = makeCloudAgent('stale-2')
+    markCloudContainerStale(agent.id)
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.containerStaleSince).toBeDefined()
+  })
+
+  it('markCloudContainerStale is idempotent (re-marking overwrites)', () => {
+    const agent = makeCloudAgent('stale-3')
+    markCloudContainerStale(agent.id)
+    const first = getAgent(agent.id)!.deployment!.cloud!.containerStaleSince!
+    // Wait briefly to ensure a later Date.now() value
+    const second = markCloudContainerStale(agent.id)!.deployment!.cloud!.containerStaleSince!
+    expect(second).toBeGreaterThanOrEqual(first)
+  })
+
+  it('markCloudContainerStale is a no-op for local agents (no cloud block)', () => {
+    // Local agent has no `cloud` block — marking should preserve identity, not
+    // synthesize a cloud block from thin air. Returns the agent unchanged.
+    const agent = createAgent(makeCreateRequest({ name: 'local-mark', deploymentType: 'local' }))
+    const result = markCloudContainerStale(agent.id)
+    expect(result?.deployment?.cloud).toBeUndefined()
+  })
+
+  it('markCloudContainerStale returns null for unknown id', () => {
+    expect(markCloudContainerStale('nonexistent-id')).toBeNull()
+  })
+
+  it('clearCloudContainerStale removes the flag', () => {
+    const agent = makeCloudAgent('stale-clear-1')
+    markCloudContainerStale(agent.id)
+    expect(getAgent(agent.id)?.deployment?.cloud?.containerStaleSince).toBeDefined()
+    clearCloudContainerStale(agent.id)
+    expect(getAgent(agent.id)?.deployment?.cloud?.containerStaleSince).toBeUndefined()
+  })
+
+  it('clearCloudContainerStale preserves other cloud fields (runtime, containerName)', () => {
+    const agent = makeCloudAgent('stale-clear-2')
+    // Seed a runtime block + extraEnv first
+    updateAgentRuntimeConfig(agent.id, {
+      cpus: 4,
+      memory: '8g',
+      extraEnv: { FOO: 'bar' },
+    })
+    markCloudContainerStale(agent.id)
+    clearCloudContainerStale(agent.id)
+    const reloaded = getAgent(agent.id)
+    expect(reloaded?.deployment?.cloud?.containerStaleSince).toBeUndefined()
+    expect(reloaded?.deployment?.cloud?.containerName).toBe('aim-stale-clear-2')
+    expect(reloaded?.deployment?.cloud?.runtime).toEqual({
+      cpus: 4,
+      memory: '8g',
+      extraEnv: { FOO: 'bar' },
+    })
+  })
+
+  it('clearCloudContainerStale is a no-op when flag was not set', () => {
+    const agent = makeCloudAgent('stale-clear-3')
+    const before = getAgent(agent.id)
+    clearCloudContainerStale(agent.id)
+    const after = getAgent(agent.id)
+    expect(after?.deployment?.cloud).toEqual(before?.deployment?.cloud)
+  })
+
+  it('clearCloudContainerStale returns null for unknown id', () => {
+    expect(clearCloudContainerStale('nonexistent-id')).toBeNull()
   })
 })

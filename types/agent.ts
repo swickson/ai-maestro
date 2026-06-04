@@ -310,6 +310,11 @@ export interface SandboxMount {
 
 export interface SandboxConfig {
   mounts?: SandboxMount[]           // Bind mounts applied at container creation
+  // When true, the container is attached to the `ziggy_default` docker network
+  // (where ziggy-postgres + ziggy-web live) and ZIGGY_PROFILE=default is seeded
+  // into the env. Use for cloud agents that need to reach the Ziggy MCP server
+  // via docker DNS rather than via Tailscale-IP/host-port. Default: false.
+  ziggy?: boolean
 }
 
 export interface AgentDeployment {
@@ -333,7 +338,32 @@ export interface AgentDeployment {
     healthCheckUrl?: string           // Health check endpoint (e.g., http://localhost:46000/health)
     containerName?: string            // Docker container name
     status?: 'provisioning' | 'running' | 'stopped' | 'error'
-    runtime?: string                  // Runtime variant (e.g., 'ec2-native', 'ecs-fargate')
+    // Upstream AWS deployment-variant tag (e.g., 'ec2-native', 'ecs-fargate').
+    // RECONCILE NOTE: upstream stored this under `runtime`, which collides with
+    // our local-container runtime-config object (below). To let both shapes
+    // coexist, the AWS variant string is keyed `runtimeVariant` here; our
+    // container runtime-config object retains the `runtime` key (the live
+    // contract our docker-service / registry trio / update-runtime route +
+    // 3 CLIs + tests all read). See InfraIcon.tsx + agents-cloud-service.ts.
+    runtimeVariant?: string
+    // Container runtime config persisted at create time so /recreate and the
+    // mid-life /update-runtime endpoint can rebuild the docker run command
+    // without re-prompting the operator for cpus/memory/extraEnv. Without
+    // these, recreate falls back to defaults (cpus=2, memory=4g) and silently
+    // drops operator-supplied extraEnv (e.g. HOME=/workspace overrides for
+    // the Shape β agent-home convention).
+    runtime?: {
+      cpus?: number
+      memory?: string
+      autoRemove?: boolean
+      extraEnv?: Record<string, string>
+    }
+    // Set when a PATCH mutates an AI_TOOL-composing field (program, programArgs,
+    // model) on this cloud agent. Indicates the running container's baked-in
+    // env diverges from the registry — /update-runtime (or /recreate) rebuilds
+    // the container and clears this. Treat presence as "container restart
+    // required to surface the registry change at runtime." See kanban aa2953b0.
+    containerStaleSince?: number
   }
 
   // Sandbox configuration (currently consumed by cloud/container deployments)
@@ -553,6 +583,7 @@ export interface UpdateAgentRequest {
   label?: string                // Update display override (was displayName)
   avatar?: string
   model?: string
+  program?: string              // AI program (e.g., "claude-code", "antigravity") — added to enable non-destructive program swap for the gemini→antigravity migration. Pre-PR-1 path was /recreate, which rotates UUID + AMP keypair.
   taskDescription?: string
   programArgs?: string          // CLI arguments passed to the program on launch
   permissionMode?: AgentPermissionMode  // Update trust level

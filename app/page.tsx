@@ -455,6 +455,10 @@ export default function DashboardPage() {
         body: JSON.stringify({
           name: sessionName,
           workingDirectory,
+          hostId: agent.hostId,
+          agentId: agent.id,
+          program: agent.program,
+          programArgs: agent.programArgs,
         }),
       })
 
@@ -939,7 +943,7 @@ export default function DashboardPage() {
                             </button>
                           </div>
                         </div>
-                      ) : session.standalone ? (
+                      ) : session.standalone && agent.deployment?.type !== 'cloud' ? (
                         <div className="flex-1 flex items-center justify-center text-gray-400">
                           <div className="text-center max-w-md">
                             <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-violet-900/30 flex items-center justify-center">

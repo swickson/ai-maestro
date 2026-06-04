@@ -537,7 +537,11 @@ export async function getActivity(): Promise<Record<string, SessionActivityInfo>
     const hookState = workingDir ? getHookState(workingDir) : null
 
     let status: SessionActivityStatus = terminalIdle ? 'idle' : 'active'
-    if (hookState && (hookState.status === 'waiting_for_input' || hookState.status === 'permission_request')) {
+    // Hook state override: only apply 'waiting' when the terminal is idle.
+    // If the terminal is actively producing output, the agent is working regardless
+    // of what the hook state file says — hook files can be stale for seconds after
+    // the agent starts processing a new prompt.
+    if (terminalIdle && hookState && (hookState.status === 'waiting_for_input' || hookState.status === 'permission_request')) {
       status = 'waiting'
     }
 
@@ -671,7 +675,12 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     return alreadyExists('Session', actualSessionName)
   }
 
-  const cwd = workingDirectory || process.cwd()
+  // Expand tilde to absolute path — tmux does NOT expand ~ in -c flag.
+  // Handle both / (macOS/Linux) and \ (Windows) separators.
+  const resolvedDir = workingDirectory
+    ? workingDirectory.replace(/^~(?=$|[/\\])/, os.homedir())
+    : ''
+  const cwd = resolvedDir || process.cwd()
   await runtime.createSession(actualSessionName, cwd)
 
   // Register agent
@@ -729,21 +738,30 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     console.warn(`[Sessions] Could not set up AMP for ${agentName}:`, ampError)
   }
 
-  // Launch program
-  const selectedProgram = (program || 'claude-code').toLowerCase()
+  // Launch program. Fall back to registeredAgent.program BEFORE the
+  // 'claude-code' literal so a wake-path that doesn't forward the program
+  // field (UI-less reattach, scripted wake) picks up the registry's
+  // current program value. Without this, an antigravity agent woken via
+  // a no-program POST falls through to 'claude-code' and the dispatch
+  // launches `claude` instead of `agy`. agents-core-service.ts wake path
+  // already does this; mirroring here closes PR-3. Banked empirical:
+  // LucIA (dev-ziggy-fullstack, Milo) 2026-05-22.
+  const selectedProgram = (program || registeredAgent?.program || 'claude-code').toLowerCase()
   if (selectedProgram !== 'none' && selectedProgram !== 'terminal') {
     let startCommand = ''
     if (selectedProgram.includes('claude')) startCommand = 'claude'
     else if (selectedProgram.includes('codex')) startCommand = 'codex'
     else if (selectedProgram.includes('aider')) startCommand = 'aider'
     else if (selectedProgram.includes('cursor')) startCommand = 'cursor'
+    else if (selectedProgram.includes('antigravity')) startCommand = 'agy'
     else if (selectedProgram.includes('gemini')) startCommand = 'gemini'
     else if (selectedProgram.includes('opencode')) startCommand = 'opencode'
     else if (selectedProgram.includes('openclaw')) startCommand = 'openclaw'
     else startCommand = 'claude'
 
-    if (programArgs && typeof programArgs === 'string') {
-      const sanitized = programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+    const effectiveArgs = programArgs || registeredAgent?.programArgs
+    if (effectiveArgs && typeof effectiveArgs === 'string') {
+      const sanitized = effectiveArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
       if (sanitized) startCommand = `${startCommand} ${sanitized}`
     }
 

@@ -157,5 +157,7 @@ docs/FORK-ANALYSIS.md
 # Incoming scratch (screenshots, drops)
 incoming/
 
-# AI team operator-private instructions
+# AI team operator-private instructions (per-agent on-wake routines, mesh
+# UUIDs, host roles, standing authorities). Operator infra context — not
+# meant for the open-source repo; contents are loaded at runtime per agent.
 ai-team/
