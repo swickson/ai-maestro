@@ -103,6 +103,15 @@ export function useTerminal(options: UseTerminalOptions = {}) {
       customGlyphs: true,
       macOptionIsMeta: true,
       rightClickSelectsWord: true,
+      // Required for Unicode11Addon to load — uses xterm.js proposed API for
+      // character-width classification. Without this, the addon's activate()
+      // throws "You must set the allowProposedApi option to true to use
+      // proposed API" and gets caught by the try-catch below, silently
+      // leaving xterm.js with default character-width measurements that
+      // miscategorize CJK + emoji + box-drawing characters and cascade into
+      // cell-grid sizing miscalculations. (Surfaced empirically 2026-05-17
+      // during eb3e705c cloud-agent terminal rendering diagnosis.)
+      allowProposedApi: true,
     })
 
     // Initialize addons
@@ -181,6 +190,24 @@ export function useTerminal(options: UseTerminalOptions = {}) {
         terminal.loadAddon(webglAddon)
         webglAddonRef.current = webglAddon
         console.log(`[Terminal] Initialized with WebGL renderer for session ${optionsRef.current.sessionId}`)
+
+        // Refit after WebGL renderer commits its cell metrics. fit() at the
+        // earlier call site ran with the canvas renderer's cell measurements;
+        // WebGL can produce different cell-width values (subpixel rendering,
+        // DPR rounding), which leaves the cell-grid sized for canvas dims while
+        // cells render at WebGL widths — visible-viewport vs grid-width
+        // mismatch, especially in cloud-agent dashboards (kanban eb3e705c).
+        // requestAnimationFrame defers past the current frame so the WebGL
+        // renderer has committed its internal dimensions before fit re-measures.
+        // The existing terminal.onResize listener in TerminalView picks up any
+        // cols/rows delta and emits a resize message to the PTY.
+        requestAnimationFrame(() => {
+          try {
+            fitAddon.fit()
+          } catch {
+            // Renderer not ready — first ResizeObserver fire will catch it.
+          }
+        })
       } catch (e) {
         console.log(`[Terminal] Initialized with canvas renderer for session ${optionsRef.current.sessionId}`)
       }
@@ -221,6 +248,24 @@ export function useTerminal(options: UseTerminalOptions = {}) {
     })
 
     resizeObserver.observe(container)
+
+    // Intercept mouse wheel events to scroll xterm.js buffer instead of tmux
+    // tmux has "set mouse on" which consumes wheel events sent via PTY,
+    // making browser scrolling useless. We capture wheel at the DOM level,
+    // scroll xterm.js directly, and prevent the event from reaching tmux.
+    // Shift+wheel is forwarded to tmux for copy-mode scrolling.
+    const wheelHandler = (event: WheelEvent) => {
+      if (event.shiftKey) {
+        // Shift+wheel: let it pass through to tmux for copy-mode
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      // Scroll 3 lines per wheel tick (matches typical terminal feel)
+      const lines = event.deltaY > 0 ? 3 : -3
+      terminal.scrollLines(lines)
+    }
+    container.addEventListener('wheel', wheelHandler, { passive: false })
 
     // Add keyboard shortcuts for scrolling, copy, and paste
     terminal.attachCustomKeyEventHandler((event) => {
@@ -310,22 +355,9 @@ export function useTerminal(options: UseTerminalOptions = {}) {
       }
     })
 
-    // Wheel handler: intercept mouse wheel at the DOM level (capture phase) to
-    // scroll xterm.js buffer directly. Without this, xterm.js may convert wheel
-    // events to cursor key sequences (sent to shell/app as arrow up/down) instead
-    // of scrolling the terminal buffer. We always intercept because tmux mouse is
-    // disabled per-session, so there's no app that needs the raw wheel events.
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const lines = Math.round(e.deltaY / 25) || (e.deltaY > 0 ? 1 : -1)
-      terminal.scrollLines(lines)
-    }
-    container.addEventListener('wheel', handleWheel, { passive: false, capture: true })
-
     // Cleanup function
     return () => {
-      container.removeEventListener('wheel', handleWheel, { capture: true } as EventListenerOptions)
+      container.removeEventListener('wheel', wheelHandler)
       resizeObserver.disconnect()
       // Dispose WebGL addon before terminal to free GPU context cleanly
       if (webglAddonRef.current) {

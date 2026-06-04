@@ -23,6 +23,7 @@ export interface DeliveryInput {
   payload: AMPPayload
   recipientAgentName: string
   senderPublicKeyHex?: string
+  senderAuthenticated?: boolean
   // Notification context
   senderName: string
   senderHost?: string
@@ -44,6 +45,7 @@ export interface DeliveryResult {
 export async function deliver(input: DeliveryInput): Promise<DeliveryResult> {
   const {
     envelope, payload, recipientAgentName, senderPublicKeyHex,
+    senderAuthenticated,
     senderName, senderHost, recipientAgentId,
     subject, priority, messageType,
   } = input
@@ -54,7 +56,8 @@ export async function deliver(input: DeliveryInput): Promise<DeliveryResult> {
     { type: payload.type, message: payload.message, ...payload.context ? { context: payload.context } : {} },
     fromVerified,
     senderName,
-    senderHost
+    senderHost,
+    senderAuthenticated
   )
   const securedEnvelopePayload: AMPPayload = { ...payload, message: securedPayload.message }
   if (securedPayload.security) {

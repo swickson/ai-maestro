@@ -1,0 +1,62 @@
+--- plugin/plugins/ai-maestro/scripts/amp-send.sh	2026-03-29 15:15:44
++++ /Users/shanewickson/.local/bin/amp-send.sh	2026-03-30 09:19:39
+@@ -31,6 +31,39 @@
+ # Source helper functions
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ source "${SCRIPT_DIR}/amp-helper.sh"
++
++# Send push notification for local filesystem deliveries
++# Calls the AI Maestro server's notification endpoint so the server handles
++# tmux notification delivery (same path as routed messages)
++_notify_local_recipient() {
++    local recipient_name="$1"
++    local sender_addr="$2"
++    local subject="$3"
++    local priority="${4:-normal}"
++    local msg_type="${5:-notification}"
++    local msg_id="${6:-local-delivery}"
++
++    # Resolve the maestro server URL. Inside cloud-agent containers, localhost
++    # is the container's own agent-server.js (a PTY/WS server, not the dashboard);
++    # AMP_MAESTRO_URL/AIMAESTRO_HOST_URL point at the parent host's maestro so
++    # /api/agents/notify actually reaches the notification pipeline. Host-local
++    # agents fall back to localhost:23000.
++    local maestro_url="${AMP_MAESTRO_URL:-${AIMAESTRO_HOST_URL:-http://localhost:23000}}"
++
++    # Try to notify via the AI Maestro server
++    # This uses the same notification pipeline as routed messages
++    curl -s -X POST "${maestro_url}/api/agents/notify" \
++        -H "Content-Type: application/json" \
++        -d "$(jq -n \
++            --arg name "$recipient_name" \
++            --arg from "$sender_addr" \
++            --arg subject "$subject" \
++            --arg priority "$priority" \
++            --arg type "$msg_type" \
++            --arg mid "$msg_id" \
++            '{agentName: $name, fromName: $from, subject: $subject, priority: $priority, messageType: $type, messageId: $mid}')" \
++        >/dev/null 2>&1 || true
++}
+ 
+ # Parse arguments
+ RECIPIENT=""
+@@ -497,6 +523,9 @@
+             fi
+ 
+             echo "$DELIVERY_MSG" > "${RECIPIENT_INBOX}/${SENDER_DIR}/${MSG_ID}.json"
++
++            # Push notification to recipient's tmux session
++            _notify_local_recipient "$ADDR_NAME" "$FROM_ADDR" "$SUBJECT" "$PRIORITY" "$TYPE" "$MSG_ID"
+ 
+             echo "✅ Message sent (local filesystem delivery)"
+             echo ""
+@@ -651,6 +680,9 @@
+ 
+                 echo "$DELIVERY_MSG" > "${RECIPIENT_INBOX}/${SENDER_DIR}/${MSG_ID}.json"
+ 
++                # Push notification to recipient's tmux session
++                _notify_local_recipient "$ADDR_NAME" "$FROM_ADDR" "$SUBJECT" "$PRIORITY" "$TYPE" "$MSG_ID"
++
+                 echo "✅ Message sent (local filesystem delivery)"
+                 echo ""
+                 echo "  To:       ${FULL_RECIPIENT}"

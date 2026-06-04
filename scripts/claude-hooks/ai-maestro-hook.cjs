@@ -19,6 +19,18 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 
+// Maestro host URL — resolves to http://host.docker.internal:23000 inside
+// cloud-agent containers (env-injected at agent provision time) and falls
+// back to http://localhost:23000 for host-local agents (where the maestro
+// server is on the same loopback). Hardcoding "http://localhost:23000" was
+// a silent-no-op for cloud agents — every fetch from inside the container
+// hit the container's own loopback, not the host's maestro server, and the
+// drain/notify paths returned null in catch. Six sites used to hardcode it
+// (kanban filed by KAI in Iron Syndicate 2026-05-05 follow-up meeting).
+const MAESTRO_HOST_URL = process.env.AIMAESTRO_HOST_URL
+    || process.env.AMP_MAESTRO_URL
+    || 'http://localhost:23000';
+
 // Read stdin as JSON
 async function readStdin() {
     return new Promise((resolve, reject) => {
@@ -44,36 +56,10 @@ function hashCwd(cwd) {
     return crypto.createHash('md5').update(cwd || '').digest('hex').substring(0, 16);
 }
 
-// Resolve the agent for this hook invocation.
-// Priority: AIM_AGENT_ID env (exact) > AIM_AGENT_NAME env (exact) > cwd exact match.
-function resolveAgent(cwd, agents) {
-    const envId = process.env.AIM_AGENT_ID;
-    if (envId) {
-        const byId = agents.find(a => a.id === envId);
-        if (byId) {
-            debugLog({ event: 'resolved_agent_from_env', source: 'id', value: envId });
-            return byId;
-        }
-    }
-    const envName = process.env.AIM_AGENT_NAME;
-    if (envName) {
-        const byName = agents.find(a => a.name === envName);
-        if (byName) {
-            debugLog({ event: 'resolved_agent_from_env', source: 'name', value: envName });
-            return byName;
-        }
-    }
-    return agents.find(a => {
-        const agentWd = a.workingDirectory || a.session?.workingDirectory;
-        return agentWd && agentWd === cwd;
-    }) || null;
-}
-
 // Broadcast status update via WebSocket (non-blocking)
 async function broadcastStatusUpdate(cwd, state) {
     try {
-        // Find the session name for this working directory
-        const agentsResponse = await fetch('http://localhost:23000/api/agents');
+        const agentsResponse = await fetch(`${MAESTRO_HOST_URL}/api/agents`);
         if (!agentsResponse.ok) return;
 
         const agentsData = await agentsResponse.json();
@@ -85,6 +71,9 @@ async function broadcastStatusUpdate(cwd, state) {
         if (!sessionName) return;
 
         // Build hookState payload for events that produce meaningful state
+        // (permission requests + notifications). Consumed by the activity/update
+        // route → broadcastActivityUpdate(sessionName, status, hookStatus,
+        // notificationType, agentId, hookState).
         const hookStateData = (state.status === 'permission_request' || state.notificationType)
             ? {
                 status: state.status,
@@ -98,7 +87,7 @@ async function broadcastStatusUpdate(cwd, state) {
             : undefined;
 
         // Broadcast the status update
-        await fetch('http://localhost:23000/api/sessions/activity/update', {
+        await fetch(`${MAESTRO_HOST_URL}/api/sessions/activity/update`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -113,7 +102,7 @@ async function broadcastStatusUpdate(cwd, state) {
 
         // Also send heartbeat so standalone agents appear in dashboard
         if (agent.id) {
-            await fetch(`http://localhost:23000/api/agents/${encodeURIComponent(agent.id)}/heartbeat`, {
+            await fetch(`${MAESTRO_HOST_URL}/api/agents/${encodeURIComponent(agent.id)}/heartbeat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: state.status })
@@ -126,7 +115,7 @@ async function broadcastStatusUpdate(cwd, state) {
     }
 }
 
-// Write state to file. Returns the broadcast promise so callers can await if needed.
+// Write state to file
 function writeState(cwd, state) {
     const stateDir = path.join(os.homedir(), '.aimaestro', 'chat-state');
     fs.mkdirSync(stateDir, { recursive: true });
@@ -152,8 +141,8 @@ function writeState(cwd, state) {
     index[cwd] = cwdHash;
     fs.writeFileSync(indexFile, JSON.stringify(index, null, 2));
 
-    // Broadcast status update via WebSocket
-    return broadcastStatusUpdate(cwd, state).catch(() => {});
+    // Broadcast status update via WebSocket (fire and forget)
+    broadcastStatusUpdate(cwd, state).catch(() => {});
 }
 
 // Log to debug file
@@ -226,16 +215,93 @@ async function checkUnreadMessagesStandalone() {
     }
 }
 
-// Check for unread messages for this agent
-async function checkUnreadMessages(cwd) {
+// Resolve the agent for this hook invocation.
+// Priority: AIM_AGENT_ID / CLAUDE_AGENT_ID env (exact) → AIM_AGENT_NAME /
+// CLAUDE_AGENT_NAME / AGENT_ID env (exact) → cwd exact match.
+//
+// AIM_AGENT_ID/AIM_AGENT_NAME are set by lib/agent-runtime.ts via
+// `tmux set-environment` on every HOST agent session and propagate to child
+// processes (Claude + its hooks). CLOUD agent containers receive a different
+// env-var convention at provision time (CLAUDE_AGENT_ID, CLAUDE_AGENT_NAME,
+// AGENT_ID — see services/agents-docker-service.ts container-env baking),
+// so the hook accepts EITHER set. Without this, cloud-agent hooks fall back
+// to cwd-match against /workspace, which never matches the host-path-keyed
+// registry → resolveAgent returns null → drainMeetingInjectQueue bails →
+// queued additionalContext is silently lost.
+//
+// Cwd fallback only fires for non-tmux launches, and uses exact equality
+// to avoid the collision/startsWith bug where multiple agents share a
+// working directory.
+function resolveAgent(cwd, agents) {
+    const envId = process.env.AIM_AGENT_ID || process.env.CLAUDE_AGENT_ID;
+    if (envId) {
+        const byId = agents.find(a => a.id === envId);
+        if (byId) {
+            debugLog({ event: 'resolved_agent_from_env', source: 'id', value: envId });
+            return byId;
+        }
+    }
+    const envName = process.env.AIM_AGENT_NAME || process.env.CLAUDE_AGENT_NAME || process.env.AGENT_ID;
+    if (envName) {
+        const byName = agents.find(a => a.name === envName);
+        if (byName) {
+            debugLog({ event: 'resolved_agent_from_env', source: 'name', value: envName });
+            return byName;
+        }
+    }
+    return agents.find(a => {
+        const agentWd = a.workingDirectory || a.session?.workingDirectory;
+        return agentWd && agentWd === cwd;
+    }) || null;
+}
+
+// Drain any queued meeting messages for the agent bound to this hook invocation.
+// Returns a formatted context string (joined by blank lines) or null if empty.
+// Uses the session name as the queue key — matches how the meeting server
+// keys injections. See lib/meeting-inject-queue.ts.
+async function drainMeetingInjectQueue(cwd) {
     try {
-        // Find agent by working directory
-        const agentsResponse = await fetch('http://localhost:23000/api/agents');
+        const agentsResponse = await fetch(`${MAESTRO_HOST_URL}/api/agents`);
         if (!agentsResponse.ok) return null;
 
         const agentsData = await agentsResponse.json();
-        const agents = agentsData.agents || [];
-        const agent = resolveAgent(cwd, agents);
+        const agent = resolveAgent(cwd, agentsData.agents || []);
+        if (!agent) return null;
+
+        const sessionName = agent.name || agent.alias || agent.session?.tmuxSessionName;
+        if (!sessionName) return null;
+
+        const drainResponse = await fetch(
+            `${MAESTRO_HOST_URL}/api/meetings/inject-queue?session=${encodeURIComponent(sessionName)}`
+        );
+        if (!drainResponse.ok) return null;
+
+        const data = await drainResponse.json();
+        const messages = data.messages || [];
+        if (messages.length === 0) return null;
+
+        debugLog({ event: 'meeting_queue_drained', sessionName, count: messages.length });
+        return messages.map(m => m.text).join('\n\n');
+    } catch (err) {
+        debugLog({ event: 'meeting_queue_drain_error', error: err.message });
+        return null;
+    }
+}
+
+// Merge two optional context strings (either or both may be null)
+function mergeContexts(...parts) {
+    const joined = parts.filter(Boolean).join('\n\n');
+    return joined || null;
+}
+
+// Check for unread messages for this agent
+async function checkUnreadMessages(cwd) {
+    try {
+        const agentsResponse = await fetch(`${MAESTRO_HOST_URL}/api/agents`);
+        if (!agentsResponse.ok) return null;
+
+        const agentsData = await agentsResponse.json();
+        const agent = resolveAgent(cwd, agentsData.agents || []);
 
         if (!agent) {
             debugLog({ event: 'no_agent_for_cwd', cwd });
@@ -244,7 +310,7 @@ async function checkUnreadMessages(cwd) {
 
         // Check for unread messages
         const messagesResponse = await fetch(
-            `http://localhost:23000/api/messages?agent=${encodeURIComponent(agent.id)}&box=inbox&status=unread`
+            `${MAESTRO_HOST_URL}/api/messages?agent=${encodeURIComponent(agent.id)}&box=inbox&status=unread`
         );
         if (!messagesResponse.ok) return null;
 
@@ -280,39 +346,6 @@ async function checkUnreadMessages(cwd) {
         debugLog({ event: 'message_check_error', error: err.message });
         // Fall back to standalone AMP check (works without AI Maestro)
         return checkUnreadMessagesStandalone();
-    }
-}
-
-// Drain the meeting inject queue for this session
-async function drainMeetingInjectQueue(cwd) {
-    try {
-        // Resolve agent to get session name
-        const agentsResponse = await fetch('http://localhost:23000/api/agents');
-        if (!agentsResponse.ok) return null;
-
-        const agentsData = await agentsResponse.json();
-        const agent = resolveAgent(cwd, agentsData.agents || []);
-        if (!agent) return null;
-
-        const sessionName = agent.name || agent.alias || agent.session?.tmuxSessionName;
-        if (!sessionName) return null;
-
-        const queueResponse = await fetch(
-            `http://localhost:23000/api/meetings/inject-queue?session=${encodeURIComponent(sessionName)}`
-        );
-        if (!queueResponse.ok) return null;
-
-        const queueData = await queueResponse.json();
-        if (!queueData.messages || queueData.messages.length === 0) return null;
-
-        debugLog({ event: 'meeting_queue_drained', sessionName, count: queueData.count });
-
-        // Combine all queued messages into one context block
-        const combined = queueData.messages.map(m => m.text).join('\n\n---\n\n');
-        return combined;
-    } catch (err) {
-        debugLog({ event: 'meeting_queue_drain_error', error: err.message });
-        return null;
     }
 }
 
@@ -358,87 +391,43 @@ async function main() {
                 description = `Search in ${toolInput.path}?`;
             }
 
-            // Build options matching Claude Code source (Qv2/Vd5 functions).
-            // Structure is always: [Yes] + [middle from suggestions] + [No]
+            // Build options array similar to Claude's terminal UI
             const options = [
-                { key: '1', label: 'Yes', value: 'yes' }
+                { key: '1', label: 'Yes', action: 'allow_once' }
             ];
 
-            // Middle options — built from permission_suggestions using Vd5 logic.
-            // Categorize suggestions into read rules, bash rules, and directories.
-            if (permissionSuggestions.length > 0) {
-                const readPaths = [];
-                const bashCmds = [];
-                const dirs = [];
-
-                for (const s of permissionSuggestions) {
-                    if (s.type === 'addDirectories' && s.directories) {
-                        dirs.push(...s.directories.map(d => d.split('/').pop() || d));
-                    } else if (s.type === 'addRules' && s.rules) {
-                        for (const r of s.rules) {
-                            if (r.toolName === 'Read') {
-                                readPaths.push(r.ruleContent || '');
-                            } else if (r.toolName === 'Bash') {
-                                bashCmds.push(r.ruleContent || '');
-                            }
-                        }
-                    }
-                }
-
-                // Build label following Vd5 logic from Claude Code source
-                let middleLabel = '';
-                const allPaths = [...dirs, ...readPaths.map(p => p.split('/').pop() || p)].filter(Boolean);
-
-                if (allPaths.length > 0 && bashCmds.length > 0) {
-                    middleLabel = `Yes, and allow ${allPaths.join(', ')} access and ${bashCmds.join(', ')} commands`;
-                } else if (allPaths.length > 0) {
-                    middleLabel = readPaths.length > 0
-                        ? `Yes, allow reading from ${allPaths.join(', ')} from this project`
-                        : `Yes, and always allow access to ${allPaths.join(', ')} from this project`;
-                } else if (bashCmds.length > 0) {
-                    middleLabel = `Yes, and don't ask again for ${bashCmds.join(', ')} commands in this project`;
-                } else {
-                    // Generic fallback for other suggestion types
-                    middleLabel = `Yes, and don't ask again for ${toolName} in this project`;
-                }
-
+            // Add session-scoped option if available
+            const sessionSuggestion = permissionSuggestions.find(s => s.destination === 'session');
+            if (sessionSuggestion && sessionSuggestion.rules && sessionSuggestion.rules[0]) {
+                const rule = sessionSuggestion.rules[0];
                 options.push({
                     key: '2',
-                    label: middleLabel,
-                    value: 'yes-apply-suggestions',
-                    suggestions: permissionSuggestions
-                });
-            } else if (['Edit', 'Write', 'MultiEdit'].includes(toolName)) {
-                // File operations always get a session-scoped option per dx2 logic
-                const filePath = toolInput.file_path || toolInput.path || '';
-                const isInCwd = filePath.startsWith(cwd);
-                const label = isInCwd
-                    ? 'Yes, allow all edits during this session'
-                    : `Yes, allow all edits in ${filePath.replace(/\/[^/]+$/, '/')} during this session`;
-                options.push({
-                    key: '2',
-                    label,
-                    value: 'yes-session'
-                });
-            } else if (toolName === 'Read') {
-                options.push({
-                    key: '2',
-                    label: 'Yes, during this session',
-                    value: 'yes-session'
+                    label: `Yes, allow ${rule.toolName || toolName} from ${rule.ruleContent || 'this location'} during this session`,
+                    action: 'allow_session',
+                    rule: rule.ruleContent
                 });
             }
 
-            // Last option is always No with feedback
+            // Add local settings option if available
+            const localSuggestion = permissionSuggestions.find(s => s.destination === 'localSettings');
+            if (localSuggestion && localSuggestion.rules && localSuggestion.rules[0]) {
+                const rule = localSuggestion.rules[0];
+                options.push({
+                    key: String(options.length + 1),
+                    label: `Yes, always allow this command`,
+                    action: 'allow_always',
+                    rule: rule.ruleContent
+                });
+            }
+
+            // Always add the "type to respond" option
             options.push({
                 key: String(options.length + 1),
-                label: 'No, and tell Claude what to do differently',
-                value: 'no'
+                label: 'Type here to tell Claude what to do differently',
+                action: 'custom'
             });
 
-            // Await the HTTP broadcast for permission_request — this is the critical
-            // path for the chat UI. Other hooks fire-and-forget, but permissions must
-            // reach WebSocket clients before process.exit() kills pending fetches.
-            await writeState(cwd, {
+            writeState(cwd, {
                 status: 'permission_request',
                 toolName,
                 toolInput,
@@ -464,21 +453,18 @@ async function main() {
                     transcriptPath
                 });
 
-                // Check for unread messages and meeting inject queue
-                const [idleMessagePrompt, meetingContext] = await Promise.all([
+                // Drain inbox notifications + queued meeting messages; merge into one context.
+                const [idleInbox, idleMeeting] = await Promise.all([
                     checkUnreadMessages(cwd),
                     drainMeetingInjectQueue(cwd)
                 ]);
-                const combined = [idleMessagePrompt, meetingContext].filter(Boolean).join('\n\n');
-                if (combined) {
-                    debugLog({ event: 'injecting_context', cwd, agent, trigger: 'idle_prompt', hasInbox: !!idleMessagePrompt, hasMeeting: !!meetingContext });
-                    hookResponse = buildContextResponse(agent, rawEvent, combined);
+                const idleContext = mergeContexts(idleMeeting, idleInbox);
+                if (idleContext) {
+                    debugLog({ event: 'injecting_context', cwd, agent, trigger: 'idle_prompt', hasInbox: !!idleInbox, hasMeeting: !!idleMeeting });
+                    hookResponse = buildContextResponse(agent, rawEvent, idleContext);
                 }
             } else if (notificationType === 'permission_prompt') {
-                // Notification(permission_prompt) fires ~6s AFTER PermissionRequest.
-                // If PermissionRequest already wrote the state with full tool data,
-                // do NOT overwrite it — just skip. The permission_request state is
-                // strictly more informative than waiting_for_input.
+                // For permission prompts, preserve existing tool info if we have it
                 const stateDir = path.join(os.homedir(), '.aimaestro', 'chat-state');
                 const cwdHash = hashCwd(cwd);
                 const stateFile = path.join(stateDir, `${cwdHash}.json`);
@@ -487,22 +473,25 @@ async function main() {
                 try {
                     if (fs.existsSync(stateFile)) {
                         existingState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+                        // Only preserve if it's a recent permission_request (within 10 seconds)
                         const age = Date.now() - new Date(existingState.updatedAt).getTime();
-                        if (existingState.status === 'permission_request' && age < 30000) {
-                            // PermissionRequest hook already wrote the good state — don't touch it
-                            debugLog({ event: 'notification_skipped', reason: 'permission_request already active', age });
-                            break;
+                        if (existingState.status !== 'permission_request' || age > 10000) {
+                            existingState = {};
                         }
                     }
                 } catch (e) {}
 
-                // No existing permission_request — write what we have
                 writeState(cwd, {
                     status: 'waiting_for_input',
                     message: input.message || 'Waiting for your input...',
                     notificationType,
                     sessionId,
-                    transcriptPath
+                    transcriptPath,
+                    // Preserve tool info from PermissionRequest if we have it
+                    toolName: existingState.toolName,
+                    toolInput: existingState.toolInput,
+                    options: existingState.options,
+                    description: existingState.description || input.message
                 });
             }
             break;
@@ -528,27 +517,29 @@ async function main() {
                 source: input.source
             });
 
-            // Check for unread messages and meeting inject queue
-            const [startMessagePrompt, startMeetingContext] = await Promise.all([
+            // Drain inbox notifications + queued meeting messages; merge into one context.
+            const [startInbox, startMeeting] = await Promise.all([
                 checkUnreadMessages(cwd),
                 drainMeetingInjectQueue(cwd)
             ]);
-            const startCombined = [startMessagePrompt, startMeetingContext].filter(Boolean).join('\n\n');
-            if (startCombined) {
-                debugLog({ event: 'injecting_context', cwd, agent, trigger: 'session_start', hasInbox: !!startMessagePrompt, hasMeeting: !!startMeetingContext });
-                hookResponse = buildContextResponse(agent, rawEvent, startCombined);
+            const startContext = mergeContexts(startMeeting, startInbox);
+            if (startContext) {
+                debugLog({ event: 'injecting_context', cwd, agent, trigger: 'session_start', hasInbox: !!startInbox, hasMeeting: !!startMeeting });
+                hookResponse = buildContextResponse(agent, rawEvent, startContext);
             }
             break;
 
         case 'UserPromptSubmit': {
             // Drain on every user prompt — this is the reliable delivery slot
             // for Claude Code. SessionStart can be preempted by other plugins'
-            // hooks; UserPromptSubmit fires once per user turn and is rarely contended.
+            // hooks (e.g. Vercel plugin emitting 50KB overwhelms the context
+            // budget and our hook gets cancelled). UserPromptSubmit fires once
+            // per user turn and rarely contended.
             const [upsInbox, upsMeeting] = await Promise.all([
                 checkUnreadMessages(cwd),
                 drainMeetingInjectQueue(cwd)
             ]);
-            const upsContext = [upsMeeting, upsInbox].filter(Boolean).join('\n\n');
+            const upsContext = mergeContexts(upsMeeting, upsInbox);
             if (upsContext) {
                 debugLog({ event: 'injecting_context', cwd, agent, trigger: 'user_prompt_submit', hasInbox: !!upsInbox, hasMeeting: !!upsMeeting });
                 hookResponse = buildContextResponse(agent, rawEvent, upsContext);
@@ -563,10 +554,11 @@ async function main() {
             }
     }
 
-    // Output hook response (may include additionalContext for inbox notifications).
-    // Force immediate exit — pending fire-and-forget fetches (broadcastStatusUpdate)
-    // can keep the event loop alive past Claude Code's hook deadline.
+    // Output hook response (may include additionalContext for inbox notifications)
     process.stdout.write(JSON.stringify(hookResponse));
+    // Force immediate exit — pending fire-and-forget fetches (broadcastStatusUpdate)
+    // can otherwise keep the event loop alive past Claude Code's hook deadline,
+    // causing the hook to be cancelled before stdout is captured.
     process.exit(0);
 }
 

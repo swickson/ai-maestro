@@ -420,7 +420,9 @@ export async function runIndexDelta(
                        registryAgent.sessions?.[0]?.workingDirectory
       if (sessionName) {
         liveTmuxWd = await getLiveTmuxWorkingDirectory(sessionName)
-        if (liveTmuxWd && storedWd && liveTmuxWd !== storedWd) {
+        // Don't overwrite with home directory — it's a sign of an uninitialized session
+        const homedir = os.homedir()
+        if (liveTmuxWd && liveTmuxWd !== homedir && storedWd && liveTmuxWd !== storedWd) {
           console.log(`[Delta Index] Syncing workingDirectory: ${storedWd} -> ${liveTmuxWd}`)
           updateAgentWorkingDirectory(agentId, liveTmuxWd)
           registryAgent = getRegistryAgent(agentId) || getAgentBySession(agentId)
