@@ -5,7 +5,7 @@
  * Routes are thin wrappers that call these functions.
  */
 
-import { getAgent } from '@/lib/agent-registry'
+import { getAgent, getAgentBySession } from '@/lib/agent-registry'
 import { getRuntime } from '@/lib/agent-runtime'
 import {
   enqueueForSession,
@@ -13,11 +13,12 @@ import {
   sanitizeForRawInject,
   wrapAsBracketedPaste,
 } from '@/lib/meeting-inject-queue'
+import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import os from 'os'
-import { type ServiceResult, notFound, invalidRequest, missingField } from '@/services/service-errors'
+import { type ServiceResult, notFound, invalidRequest, invalidField, missingField } from '@/services/service-errors'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -271,14 +272,21 @@ export async function sendChatMessage(
     return invalidRequest('Agent has no session name')
   }
 
-  const hasOnlineSession = agent.sessions?.some(s => s.status === 'online')
+  // Use the cloud-aware agentSessionReady primitive — agent.sessions[] is
+  // tmux-host-enumerated and wrongly reports offline for cloud agents whose
+  // tmux runs in-container. The PR #115 dispatch path is already cloud-aware;
+  // this pre-dispatch gate was missed in that migration.
+  const hasOnlineSession = await agentSessionReady(agent)
   if (!hasOnlineSession) {
     return invalidRequest('Agent session is not online')
   }
 
-  const runtime = getRuntime()
-  await runtime.cancelCopyMode(sessionName)
-  await runtime.sendKeys(sessionName, message, { literal: true, enter: true })
+  // Exit copy-mode first — sending keys to a copy-mode pane hangs the request
+  // and drops the payload (kanban 96d317df). Mirror of the wakeAgent and
+  // sessions-service patterns. Primitive routes the call to docker-exec for
+  // cloud agents (kanban 6c3f4357 / 7a94534e) — this used to be host-only.
+  await cancelCopyModeForAgent(agent)
+  await sendKeysToAgent(agent, message, { literal: true, enter: true })
 
   console.log('[Chat Service] Message sent successfully')
 
@@ -293,69 +301,74 @@ export async function sendChatMessage(
 }
 
 /**
- * Inject a meeting prompt into an agent's session.
+ * Inject a meeting prompt into an agent's tmux session — the service-layer
+ * counterpart of POST /api/agents/notify (injection mode). Extracted from the
+ * route handler for unit-testability of the cancelCopyMode→sendKeys ordering
+ * across all four branches (kanban cff76d5c, PR #94 follow-up).
  *
- * Hybrid dispatch:
- * - If the agent's program supports additionalContext (feature-gated),
- *   the text is queued and a wake-ping ("." + Enter) is sent so the hook
- *   drains the queue on the next idle_prompt.
- * - Otherwise, legacy path: sanitize + bracketed-paste + send-keys.
+ * Two paths × two deployments:
+ *   1. hybrid host  — cancelCopyModeForAgent → sendKeysToAgent('.') → wait → Enter
+ *   2. hybrid cloud — same primitives, dispatched in-container by the primitive
+ *   3. legacy host  — cancelCopyModeForAgent → sendKeysToAgent(safeInjection) → wait → Enter
+ *   4. legacy cloud — same primitives, dispatched in-container by the primitive
+ *
+ * The cloud-vs-host dispatch was previously inlined here (one branch per path);
+ * 7a94534e collapsed it into the sendKeysToAgent / cancelCopyModeForAgent
+ * primitives so the four-way matrix is the cartesian product of {hybrid, legacy}
+ * × {whatever the primitive resolves} — no manual cloud branch in this file.
+ *
+ * The cancelCopyMode→sendKeys ordering invariant is load-bearing: tmux
+ * send-keys -l against a copy-mode pane hangs the calling process AND drops
+ * the payload (kanban 96d317df / Holmes empirical 2026-04-28). Same prelude
+ * pattern as wakeAgent + sendCommand + sendChatMessage.
  */
 export async function injectMeetingPrompt(
-  params: { agentId?: string; agentName?: string; injection: string }
-): Promise<ServiceResult<Record<string, unknown>>> {
-  const { injection } = params
-  if (!injection) {
+  body: { agentName?: string; injection?: string }
+): Promise<ServiceResult<{ success: boolean; queued?: boolean; injected?: boolean }>> {
+  if (!body.agentName) {
+    return missingField('agentName')
+  }
+  if (!body.injection) {
     return missingField('injection')
   }
 
-  // Resolve agent
-  let agent = params.agentId ? getAgent(params.agentId) : null
-  if (!agent && params.agentName) {
-    // Search by name in registry
-    const { getAgentByName } = await import('@/lib/agent-registry')
-    agent = getAgentByName(params.agentName)
-  }
+  const sessionName = body.agentName
+  const agent = getAgentBySession(sessionName)
   if (!agent) {
-    return notFound('Agent', params.agentId || params.agentName || 'unknown')
+    return notFound('Agent', sessionName)
   }
-
-  const sessionName = agent.name || agent.alias
-  if (!sessionName) {
-    return invalidRequest('Agent has no session name')
+  const isCloud = agent.deployment?.type === 'cloud'
+  if (isCloud && !agent.deployment?.cloud?.containerName) {
+    return invalidField('deployment.cloud.containerName', `Cloud agent ${sessionName} has no containerName configured`)
   }
-
-  const runtime = getRuntime()
-  const exists = await runtime.sessionExists(sessionName)
-  if (!exists) {
-    return invalidRequest(`Session ${sessionName} is not active`)
-  }
-
-  // Determine program for kind detection
-  const program = (agent as any).program || agent.name
-
-  if (shouldUseAdditionalContext(program)) {
-    // ── Queue path: enqueue + wake-ping ─────────────────────────────
-    enqueueForSession(sessionName, injection)
-    await runtime.cancelCopyMode(sessionName)
-    // "." wakes Claude Code (bare Enter is a no-op); hook drains on next turn
-    await runtime.sendKeys(sessionName, '.', { literal: true, enter: true })
-
-    console.log(`[Meeting Inject] Queued for ${sessionName} (additionalContext path)`)
-    return {
-      data: { success: true, queued: true, sessionName },
-      status: 200
+  if (!isCloud) {
+    const ready = await agentSessionReady(agent)
+    if (!ready) {
+      return notFound('Session', sessionName)
     }
   }
 
-  // ── Legacy path: sanitize + bracketed paste + send-keys ───────────
-  const safe = wrapAsBracketedPaste(sanitizeForRawInject(injection))
-  await runtime.cancelCopyMode(sessionName)
-  await runtime.sendKeys(sessionName, safe, { literal: true, enter: true })
-
-  console.log(`[Meeting Inject] Injected into ${sessionName} (legacy send-keys path)`)
-  return {
-    data: { success: true, injected: true, sessionName },
-    status: 200
+  // Hybrid path (flag-gated per agent kind): enqueue as structured context and
+  // wake-ping with "." + Enter (bare Enter was a no-op in Claude Code). Hook
+  // drains on the resulting UserPromptSubmit.
+  if (shouldUseAdditionalContext(agent.program)) {
+    enqueueForSession(sessionName, body.injection)
+    await cancelCopyModeForAgent(agent)
+    await sendKeysToAgent(agent, '.', { literal: true, enter: false })
+    await new Promise(r => setTimeout(r, 100))
+    await sendKeysToAgent(agent, '', { literal: false, enter: true })
+    console.log(`[Inject Service] queued + wake-pinged ${sessionName} (${agent.program}${isCloud ? ', cloud' : ''})`)
+    return { data: { success: true, queued: true }, status: 200 }
   }
+
+  // Legacy path: send the injection as an explicit bracketed-paste block
+  // (ESC[200~…ESC[201~) so Codex/Gemini close their paste-receive window on
+  // the 201~ marker before our trailing Enter lands.
+  const safeInjection = wrapAsBracketedPaste(sanitizeForRawInject(String(body.injection)))
+  await cancelCopyModeForAgent(agent)
+  await sendKeysToAgent(agent, safeInjection, { literal: true, enter: false })
+  await new Promise(r => setTimeout(r, 500))
+  await sendKeysToAgent(agent, '', { literal: false, enter: true })
+  console.log(`[Inject Service] injected meeting prompt into ${sessionName}${isCloud ? ' (cloud)' : ''}`)
+  return { data: { success: true, injected: true }, status: 200 }
 }

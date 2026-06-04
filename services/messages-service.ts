@@ -35,7 +35,7 @@ import {
 import type { MessageSummary } from '@/lib/messageQueue'
 import { sendFromUI } from '@/lib/message-send'
 import { forwardFromUI } from '@/lib/message-send'
-import { searchAgents } from '@/lib/agent-registry'
+import { getAgent, searchAgents } from '@/lib/agent-registry'
 import { getSelfHostId, getSelfHost } from '@/lib/hosts-config'
 import {
   loadMeetings,
@@ -44,6 +44,8 @@ import {
   updateMeeting,
   deleteMeeting,
 } from '@/lib/meeting-registry'
+import { routeMessage } from '@/lib/meeting-router'
+import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
 import type { SidebarMode } from '@/types/team'
 import { type ServiceResult, missingField, notFound, invalidRequest, operationFailed } from '@/services/service-errors'
 
@@ -222,6 +224,20 @@ export async function sendMessage(params: SendMessageParams): Promise<ServiceRes
       fromVerified: params.fromVerified,
     })
 
+    // After message is stored, check if this is a meeting message and trigger agents
+    const meetingContext = content.context?.meeting
+    if (meetingContext?.meetingId) {
+      // Fire-and-forget: don't block the response on agent injection
+      triggerMeetingAgents({
+        meetingId: meetingContext.meetingId,
+        senderId: from,
+        senderName: params.fromAlias || from,
+        isHuman: from === 'maestro',
+        messageText: content.message,
+        subject,
+      }).catch(err => console.warn('[MeetingRouter] Agent triggering failed:', err))
+    }
+
     return {
       data: {
         message: result.message,
@@ -361,6 +377,84 @@ export interface GetMeetingMessagesParams {
   since: string | null
 }
 
+// ---------------------------------------------------------------------------
+// Meeting Agent Triggering
+// ---------------------------------------------------------------------------
+
+/**
+ * After a meeting message is stored, route it and trigger target agents.
+ * Uses the meeting router for @mention resolution and loop guard,
+ * then injects a contextual prompt into each target agent's tmux session.
+ */
+async function triggerMeetingAgents(params: {
+  meetingId: string
+  senderId: string
+  senderName: string
+  isHuman: boolean
+  messageText: string
+  subject: string
+}): Promise<void> {
+  const { meetingId, senderId, senderName, isHuman, messageText, subject } = params
+
+  const result = routeMessage({
+    meetingId,
+    senderId,
+    senderName,
+    isHuman,
+    messageText,
+  })
+
+  if (result.blocked) {
+    console.log(`[MeetingRouter] Message blocked: ${result.reason}`)
+    return
+  }
+
+  if (result.targetAgentIds.length === 0) {
+    return // No agents to trigger (no @mentions or unaddressed message)
+  }
+
+  const teamName = subject.replace(/^\[MEETING:[^\]]+\]\s*/, '')
+
+  for (const agentId of result.targetAgentIds) {
+    const agent = getAgent(agentId)
+    if (!agent) continue
+
+    // Existence check is deployment-aware: cloud agents have no host tmux
+    // session by their name (tmux runs inside the container under the same
+    // name), so the naive runtime.sessionExists() returned false and silently
+    // skipped them. agentSessionReady treats containerName-configured cloud
+    // agents as ready (kanban 7a94534e closes 6f5562f4).
+    const ready = await agentSessionReady(agent)
+    if (!ready) {
+      console.log(`[MeetingRouter] Skipping ${agent.name} — no active session`)
+      continue
+    }
+
+    // Build injection prompt with context
+    const prompt = [
+      `[Meeting: ${teamName}]`,
+      `${senderName} says: ${messageText}`,
+      '',
+      `Reply by running: amp-send.sh ${senderName} "[MEETING:${meetingId}] ${teamName}" "your reply" --context '{"meeting":{"meetingId":"${meetingId}","teamName":"${teamName}"}}'`,
+    ].join('\n')
+
+    try {
+      // Same cancelCopyMode→sendKeys ordering invariant as the rest of the
+      // tmux-input callsites — primitive routes to docker-exec for cloud
+      // agents (kanban 7a94534e migration; was host-only before).
+      await cancelCopyModeForAgent(agent)
+      await sendKeysToAgent(agent, prompt, { literal: true, enter: true })
+      console.log(`[MeetingRouter] Injected prompt into ${agent.name}`)
+    } catch (err) {
+      console.warn(`[MeetingRouter] Failed to inject into ${agent.name}:`, err)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Meeting Messages
+// ---------------------------------------------------------------------------
+
 export async function getMeetingMessages(
   params: GetMeetingMessagesParams,
 ): Promise<ServiceResult<{ meetingId: string; messages: MessageSummary[]; count: number }>> {
@@ -452,12 +546,14 @@ export interface CreateMeetingParams {
   agentIds: string[]
   teamId?: string | null
   sidebarMode?: SidebarMode
+  operatorId?: string
+  operatorName?: string
 }
 
 export function createNewMeeting(
   params: CreateMeetingParams,
 ): ServiceResult<{ meeting: any }> {
-  const { name, agentIds, teamId, sidebarMode } = params
+  const { name, agentIds, teamId, sidebarMode, operatorId, operatorName } = params
 
   if (!name || typeof name !== 'string') {
     return missingField('name')
@@ -473,6 +569,8 @@ export function createNewMeeting(
       agentIds,
       teamId: teamId || null,
       sidebarMode,
+      operatorId,
+      operatorName,
     })
     return { data: { meeting }, status: 201 }
   } catch (error) {

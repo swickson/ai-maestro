@@ -28,7 +28,11 @@ interface MeetingRightPanelProps {
   onSendToAgent: (agentId: string, message: string) => Promise<void>
   onBroadcastToAll: (message: string) => Promise<void>
   onMarkChatRead?: () => void
+  // Pop the chat into focus-mode overlay (covers terminal middle slot, mirrors kanban shell).
+  // When omitted, the focus-mode button is hidden.
   onExpandChat?: () => void
+  // True when the chat overlay is currently open in the middle slot. Used to suppress
+  // the duplicate-render of MeetingChatPanel in the sidebar tab — single source of state.
   chatOverlayOpen?: boolean
   onCollapseChat?: () => void
 }
@@ -51,7 +55,7 @@ export default function MeetingRightPanel({
   onBroadcastToAll,
   onMarkChatRead,
   onExpandChat,
-  chatOverlayOpen,
+  chatOverlayOpen = false,
   onCollapseChat,
 }: MeetingRightPanelProps) {
   const taskCount = tasks.filter(t => t.status !== 'completed').length
@@ -131,6 +135,8 @@ export default function MeetingRightPanel({
             onDeleteTask={onDeleteTask}
           />
         ) : chatOverlayOpen ? (
+          // Chat is currently rendered in the middle-slot overlay — don't double-mount it
+          // here (would split message-list state, double the loop-guard poll, etc.).
           <div className="flex flex-col items-center justify-center h-full px-4 text-center gap-3">
             <p className="text-sm text-gray-400">
               Chat is in focus mode (middle slot).

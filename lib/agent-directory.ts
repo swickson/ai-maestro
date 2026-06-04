@@ -34,7 +34,9 @@ const SYNC_INTERVAL = 60 * 1000
  * Directory entry for a single agent
  */
 export interface AgentDirectoryEntry {
+  agentId?: string              // Agent UUID — for cross-referencing with meeting participants
   name: string                  // Agent name (e.g., "backend-api")
+  label?: string                // Display label (e.g., "Watson") — for UI and @mention resolution
   hostId: string                // Host where agent lives
   hostUrl?: string              // URL to reach the host
   ampAddress?: string           // Full AMP address (e.g., "backend-api@acme.aimaestro.local")
@@ -166,7 +168,9 @@ export function rebuildLocalDirectory(): AgentDirectory {
     if (hostId !== selfHostId) continue  // Only local agents
 
     directory.entries[name] = {
+      agentId: agent.id,
       name,
+      label: agent.label || undefined,
       hostId,
       hostUrl: agent.hostUrl,
       ampAddress: agent.metadata?.amp?.address,
@@ -187,6 +191,17 @@ export function lookupAgent(name: string): AgentDirectoryEntry | null {
   const directory = loadDirectory()
   const normalizedName = name.toLowerCase()
   return directory.entries[normalizedName] || null
+}
+
+/**
+ * Look up an agent in the directory by UUID
+ */
+export function lookupAgentById(agentId: string): AgentDirectoryEntry | null {
+  const directory = loadDirectory()
+  for (const entry of Object.values(directory.entries)) {
+    if (entry.agentId === agentId) return entry
+  }
+  return null
 }
 
 /**
@@ -304,7 +319,9 @@ export async function syncWithPeers(timeout: number = 5000): Promise<{
             const existing = lookupAgent(entry.name)
             if (!existing || existing.source === 'remote') {
               registerRemoteAgent({
+                agentId: entry.agentId,
                 name: entry.name,
+                label: entry.label,
                 hostId: entry.hostId,
                 hostUrl: entry.hostUrl || host.url,
                 ampAddress: entry.ampAddress,
