@@ -164,14 +164,53 @@ export interface AMPPayload {
 }
 
 /**
- * AMP Attachment
+ * AMP Attachment — discriminated union (kanban b2ab2a77 + #48).
+ *
+ * - `legacy`: pre-#48 path/url shape, local-host-only by construction (no
+ *   url is provider-signed). Federation MUST hard-reject + log per the
+ *   deprecation horizon set at PR #48 merge.
+ * - `amp-v1`: spec-compliant attachment with provider-signed URL,
+ *   content_type, size, digest, scan_status, uploaded_at, expires_at.
+ *   Cross-provider safe.
+ *
+ * Discriminator forces explicit handling at every callsite — field-presence
+ * detection (path vs url) tends to silent shape drift.
  */
-export interface AMPAttachment {
+export type AMPAttachment = AMPAttachmentLegacy | AMPAttachmentV1
+
+export interface AMPAttachmentLegacy {
+  kind: 'legacy'
   name: string
   path?: string
   url?: string
   type: string
   size?: number
+}
+
+export interface AMPAttachmentV1 {
+  kind: 'amp-v1'
+  /** Provider-issued opaque identifier (att_xxx). Single-use per id. */
+  id: string
+  /** Sanitized filename (server-authoritative; [a-zA-Z0-9._-] only). */
+  filename: string
+  /** RFC-2046 content type from MIME sniff at confirm time. */
+  content_type: string
+  /** Bytes. Bounded by AMP_MAX_ATTACHMENT_BYTES (default 25MB). */
+  size: number
+  /** SHA-256 hex digest of the binary contents. Verifier computes and compares. */
+  digest: string
+  /** Provider-signed download URL (HMAC-signed, embeds expires_at + att_id). */
+  url: string
+  /**
+   * Scan state. `basic_clean` is what /confirm emits today (MUSTs only,
+   * no AV / injection — spec v0.1.2 §5 table line 429). `clean` is reserved
+   * for a future SHOULD-tier scanner.
+   */
+  scan_status: 'pending' | 'clean' | 'basic_clean' | 'suspicious' | 'rejected'
+  /** ISO-8601 upload completion timestamp. */
+  uploaded_at: string
+  /** ISO-8601 expiry. Spec mandates >=7 days from upload. Immutable post-routing. */
+  expires_at: string
 }
 
 /**

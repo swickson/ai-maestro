@@ -343,7 +343,12 @@ export async function writeToAMPInbox(
       payload: {
         type: payload.type,
         message: payload.message,
-        context: payload.context || null
+        context: payload.context || null,
+        // Pass attachments through verbatim — recipient-side amp-read /
+        // amp-download walks payload.attachments to render + fetch bytes.
+        // Dropping this field silently broke cross-host attachments
+        // post-PR-#119 (kanban 8e2c47c6, KAI empirical 2026-05-06).
+        attachments: payload.attachments || null
       },
       metadata: {
         status: 'unread',
@@ -410,7 +415,12 @@ export async function writeToAMPSent(
       payload: {
         type: payload.type,
         message: payload.message,
-        context: payload.context || null
+        context: payload.context || null,
+        // Pass attachments through verbatim — recipient-side amp-read /
+        // amp-download walks payload.attachments to render + fetch bytes.
+        // Dropping this field silently broke cross-host attachments
+        // post-PR-#119 (kanban 8e2c47c6, KAI empirical 2026-05-06).
+        attachments: payload.attachments || null
       },
       local: {
         sent_at: new Date().toISOString()
