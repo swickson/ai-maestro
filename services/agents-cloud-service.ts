@@ -458,7 +458,10 @@ export async function createCloudAgent(body: CloudCreateRequest): Promise<Servic
       cloudBase.instanceType = body.instanceType || 't4g.small'
       cloudExtra.domain = body.domainName
       cloudExtra.ssl = 'letsencrypt'
-      cloudExtra.runtime = 'ec2-native'
+      // RECONCILE: AWS deployment-variant tag is keyed `runtimeVariant` so the
+      // typed `runtime` key can hold our local-container runtime-config object.
+      // See types/agent.ts deployment.cloud and components/InfraIcon.tsx.
+      cloudExtra.runtimeVariant = 'ec2-native'
       cloudExtra.aiTool = mapProgramToTool(body.program)
     } else {
       cloudExtra.clusterArn = (outputs.cluster_arn?.value as string) || ''
@@ -468,7 +471,8 @@ export async function createCloudAgent(body: CloudCreateRequest): Promise<Servic
       cloudExtra.cpu = body.cpu || 512
       cloudExtra.memory = body.memory || 1024
       cloudExtra.ssl = body.domainName ? 'acm' : 'none'
-      cloudExtra.runtime = 'ecs-fargate'
+      // RECONCILE: keyed `runtimeVariant` (see ec2 branch above).
+      cloudExtra.runtimeVariant = 'ecs-fargate'
       cloudExtra.ecrImageUrl = ecsImageUrl
     }
 
@@ -568,7 +572,9 @@ export async function getCloudAgentStatus(agentId: string): Promise<ServiceResul
     agentId,
     name: agent.name,
     provider: agent.deployment.cloud?.provider || 'aws',
-    runtime: (agent.deployment.cloud as Record<string, unknown>)?.runtime || 'unknown',
+    // RECONCILE: AWS deployment-variant string is keyed `runtimeVariant` (the
+    // typed `runtime` key now holds our local-container runtime-config object).
+    runtimeVariant: (agent.deployment.cloud as Record<string, unknown>)?.runtimeVariant || 'unknown',
     hasTerraformState: hasTfState,
     cloud: agent.deployment.cloud,
   }

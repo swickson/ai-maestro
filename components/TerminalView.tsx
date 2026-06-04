@@ -32,13 +32,12 @@ interface TerminalViewProps {
   onConnectionStatusChange?: (isConnected: boolean) => void  // Callback for connection status changes
 }
 
-export default function TerminalView({ session, isVisible: _isVisible = true, hideFooter = false, hideHeader = false, onConnectionStatusChange }: TerminalViewProps) {
+export default function TerminalView({ session, isVisible = true, hideFooter = false, hideHeader = false, onConnectionStatusChange }: TerminalViewProps) {
   const { addToast } = useToast()
   const terminalRef = useRef<HTMLDivElement>(null)
   const [isReady, setIsReady] = useState(false)
+  const [historyLoaded, setHistoryLoaded] = useState(false) // Gate for input handler
   const messageBufferRef = useRef<string[]>([])
-  const historyCompleteRef = useRef(false)
-  const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null)
   const [notes, setNotes] = useState('')
   const [promptDraft, setPromptDraft] = useState('')
   const { isTouch } = useDeviceType()
@@ -107,9 +106,21 @@ export default function TerminalView({ session, isVisible: _isVisible = true, hi
 
   // Store terminal in a ref so the WebSocket callback can access the current value
   const terminalInstanceRef = useRef<typeof terminal>(null)
+  // Tracks pending post-mount-refit setTimeout IDs so they can be cancelled on
+  // WS close or unmount. Without this, the chained 100/500/1500ms refits from
+  // onOpen below would still fire after the component unmounts, calling
+  // fitTerminal()/sendMessage() on a disposed terminal — the in-handler
+  // null-guard catches it, but try-catch silently swallows the resulting log,
+  // and pending sendMessage calls go to a closed WS. Kanban 3d156bfa.
+  const refitTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
   useEffect(() => {
     terminalInstanceRef.current = terminal
+    return () => {
+      terminalInstanceRef.current = null
+      refitTimeoutsRef.current.forEach(clearTimeout)
+      refitTimeoutsRef.current = []
+    }
   }, [terminal])
 
   const focusTerminal = useCallback(() => {
@@ -199,15 +210,59 @@ export default function TerminalView({ session, isVisible: _isVisible = true, hi
     socketPath: session.socketPath,  // Custom tmux socket (e.g., OpenClaw agents)
     initialCols: terminal?.cols,   // Pass actual terminal dimensions so PTY spawns at correct size
     initialRows: terminal?.rows,
-    autoConnect: isReady,  // Connect once terminal is ready — stay connected across tab switches
+    autoConnect: isVisible && isReady,  // Wait for terminal init so PTY gets correct dimensions
     onOpen: () => {
+      // Reset historyLoaded - server will send new history on each connect
+      setHistoryLoaded(false)
+      // Report activity when WebSocket connects
       reportActivity(session.id)
+      // Notify parent of connection status change
       onConnectionStatusChange?.(true)
-      // Reset history gate — server will send history then history-complete
-      historyCompleteRef.current = false
-      lastSentSizeRef.current = null
+
+      // Send initial resize immediately so PTY/tmux starts at the correct size
+      // instead of defaulting to 80×24 (which corrupts TUI layouts like /plan mode)
+      const term = terminalInstanceRef.current
+      if (term) {
+        fitTerminal()
+        const resizeMsg = createResizeMessage(term.cols, term.rows)
+        sendMessage(resizeMsg)
+      }
+
+      // Defensive post-mount refit chain: layout transitions (sidebar
+      // render-in, panel mount, flex re-balance, prior-agent terminal
+      // unmount) can complete after the immediate fit() above, leaving
+      // terminal.cols measured against pre-settle parent width.
+      // ResizeObserver catches user-driven resizes (dragging sidebar handle,
+      // collapsing prompt-builder) but mis-fires the initial mount-time
+      // race. Empirical (kanban eb3e705c): single 500ms refit (PR #137)
+      // caught some click-cycles but missed others — layout settle time is
+      // non-deterministic (varies with prior-agent unmount timing).
+      // Chained refits at multiple delays cover the range of settle
+      // profiles without expensive polling.
+      // Always emit the resize message regardless of cols/rows delta — tmux
+      // pty may have been spawned at stale cols; re-broadcasting current
+      // dims forces SIGWINCH + Claude redraw at the right width.
+      const refit = () => {
+        const t = terminalInstanceRef.current
+        if (!t) return
+        try {
+          fitTerminal()
+          sendMessage(createResizeMessage(t.cols, t.rows))
+        } catch (e) {
+          console.warn('[Terminal] Deferred post-mount refit failed:', e)
+        }
+      }
+      refitTimeoutsRef.current = [
+        setTimeout(refit, 100),
+        setTimeout(refit, 500),
+        setTimeout(refit, 1500),
+      ]
     },
     onClose: () => {
+      // Cancel any pending post-mount refits — the next onOpen will reschedule
+      // a fresh chain against the new connection's layout. Kanban 3d156bfa.
+      refitTimeoutsRef.current.forEach(clearTimeout)
+      refitTimeoutsRef.current = []
       // Notify parent of connection status change
       onConnectionStatusChange?.(false)
     },
@@ -218,18 +273,36 @@ export default function TerminalView({ session, isVisible: _isVisible = true, hi
 
         // Handle history-complete message
         if (parsed.type === 'history-complete') {
-          try {
-            const term = terminalInstanceRef.current
-            if (term) {
-              term.scrollToBottom()
-              term.focus()
-            }
-          } catch {
-            // Renderer not ready
+          setHistoryLoaded(true)
+          if (terminalInstanceRef.current) {
+            // Wait for xterm.js to finish processing history
+            setTimeout(() => {
+              const t = terminalInstanceRef.current
+              if (!t) return
+
+              // 1. CRITICAL: Refit terminal to ensure correct dimensions
+              fitTerminal()
+
+              // 2. Send resize to PTY to sync tmux with correct dimensions
+              // This also triggers a redraw which helps with color issues
+              const resizeMsg = createResizeMessage(t.cols, t.rows)
+              sendMessage(resizeMsg)
+
+              // 3. Scroll to bottom and focus
+              // try-catch guards against xterm.js renderer being undefined
+              // (WebGL context loss leaves RenderService.dimensions broken)
+              setTimeout(() => {
+                try {
+                  if (terminalInstanceRef.current) {
+                    terminalInstanceRef.current.scrollToBottom()
+                    terminalInstanceRef.current.focus()
+                  }
+                } catch {
+                  // Renderer not ready — safe to ignore, terminal will recover
+                }
+              }, 50)
+            }, 100)
           }
-          // Unlock resize forwarding — from now on, only real user-initiated
-          // resizes (browser window drag, notes panel toggle) will be sent.
-          historyCompleteRef.current = true
           return
         }
 
@@ -365,18 +438,19 @@ export default function TerminalView({ session, isVisible: _isVisible = true, hi
   // WebGL is now loaded inline during initializeTerminal() - no toggle needed.
   // Only one terminal is mounted at a time, so no GPU context exhaustion concern.
 
-  // Trigger fit when notes collapse/expand or footer tab changes (changes terminal height).
-  // Use a longer delay (300ms) so CSS transitions fully settle before refitting.
+  // Trigger fit when notes collapse/expand or footer tab changes (changes terminal height)
   useEffect(() => {
     if (isReady && terminal) {
+      // Notes state or footer tab changed, terminal height changed
       const timeout = setTimeout(() => {
         fitTerminal()
-      }, 300)
+      }, 150)
       return () => clearTimeout(timeout)
     }
-  }, [notesCollapsed, footerTab, isReady, terminal, fitTerminal])
+  }, [notesCollapsed, footerTab, isReady, terminal, fitTerminal, session.id])
 
   // Handle terminal input
+  // Note: Removed historyLoaded gate - it was preventing typing until ESC was pressed
   useEffect(() => {
     if (!terminal || !isConnected) {
       return
@@ -433,17 +507,13 @@ export default function TerminalView({ session, isVisible: _isVisible = true, hi
     }
   }, [isConnected, sendMessage])
 
-  // Handle terminal resize — only forward to server after history is loaded
-  // and only if dimensions actually changed (prevents tmux redraw storms)
+  // Handle terminal resize
   useEffect(() => {
     if (!terminal || !isConnected) return
 
     const disposable = terminal.onResize(({ cols, rows }) => {
-      if (!historyCompleteRef.current) return
-      const last = lastSentSizeRef.current
-      if (last && last.cols === cols && last.rows === rows) return
-      lastSentSizeRef.current = { cols, rows }
-      sendMessage(createResizeMessage(cols, rows))
+      const message = createResizeMessage(cols, rows)
+      sendMessage(message)
     })
 
     return () => {

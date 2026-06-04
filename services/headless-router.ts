@@ -264,6 +264,18 @@ import {
 } from '@/services/marketplace-service'
 
 import {
+  listAllUsers,
+  createNewUser,
+  findUserById,
+  updateUserById,
+  deleteUserById,
+  resolveUser,
+  autoCreateExternalUser,
+  updateLastSeen,
+  notifyUser,
+} from '@/services/users-service'
+
+import {
   createAssistantAgent,
   deleteAssistantAgent,
   getAssistantStatus,
@@ -1398,6 +1410,47 @@ const routes: Route[] = [
   { method: 'POST', pattern: /^\/api\/plugin-builder\/push$/, paramNames: [], handler: async (req, res) => {
     const body = await readJsonBody(req)
     sendServiceResult(res, await pushToGitHub(body))
+  }},
+
+  // =========================================================================
+  // Users
+  // =========================================================================
+  { method: 'GET', pattern: /^\/api\/users\/resolve$/, paramNames: [], handler: async (_req, res, _params, query) => {
+    sendServiceResult(res, resolveUser({
+      alias: query?.alias as string,
+      platform: query?.platform as string,
+      platformUserId: query?.platformUserId as string,
+      displayName: query?.displayName as string,
+    }))
+  }},
+  { method: 'POST', pattern: /^\/api\/users\/auto-create$/, paramNames: [], handler: async (req, res) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, autoCreateExternalUser(body))
+  }},
+  { method: 'POST', pattern: /^\/api\/users\/([^/]+)\/notify$/, paramNames: ['id'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, await notifyUser(params.id, body.message, { platform: body.platform, subject: body.subject }))
+  }},
+  { method: 'PATCH', pattern: /^\/api\/users\/([^/]+)\/last-seen$/, paramNames: ['id'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, updateLastSeen(params.id, body.platform))
+  }},
+  { method: 'GET', pattern: /^\/api\/users\/([^/]+)$/, paramNames: ['id'], handler: async (_req, res, params) => {
+    sendServiceResult(res, findUserById(params.id))
+  }},
+  { method: 'PATCH', pattern: /^\/api\/users\/([^/]+)$/, paramNames: ['id'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, updateUserById(params.id, body))
+  }},
+  { method: 'DELETE', pattern: /^\/api\/users\/([^/]+)$/, paramNames: ['id'], handler: async (_req, res, params) => {
+    sendServiceResult(res, deleteUserById(params.id))
+  }},
+  { method: 'GET', pattern: /^\/api\/users$/, paramNames: [], handler: async (_req, res, _params, query) => {
+    sendServiceResult(res, listAllUsers(query?.role as string))
+  }},
+  { method: 'POST', pattern: /^\/api\/users$/, paramNames: [], handler: async (req, res) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, createNewUser(body))
   }},
 ]
 
