@@ -29,6 +29,8 @@ export interface Team {
   updatedAt: string       // ISO
   lastMeetingAt?: string  // ISO - last time a meeting was started with this team
   lastActivityAt?: string // ISO - updated on any team interaction
+  hostId?: string         // Host that owns this team (set on creation, used for mesh sync)
+  source?: 'local' | 'remote'  // Runtime only — not persisted, set during sync
 }
 
 export interface TeamsFile {

@@ -10,10 +10,17 @@ import path from 'path'
 import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { Team, TeamsFile } from '@/types/team'
+import { getSelfHostId } from '@/lib/hosts-config'
 
 const AIMAESTRO_DIR = path.join(os.homedir(), '.aimaestro')
 const TEAMS_DIR = path.join(AIMAESTRO_DIR, 'teams')
 const TEAMS_FILE = path.join(TEAMS_DIR, 'teams.json')
+
+export function getLocalTeamsForSync(): Team[] {
+  const teams = loadTeams()
+  const selfHostId = getSelfHostId()
+  return teams.filter(t => t.hostId === selfHostId && t.source !== 'remote')
+}
 
 function ensureTeamsDir() {
   if (!fs.existsSync(TEAMS_DIR)) {
