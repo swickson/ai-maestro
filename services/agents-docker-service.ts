@@ -11,7 +11,7 @@ import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { v4 as uuidv4 } from 'uuid'
-import { createAgent, deleteAgent, getAgent, loadAgents, saveAgents, updateAgent } from '@/lib/agent-registry'
+import { createAgent, deleteAgent, getAgent, loadAgents, saveAgents, updateAgent, updateAgentRuntimeConfig, clearCloudContainerStale } from '@/lib/agent-registry'
 import { getHosts, isSelf, getOrganization } from '@/lib/hosts-config'
 import { generateKeyPair, saveKeyPair } from '@/lib/amp-keys'
 import { registerAgent } from '@/services/amp-service'
@@ -20,6 +20,7 @@ import type { Agent, SandboxMount } from '@/types/agent'
 import { PERMISSION_MODE_TO_CLI } from '@/types/agent'
 import type { AgentPermissionMode } from '@/types/agent'
 import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
+import { resolveStartCommand } from '@/lib/agent-paths'
 
 const execAsync = promisify(exec)
 
@@ -30,7 +31,7 @@ export interface DockerCreateRequest {
   program?: string
   /** @deprecated Use permissionMode: 'fullAutonomy' instead */
   yolo?: boolean
-  permissionMode?: import('@/types/agent').AgentPermissionMode
+  permissionMode?: AgentPermissionMode
   model?: string
   programArgs?: string
   prompt?: string
@@ -43,6 +44,14 @@ export interface DockerCreateRequest {
   avatar?: string
   mounts?: SandboxMount[]
   extraEnv?: Record<string, string>
+  // When true, attach the container to the `ziggy_default` docker network,
+  // overlay-mount a per-agent .env at /home/gosub/code/ziggy/.env, and add a
+  // [mcp_servers.ziggy] entry to the per-agent codex config.toml so Codex
+  // launches the Ziggy MCP server as a STDIO subprocess. Requires
+  // /opt/stacks/ai-maestro/agent-envs/<name>.env to exist on the host with
+  // ZIGGY_PROFILE + DATABASE_URL set; createDockerAgent fails loudly if
+  // missing. See sandbox.ziggy on the persisted agent record.
+  ziggy?: boolean
   // Internal — set by recreateDockerAgent to migrate persisted claude/gh state
   // from the soft-deleted predecessor's per-UUID dir into the new agent's dir
   // BEFORE the container starts. Without this, /recreate's UUID rotation
@@ -69,19 +78,23 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // USER ever changes, update this and the Dockerfile together.
 const CONTAINER_HOME = '/home/claude'
 
-// Trusts the caller: sandbox.mounts is operator-declared today (e.g., agent
-// creation by the dashboard or a host operator). If this ever becomes user-
-// controlled (an agent mutating its own mounts, unprivileged operators), add
-// realpath + prefix-check against an allow-list of host roots before shelling.
-
 /**
- * Build the AI_TOOL command string for a Docker agent.
- * Extracted from createDockerAgent for testability.
+ * Build the AI_TOOL command string for a Docker agent (permission-mode aware).
+ * Extracted for testability (ported from upstream 23blocks).
  *
  * Resolution order for permission mode:
  *   1. body.permissionMode (explicit new field)
  *   2. body.yolo (legacy backward compat, maps to fullAutonomy)
  *   3. 'supervised' (default, no flag injected)
+ *
+ * NOTE: this helper uses `body.program` verbatim to preserve the exact
+ * upstream contract (e.g. `claude-code` stays `claude-code`). The two live
+ * AI_TOOL composition sites in this file (createDockerAgent +
+ * updateContainerMountsAndExtraEnv) deliberately continue to route the
+ * program through resolveStartCommand() so the antigravity→`agy` binary
+ * remap (PR-3 hotfix) is not lost. Migrating those sites to permissionMode
+ * is a separate, behavior-changing decision (see KAI flag in the
+ * reconciliation report) — do NOT silently rewire them here.
  */
 export function buildAiToolCommand(body: Pick<DockerCreateRequest, 'program' | 'permissionMode' | 'yolo' | 'programArgs' | 'model' | 'prompt'>): string {
   const program = body.program || 'claude'
@@ -104,7 +117,74 @@ export function buildAiToolCommand(body: Pick<DockerCreateRequest, 'program' | '
   return aiTool
 }
 
-export function validateMounts(mounts: SandboxMount[] | undefined): string | null {
+// Container paths reserved unconditionally — operator AND internal callers are
+// both forbidden from declaring mounts here. /workspace is the operator's
+// workingDirectory bind, owned by the docker run -v ${workDir}:/workspace flag.
+export const ALWAYS_RESERVED_CONTAINER_PATH_ROOTS: readonly string[] = ['/workspace']
+
+// Container paths AI Maestro itself mounts at docker-run time via the
+// buildAmpCommonMounts + buildCloud{Claude,Gemini,Codex}* skeletons. mergeMounts
+// is operator-wins on containerPath collision (line 973-976), so an operator-
+// declared mount under any of these would shadow the system mount and destroy
+// the agent's AMP identity / claude / gemini / codex state inside the container.
+// Reservation rejects collisions at validation time before mergeMounts gets to
+// silently swap them. Reservation matches the path EXACTLY or any descendant.
+export const OPERATOR_RESERVED_CONTAINER_PATH_ROOTS: readonly string[] = [
+  `${CONTAINER_HOME}/.agent-messaging`,  // AMP per-uuid state (buildAmpCommonMounts)
+  `${CONTAINER_HOME}/.aimaestro`,        // AMP per-uuid state + chat-state
+  `${CONTAINER_HOME}/.local`,            // shell-helpers, cli, .local/bin
+  `${CONTAINER_HOME}/.claude`,           // settings, .credentials.json, projects
+  `${CONTAINER_HOME}/.claude.json`,      // claude persist root config (file)
+  `${CONTAINER_HOME}/.gemini`,           // settings, oauth, tmp/<project>
+  `${CONTAINER_HOME}/.codex`,            // config.toml, version.json, auth.json
+  `${CONTAINER_HOME}/.config/gh`,        // gh credentials
+]
+
+// Env keys AI Maestro itself sets per-container via baseEnv (createDockerAgent
+// line ~1242, updateContainerMountsAndExtraEnv line ~1740) + buildAmpCommonEnv.
+// mergeEnv is operator-wins on key collision (line 980-982), so operator-
+// declared extraEnv with these keys would override agent identity (AGENT_ID,
+// TMUX_SESSION_NAME, AI_TOOL, AIMAESTRO_HOST_URL) or AMP routing (AMP_*,
+// CLAUDE_AGENT_*, PATH, GEMINI_CLI_TRUST_WORKSPACE) inside the container —
+// every outbound AMP message becomes unverifiable.
+//
+// NOT reserved: HOME (legitimate operator override for Shape β agent-home),
+// GITHUB_TOKEN (operator may want to set/rotate via extraEnv as an alternative
+// to body.githubToken at create time).
+export const OPERATOR_RESERVED_ENV_KEYS: readonly string[] = [
+  'TMUX_SESSION_NAME',
+  'AI_TOOL',
+  'AGENT_ID',
+  'AIMAESTRO_HOST_URL',
+  'CLAUDE_AGENT_ID',
+  'CLAUDE_AGENT_NAME',
+  'AMP_AGENT_ID',
+  'AMP_DIR',
+  'AMP_MAESTRO_URL',
+  'PATH',
+  'GEMINI_CLI_TRUST_WORKSPACE',
+]
+
+function findReservedRoot(p: string, roots: readonly string[]): string | null {
+  for (const r of roots) {
+    if (p === r || p.startsWith(`${r}/`)) return r
+  }
+  return null
+}
+
+// Trusts the caller: sandbox.mounts is operator-declared today (e.g., agent
+// creation by the dashboard or a host operator). If this ever becomes user-
+// controlled (an agent mutating its own mounts, unprivileged operators), add
+// realpath + prefix-check against an allow-list of host roots before shelling.
+//
+// `options.operatorSupplied` enables the reservation check against
+// OPERATOR_RESERVED_CONTAINER_PATH_ROOTS — call sites that hand internal
+// system-mount builders' output through this validator (tests, internal
+// merges) MUST omit the flag to avoid self-rejection.
+export function validateMounts(
+  mounts: SandboxMount[] | undefined,
+  options: { operatorSupplied?: boolean } = {}
+): string | null {
   if (!mounts) return null
   for (const [i, m] of mounts.entries()) {
     if (typeof m?.hostPath !== 'string' || typeof m?.containerPath !== 'string') {
@@ -116,14 +196,27 @@ export function validateMounts(mounts: SandboxMount[] | undefined): string | nul
     if (UNSAFE_PATH_CHARS.test(m.hostPath) || UNSAFE_PATH_CHARS.test(m.containerPath)) {
       return `mounts[${i}]: paths must not contain quotes, backticks, $, backslashes, or newlines`
     }
-    if (m.containerPath === '/workspace') {
-      return `mounts[${i}]: /workspace is reserved for the agent working directory`
+    const alwaysReserved = findReservedRoot(m.containerPath, ALWAYS_RESERVED_CONTAINER_PATH_ROOTS)
+    if (alwaysReserved) {
+      return `mounts[${i}]: containerPath "${m.containerPath}" is reserved (${alwaysReserved} is the agent working directory)`
+    }
+    if (options.operatorSupplied) {
+      const operatorReserved = findReservedRoot(m.containerPath, OPERATOR_RESERVED_CONTAINER_PATH_ROOTS)
+      if (operatorReserved) {
+        return `mounts[${i}]: containerPath "${m.containerPath}" is reserved by AI Maestro (matches "${operatorReserved}") — operator-declared mounts cannot shadow AMP common mounts or claude/gemini/codex state, these are managed automatically per-agent`
+      }
     }
   }
   return null
 }
 
-export function validateExtraEnv(env: Record<string, string> | undefined): string | null {
+// `options.operatorSupplied` enables the reservation check against
+// OPERATOR_RESERVED_ENV_KEYS — call sites that hand internal env (baseEnv,
+// buildAmpCommonEnv output) through this validator MUST omit the flag.
+export function validateExtraEnv(
+  env: Record<string, string> | undefined,
+  options: { operatorSupplied?: boolean } = {}
+): string | null {
   if (!env) return null
   for (const [key, value] of Object.entries(env)) {
     if (!ENV_KEY_RE.test(key)) {
@@ -134,6 +227,9 @@ export function validateExtraEnv(env: Record<string, string> | undefined): strin
     }
     if (UNSAFE_ENV_VALUE_CHARS.test(value)) {
       return `extraEnv["${key}"]: value must not contain quotes, backticks, $, backslashes, or newlines`
+    }
+    if (options.operatorSupplied && OPERATOR_RESERVED_ENV_KEYS.includes(key)) {
+      return `extraEnv["${key}"]: key is reserved by AI Maestro — operator-declared extraEnv cannot shadow agent identity (AGENT_ID, TMUX_SESSION_NAME, AI_TOOL, AIMAESTRO_HOST_URL) or AMP routing (AMP_*, CLAUDE_AGENT_*, PATH, GEMINI_CLI_TRUST_WORKSPACE)`
     }
   }
   return null
@@ -313,8 +409,24 @@ export function provisionCloudClaudeConfig(
   // Combined with the RW mount below, this also lets claude write OTHER
   // settings.json keys (allowedTools, model preferences) and have them
   // persist across the container's lifetime.
+  // statusLine: Claude Code renders the configured command's stdout as the
+  // 2-line status block between the prompt and the tmux status bar (agent
+  // identity + unread count on line 1, model + ctx% + cost on line 2). Host
+  // agents have this wired via the operator's ~/.claude/settings.json. Cloud
+  // agents had a blank where this block sits because the seeded settings.json
+  // omitted statusLine — host/cloud UX-parity gap (kanban 172e170d). Ships
+  // amp-statusline.sh via the existing scripts/ bind mount at
+  // /home/claude/.local/share/aimaestro/cli/ (buildAmpCommonMounts line ~178,
+  // sister to meeting-send.sh / meeting-task.sh shipping pattern from 0d80aed7).
+  // Container env (buildAmpCommonEnv) exposes AMP_AGENT_ID so the script's
+  // priority-1 resolution fires without needing the host-side .index.json
+  // (not mounted per-agent).
   const settings = {
     skipDangerousModePermissionPrompt: true,
+    statusLine: {
+      type: 'command',
+      command: '/home/claude/.local/share/aimaestro/cli/amp-statusline.sh',
+    },
     hooks: {
       Notification: [
         {
@@ -590,7 +702,7 @@ export function buildCloudGeminiSettingsMount(
 export function provisionCloudCodexConfig(
   agentId: string,
   hostHome: string = os.homedir()
-): { versionPath: string; configTomlPath: string } {
+): { versionPath: string; configTomlPath: string; hooksPath: string } {
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
   fs.mkdirSync(agentDir, { recursive: true })
   const versionPath = path.join(agentDir, 'codex-version.json')
@@ -609,7 +721,11 @@ export function provisionCloudCodexConfig(
       'trust_level = "trusted"\n'
     fs.writeFileSync(configTomlPath, configToml, { mode: 0o600 })
   }
-  return { versionPath, configTomlPath }
+  const hooksPath = path.join(agentDir, 'codex-hooks.json')
+  if (!fs.existsSync(hooksPath)) {
+    fs.writeFileSync(hooksPath, '{}\n', { mode: 0o600 })
+  }
+  return { versionPath, configTomlPath, hooksPath }
 }
 
 // File-level bind mount for the per-agent codex config.toml. Mount target
@@ -624,6 +740,31 @@ export function buildCloudCodexConfigTomlMount(
   return {
     hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-config.toml'),
     containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'config.toml'),
+  }
+}
+
+// File-level bind mount for the per-agent codex hooks.json. Mount target
+// parent (/home/claude/.codex) is pre-created in agent-container/Dockerfile
+// alongside config.toml + auth.json.
+//
+// Codex reads hook definitions from ~/.codex/hooks.json at session start
+// (verified against developers.openai.com/codex/hooks 2026-05-27). Schema:
+// { "hooks": { "<EventName>": [ { "hooks": [ { "type": "command", "command": "..." } ] } ] } }
+//
+// RW: codex itself doesn't rewrite hooks.json today, but the operator (or
+// a future ai-maestro helper) may edit it from inside the container; RW
+// keeps that path open and matches the config.toml mount mode.
+//
+// Default skeleton is "{}" — no hooks active. Operators wiring a
+// UserPromptSubmit recall hook (e.g., Ziggy memory injection) populate
+// this file post-create. Per-agent isolation unchanged.
+export function buildCloudCodexHooksMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-hooks.json'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'hooks.json'),
   }
 }
 
@@ -758,6 +899,245 @@ export function buildCloudGeminiOAuthMount(
   }
 }
 
+// Single-dir bind mount (OPT-B, kanban 49cc27d7) for Antigravity CLI (`agy`)
+// app-data. agy stores conversations + auth + settings + brain/knowledge/
+// implicit state under ~/.gemini/antigravity-cli/ — coexists with
+// gemini-cli's tree but in a separate subdir owned by a different vendor
+// (Codeium). Single mount over the entire dir intentionally:
+//
+//   - Inode-safe under OAuth token refresh. agy's antigravity-oauth-token
+//     rotates atomically via temp+rename; file-level bind mounts (as used
+//     for gemini oauth_creds.json) would stale silently on rename. Dir-mount
+//     survives because the rename happens INSIDE the bind-mount surface.
+//     See [[feedback_docker_file_mount_inode]].
+//
+//   - Insulates against future agy-internal-layout drift. v1.0.1 is brand-new
+//     and the on-disk layout under antigravity-cli/ will shift in early
+//     releases — single dir-mount captures whatever shape the binary writes
+//     without per-file plumbing churn.
+//
+//   - No provisioning hook today. agy's settings.json starts empty/76B and
+//     conversations/ starts empty. Add provisionCloudAntigravityConfig only
+//     when a real seed need surfaces (e.g., agy ships an auto-update we want
+//     to suppress, sibling to provisionCloudGeminiConfig's enableAutoUpdate
+//     seed).
+//
+//   - Operator-reserved-path coverage: CONTAINER_HOME/.gemini already
+//     blocks operator-declared mounts under .gemini/ (line 86), so this
+//     mount's containerPath descends from a reserved root automatically.
+//     No new entry needed in OPERATOR_RESERVED_CONTAINER_PATH_ROOTS.
+export function buildCloudAntigravityAppDataMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'antigravity-app-data'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.gemini', 'antigravity-cli'),
+  }
+}
+
+// ─── Ziggy MCP integration (sandbox.ziggy=true) ──────────────────────────
+//
+// Mounts + provisioning that wire a cloud agent to reach the host's Ziggy MCP
+// server. Gate: agent.deployment.sandbox.ziggy === true. Composed at create
+// time and on every /update-runtime so /recreate is naturally idempotent.
+//
+// Design summary (Hutch + Watson 2026-05-27, kanban TBD):
+//
+//   - Codex (or any MCP-aware program) spawns the Ziggy MCP server as a STDIO
+//     subprocess via [mcp_servers.ziggy] in ~/.codex/config.toml. The command
+//     points at `/home/gosub/code/ziggy/apps/mcp-server/bin/start.sh` — the
+//     same script Rollie (host agent) uses today.
+//
+//   - The MCP server reads creds + workspace routing from
+//     /home/gosub/code/ziggy/.env. That host file is currently Rollie-flavored
+//     (DATABASE_URL points at the rollie-specific Postgres DB on port 5434),
+//     so we OVERLAY a per-agent .env at the same in-container path. Docker
+//     file-bind shadows the underlying file from Mount A; start.sh sources
+//     the overlay and has no awareness of the host's Rollie defaults.
+//
+//   - The MCP server connects to Postgres via the docker bridge network
+//     `ziggy_default` where `ziggy-postgres` resolves by service name. That
+//     requires the agent container to attach to the network (--network
+//     ziggy_default in dockerCmd composition).
+//
+// Operator pre-flight: /opt/stacks/ai-maestro/agent-envs/<agent-name>.env must
+// exist on host with at least ZIGGY_PROFILE and DATABASE_URL. ai-maestro
+// REFUSES to start the container if missing (silent-empty-mount creation was
+// the codex-auth.json bug Shane hit at create time; not repeating it).
+
+// Network name used by docker compose for the Ziggy stack (ziggy-web +
+// ziggy-postgres). Verified live 2026-05-27 — bridge driver, 172.19.0.0/16.
+export const ZIGGY_NETWORK = 'ziggy_default'
+
+// Host path where the Ziggy repo lives. start.sh derives ZIGGY_ROOT from its
+// own location, so the in-container path MUST match the host path verbatim
+// (no `/opt/ziggy-mcp` remap). Bind-mount source AND target use this path.
+export const ZIGGY_CODE_PATH = '/home/gosub/code/ziggy'
+
+// Directory on host where ai-maestro looks for per-agent .env overlay files.
+// One file per agent, named `<agent.name>.env` (agent.name is already a slug
+// matching `^[a-zA-Z0-9_-]+$` so it's safe in a filesystem path without
+// further escaping). Owner: operator (Shane / Hutch). ai-maestro never
+// writes to this directory — only reads at update-runtime/create time to
+// verify the file exists before adding the overlay mount.
+//
+// Operator note on RENAMES: the env file is keyed on agent.name, NOT
+// agent.id. If an agent is renamed, the operator must rename the env file
+// to match — the next /update-runtime or /recreate will loud-fail with a
+// clear error message until they do. Intentional: keying on the operator-
+// readable name keeps the env files discoverable and the loud-fail catches
+// the missed rename immediately rather than silently sourcing an empty
+// overlay. Per Hutch ops review PR #157.
+export const ZIGGY_AGENT_ENVS_DIR = '/opt/stacks/ai-maestro/agent-envs'
+
+// Read-only bind of the Ziggy repo into the container at the same absolute
+// path as on host. start.sh expects to find apps/mcp-server siblings (..bin,
+// ../src, ../node_modules, ../../.env). Read-only: agents never mutate the
+// shared Ziggy source.
+export function buildZiggyCodeMount(): SandboxMount {
+  return {
+    hostPath: ZIGGY_CODE_PATH,
+    containerPath: ZIGGY_CODE_PATH,
+    readOnly: true,
+  }
+}
+
+// Per-agent .env overlay. Source: /opt/stacks/ai-maestro/agent-envs/<name>.env.
+// Target: ${ZIGGY_CODE_PATH}/.env (shadows the host file from buildZiggyCodeMount
+// for this container only). Read-only — start.sh only sources it.
+export function buildZiggyEnvOverlayMount(agentName: string): SandboxMount {
+  return {
+    hostPath: path.join(ZIGGY_AGENT_ENVS_DIR, `${agentName}.env`),
+    containerPath: path.posix.join(ZIGGY_CODE_PATH, '.env'),
+    readOnly: true,
+  }
+}
+
+// Append a [mcp_servers.ziggy] block to the per-agent codex config.toml if
+// not already present. Idempotent — safe to call on every recreate /
+// update-runtime. The block uses STDIO transport per
+// developers.openai.com/codex/mcp (verified 2026-05-27):
+//
+//   [mcp_servers.ziggy]
+//   command = "<ZIGGY_CODE_PATH>/apps/mcp-server/bin/start.sh"
+//
+// ZIGGY_PROFILE + DATABASE_URL come from the overlay-mounted .env, NOT from
+// codex's [mcp_servers.ziggy].env — start.sh's `set -a` env-loop would
+// clobber any env var we pass via Codex anyway. Centralizing all env in the
+// overlay .env is the cleaner single-source.
+export function provisionCloudCodexZiggyMcpEntry(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { configTomlPath: string; mcpBlockAdded: boolean } {
+  const configTomlPath = path.join(
+    hostHome,
+    '.aimaestro',
+    'agents',
+    agentId,
+    'codex-config.toml',
+  )
+  // provisionCloudCodexConfig must have run first (it creates the file with
+  // the [projects."/workspace"] trust block). If absent, write a minimal
+  // file containing only the MCP block — codex tolerates missing trust block.
+  let existing = ''
+  if (fs.existsSync(configTomlPath)) {
+    existing = fs.readFileSync(configTomlPath, 'utf-8')
+    if (existing.includes('[mcp_servers.ziggy]')) {
+      return { configTomlPath, mcpBlockAdded: false }
+    }
+  }
+  const startScript = path.posix.join(ZIGGY_CODE_PATH, 'apps', 'mcp-server', 'bin', 'start.sh')
+  const block =
+    (existing.endsWith('\n') || existing === '' ? '' : '\n') +
+    '\n[mcp_servers.ziggy]\n' +
+    `command = "${startScript}"\n`
+  fs.writeFileSync(configTomlPath, existing + block, { mode: 0o600 })
+  return { configTomlPath, mcpBlockAdded: true }
+}
+
+// Bind-mount for the post-restoration-ready sentinel (kanban fcabb870). The
+// host writes `${agentDir}/restoration/complete` at the end of
+// createDockerAgent / updateContainerMountsAndExtraEnv, after all mount prep
+// and registry writes resolve. The container's agent-server.js polls
+// /restoration-ready/complete pre-tmux-init and blocks AI_TOOL launch until
+// it appears (or its 10s timeout elapses). Closes the Han EACCES race where
+// docker run + tmux send-keys would fire before host-side prep finished.
+export function buildCloudRestorationSentinelMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'restoration'),
+    containerPath: '/restoration-ready',
+    // Container side only READS the sentinel — principle of least privilege.
+    // Host owns all writes via writeRestorationSentinel / clearRestorationSentinel.
+    // CelestIA polish on PR #154 (kanban fcabb870).
+    readOnly: true,
+  }
+}
+
+const RESTORATION_SENTINEL_FILENAME = 'complete'
+
+/**
+ * Remove a stale restoration-ready sentinel so the next container start
+ * observes only the fresh write. Called by updateContainerMountsAndExtraEnv
+ * BEFORE `docker stop` so the new container coming up after `docker run`
+ * can't false-positive on the previous run's sentinel during its boot
+ * window. Best-effort: missing file (ENOENT) is the success case and not
+ * logged. Real failures (permission) are logged warning, not thrown — the
+ * worst case is the new container observes a stale sentinel and skips its
+ * wait, which is the pre-fcabb870 behavior we're already living with.
+ */
+export function clearRestorationSentinel(agentId: string, hostHome: string = os.homedir()): void {
+  const sentinelPath = path.join(
+    hostHome,
+    '.aimaestro',
+    'agents',
+    agentId,
+    'restoration',
+    RESTORATION_SENTINEL_FILENAME,
+  )
+  try {
+    fs.unlinkSync(sentinelPath)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') {
+      console.warn(
+        `[restoration-sentinel] could not unlink ${sentinelPath}:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
+}
+
+/**
+ * Write the restoration-ready sentinel to signal the container that all
+ * host-side prep is complete and the AI tool can safely launch. Called
+ * at the END of createDockerAgent and updateContainerMountsAndExtraEnv,
+ * after mount mkdirSync, provisioning, registry writes, and stale-flag
+ * clears all resolve. mkdirSync first to handle fresh-create (no prior
+ * mount-prep loop ran for the sentinel dir). Best-effort: a write failure
+ * leaves the container blocked on its 10s timeout — fail-loud both sides,
+ * but startup recovers.
+ */
+export function writeRestorationSentinel(agentId: string, hostHome: string = os.homedir()): void {
+  const sentinelDir = path.join(hostHome, '.aimaestro', 'agents', agentId, 'restoration')
+  try {
+    fs.mkdirSync(sentinelDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(sentinelDir, RESTORATION_SENTINEL_FILENAME),
+      new Date().toISOString() + '\n',
+      { mode: 0o644 },
+    )
+  } catch (err) {
+    console.warn(
+      `[restoration-sentinel] could not write sentinel for ${agentId}:`,
+      err instanceof Error ? err.message : err,
+    )
+  }
+}
+
 // Migrate per-agent persisted claude/gh state from a predecessor UUID dir to
 // a new agent's dir. Used by recreateDockerAgent to bridge the UUID rotation:
 // /recreate soft-deletes the old agent (rotating to a fresh UUID per audit-
@@ -837,6 +1217,12 @@ export function migrateAgentPersistence(
     // same survival-on-recreate semantic as claude-projects but for the
     // ~/.gemini/tmp/<project>/chats/ bind-mount source.
     'gemini-chats',
+    // Antigravity (agy) full app-data tree under ~/.gemini/antigravity-cli/
+    // — single-dir OPT-B mount (kanban 49cc27d7). Carries forward
+    // antigravity-oauth-token, conversations/, brain/, knowledge/,
+    // implicit/, settings.json, installation_id, keybindings.json so a
+    // logged-in agy session survives /recreate UUID rotation.
+    'antigravity-app-data',
   ]
   for (const name of dirAssets) {
     const src = path.join(fromDir, name)
@@ -953,6 +1339,22 @@ export function buildCloudGeminiReadthroughMounts(
 // scripts-dir bind mount in buildAmpCommonMounts (kanban 0d80aed7).
 const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:${CONTAINER_HOME}/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
 
+// Per-container agent-identity env (TMUX session, AI program, agent id, host
+// URL) that every cloud agent needs regardless of provider. createDockerAgent
+// and updateContainerMountsAndExtraEnv both layer this in BEFORE buildAmpCommonEnv
+// + operator extraEnv. Operator override of these keys would fake agent identity
+// inside the container; the keys are reserved against operator override in
+// OPERATOR_RESERVED_ENV_KEYS (and the reservation-completeness test in
+// agents-docker-service.test.ts forces the two lists to stay in sync).
+export function buildBaseAgentEnv(agentName: string, aiTool: string, hostUrl: string): Record<string, string> {
+  return {
+    TMUX_SESSION_NAME: agentName,
+    AI_TOOL: aiTool,
+    AGENT_ID: agentName,
+    AIMAESTRO_HOST_URL: hostUrl,
+  }
+}
+
 // AMP common envs tell amp-helper.sh exactly which agent identity dir to use
 // (priority 1 of its resolution order) and where to reach the AI Maestro server
 // from inside the container (host.docker.internal is added via --add-host).
@@ -968,6 +1370,13 @@ export function buildAmpCommonEnv(agentId: string, agentName: string, hostUrl: s
   return {
     CLAUDE_AGENT_ID: agentId,
     CLAUDE_AGENT_NAME: agentName,
+    // AMP_AGENT_ID aliases CLAUDE_AGENT_ID for amp-statusline.sh's priority-1
+    // resolution path (kanban 172e170d). The script checks AMP_AGENT_ID first
+    // then falls back to CLAUDE_AGENT_NAME + an index lookup that requires
+    // ~/.agent-messaging/.index.json — but only the per-agent subdir is bind-
+    // mounted into the container, not the index. Direct AMP_AGENT_ID bypasses
+    // the index entirely and reads the per-agent config.json (which IS mounted).
+    AMP_AGENT_ID: agentId,
     AMP_DIR: path.posix.join(CONTAINER_HOME, '.agent-messaging', 'agents', agentId),
     AMP_MAESTRO_URL: hostUrl,
     PATH: CONTAINER_PATH,
@@ -1148,12 +1557,12 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return missingField('name')
   }
 
-  const mountError = validateMounts(body.mounts)
+  const mountError = validateMounts(body.mounts, { operatorSupplied: true })
   if (mountError) {
     return invalidRequest(mountError)
   }
 
-  const envError = validateExtraEnv(body.extraEnv)
+  const envError = validateExtraEnv(body.extraEnv, { operatorSupplied: true })
   if (envError) {
     return invalidRequest(envError)
   }
@@ -1214,14 +1623,62 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return serviceError('operation_failed', 'No available ports in range 23001-23100', 503)
   }
 
-  // Build the AI_TOOL environment variable
-  const aiTool = buildAiToolCommand(body)
+  // Build the AI_TOOL environment variable. Resolve the program identifier
+  // to its in-container binary name BEFORE composing — for most programs
+  // (claude/codex/gemini/aider/cursor/opencode) the identifier == binary, but
+  // antigravity → `agy` so a verbatim `program` would bake an unrunnable
+  // command into AI_TOOL and agent-server.js:167's `unset CI && ${AI_TOOL}`
+  // wake-line would fail with `command not found: antigravity`. PR-3 hotfix.
   const program = body.program || 'claude'
+  let aiTool = resolveStartCommand(program)
+  if (body.yolo) {
+    aiTool += ' --dangerously-skip-permissions'
+  }
+  if (body.programArgs) {
+    const sanitizedArgs = body.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+    if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
+  }
+  if (body.model) {
+    aiTool += ` --model ${body.model}`
+  }
+  if (body.prompt) {
+    const escapedPrompt = body.prompt.replace(/'/g, "'\\''")
+    aiTool += ` -p '${escapedPrompt}'`
+  }
 
   const containerName = `aim-${name}`
   const workDir = body.workingDirectory || '/tmp'
   const cpus = body.cpus || 2
   const memory = body.memory || '4g'
+  const useZiggy = body.ziggy === true
+
+  // Validate the operator pre-flight for Ziggy MCP integration BEFORE doing
+  // any destructive docker work or registry writes. The per-agent .env at
+  // /opt/stacks/ai-maestro/agent-envs/<name>.env must exist with at least
+  // ZIGGY_PROFILE + DATABASE_URL — start.sh sources it via the overlay mount,
+  // and a missing file would either make docker create the mount source as a
+  // root-owned empty dir (breaking the bind) or yield an MCP server that
+  // silently inherits Rollie's host .env. Fail loudly here is better than
+  // either failure mode.
+  if (useZiggy) {
+    try {
+      fs.mkdirSync(ZIGGY_AGENT_ENVS_DIR, { recursive: true })
+    } catch (err) {
+      console.warn(
+        `[Docker Service] Could not mkdir ${ZIGGY_AGENT_ENVS_DIR}:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+    const envFilePath = path.join(ZIGGY_AGENT_ENVS_DIR, `${name}.env`)
+    if (!fs.existsSync(envFilePath)) {
+      return invalidRequest(
+        `sandbox.ziggy=true requires a per-agent env file at ${envFilePath}. ` +
+          'Create it on the host with ZIGGY_PROFILE=default and ' +
+          `DATABASE_URL=postgresql://ziggy:<password>@ziggy-postgres:5432/ziggy (pw from /opt/stacks/ziggy/.env), ` +
+          'then retry. See services/agents-docker-service.ts ZIGGY_AGENT_ENVS_DIR comment for the design.',
+      )
+    }
+  }
 
   // Pre-generate the agent UUID so AMP common mounts and CLAUDE_AGENT_ID can
   // reference it on first container start. createAgent below accepts an
@@ -1237,12 +1694,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const hostPort = process.env.PORT || '23000'
   const hostInternalUrl = `http://host.docker.internal:${hostPort}`
 
-  const baseEnv: Record<string, string> = {
-    TMUX_SESSION_NAME: name,
-    AI_TOOL: aiTool,
-    AGENT_ID: name,
-    AIMAESTRO_HOST_URL: hostInternalUrl,
-  }
+  const baseEnv: Record<string, string> = buildBaseAgentEnv(name, aiTool, hostInternalUrl)
   if (body.githubToken) {
     baseEnv.GITHUB_TOKEN = body.githubToken
   }
@@ -1252,13 +1704,15 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const ampMounts = buildAmpCommonMounts(agentId)
   const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
   const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
+  const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
+  const restorationSentinelMount = buildCloudRestorationSentinelMount(agentId)
 
   // Pre-create host-side dirs that are about to be bind-mounted. If the host
   // path doesn't exist, docker creates it as a root-owned empty directory,
   // which (a) leaves the container's claude (uid 1000) unable to write keys
   // and (b) silently masks the missing-identity failure. We create them as the
   // server process user (uid matches the container's claude user by convention).
-  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts]) {
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount, restorationSentinelMount]) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -1314,6 +1768,13 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud codex auth:', err instanceof Error ? err.message : err)
   }
+  if (useZiggy) {
+    try {
+      provisionCloudCodexZiggyMcpEntry(agentId)
+    } catch (err) {
+      console.warn('[Docker Service] Could not provision cloud codex ziggy MCP entry:', err instanceof Error ? err.message : err)
+    }
+  }
   const mergedMounts = mergeMounts(
     [
       ...ampMounts,
@@ -1323,9 +1784,13 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       buildCloudGeminiSettingsMount(agentId),
       buildCloudGeminiOAuthMount(agentId),
       ...geminiReadthroughMounts,
+      buildCloudAntigravityAppDataMount(agentId),
       buildCloudCodexVersionMount(agentId),
       buildCloudCodexAuthMount(agentId),
       buildCloudCodexConfigTomlMount(agentId),
+      buildCloudCodexHooksMount(agentId),
+      ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(name)] : []),
+      restorationSentinelMount,
     ],
     body.mounts
   )
@@ -1334,11 +1799,26 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     'docker run -d',
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
+    // Container hardening (ported from upstream 23blocks): drop all Linux
+    // capabilities, then add back only the minimal set an agent container
+    // needs (bind <1024, setuid/setgid for the entrypoint user-drop, chown/
+    // fowner/dac_override for per-UUID home merges); forbid privilege
+    // escalation; and pin a small noexec/nosuid tmpfs over the container's
+    // /tmp. NOTE: --tmpfs /tmp is FLAGGED for empirical container-image
+    // verification before the live 3-host deploy (noexec + 100m cap could
+    // break tooling that execs/spills into /tmp). See KAI reconciliation flag.
     '--cap-drop=ALL',
     '--cap-add=NET_BIND_SERVICE --cap-add=SETGID --cap-add=SETUID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER',
     '--security-opt no-new-privileges',
     '--tmpfs /tmp:noexec,nosuid,size=100m',
     body.autoRemove ? '' : '--restart unless-stopped',
+    // Single-network attach when useZiggy=true: container joins ziggy_default
+    // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
+    // filesystem (not Docker DNS), so isolation is fine today. If a future
+    // feature needs container-to-container DNS for non-Ziggy agents, attach
+    // the default bridge via `docker network connect bridge <container>`
+    // post-create. Per Hutch ops review PR #157 note A.
+    useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
     ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,
     ...buildMountFlags(mergedMounts),
@@ -1373,7 +1853,6 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       programArgs: body.programArgs,
       taskDescription: body.prompt || '',
       workingDirectory: workDir,
-      runtime: 'docker',
       createSession: true,
       deploymentType: 'cloud',
       hostId: body.hostId,
@@ -1382,6 +1861,28 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     const agents = loadAgents()
     const idx = agents.findIndex(a => a.id === agent.id)
     if (idx !== -1) {
+      // Persist runtime config (cpus/memory/autoRemove/extraEnv) so recreate
+      // and the mid-life /update-runtime endpoint can rebuild docker run with
+      // the operator's original sizing + env, not the create defaults. Omit
+      // the runtime sub-object entirely when nothing was supplied to keep
+      // legacy agent records identical on the on-disk shape.
+      const runtime: NonNullable<NonNullable<Agent['deployment']['cloud']>['runtime']> = {}
+      if (body.cpus !== undefined) runtime.cpus = body.cpus
+      if (body.memory !== undefined) runtime.memory = body.memory
+      if (body.autoRemove !== undefined) runtime.autoRemove = body.autoRemove
+      if (body.extraEnv && Object.keys(body.extraEnv).length > 0) runtime.extraEnv = body.extraEnv
+      const hasRuntime = Object.keys(runtime).length > 0
+
+      // Persisted sandbox block: operator mounts (recreated from body.mounts
+      // on recreate) + ziggy flag (drives --network ziggy_default attach +
+      // overlay-mount provisioning). AMP/program-specific common mounts are
+      // re-synthesized deterministically at every redeploy and never stored
+      // here — see the comment block on this function and the helper docstrings.
+      const sandboxBlock: NonNullable<Agent['deployment']>['sandbox'] = {}
+      if (body.mounts && body.mounts.length > 0) sandboxBlock.mounts = body.mounts
+      if (useZiggy) sandboxBlock.ziggy = true
+      const hasSandbox = Object.keys(sandboxBlock).length > 0
+
       agents[idx].deployment = {
         type: 'cloud',
         cloud: {
@@ -1390,10 +1891,9 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
           websocketUrl: `ws://localhost:${port}/term`,
           healthCheckUrl: `http://localhost:${port}/health`,
           status: 'running',
+          ...(hasRuntime ? { runtime } : {}),
         },
-        ...(body.mounts && body.mounts.length > 0
-          ? { sandbox: { mounts: body.mounts } }
-          : {}),
+        ...(hasSandbox ? { sandbox: sandboxBlock } : {}),
       }
       saveAgents(agents)
     }
@@ -1408,6 +1908,13 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   } catch (err) {
     console.warn('[Docker Service] AMP bootstrap threw:', err instanceof Error ? err.message : err)
   }
+
+  // Signal the running container that all host-side prep is done. agent-server.js
+  // (via restoration-gate.cjs) is polling for this sentinel before tmux init
+  // fires AI_TOOL. Best-effort write — a failure here leaves the container
+  // blocked on its 10s timeout, then it proceeds with a warning. See kanban
+  // fcabb870.
+  writeRestorationSentinel(agentId)
 
   return {
     data: {
@@ -1433,6 +1940,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
  * NOT included — they regenerate inside createDockerAgent.
  */
 export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
+  const runtime = oldAgent.deployment?.cloud?.runtime
   return {
     name: oldAgent.name,
     label: oldAgent.label,
@@ -1443,6 +1951,11 @@ export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
     model: oldAgent.model,
     workingDirectory: oldAgent.workingDirectory,
     mounts: oldAgent.deployment?.sandbox?.mounts,
+    ziggy: oldAgent.deployment?.sandbox?.ziggy,
+    cpus: runtime?.cpus,
+    memory: runtime?.memory,
+    autoRemove: runtime?.autoRemove,
+    extraEnv: runtime?.extraEnv,
   }
 }
 
@@ -1466,7 +1979,6 @@ export const RECREATE_PRESERVED_FIELDS = [
   'preferences',
   'meshAware',
   'owner',
-  'permissionMode',
 ] as const
 
 /**
@@ -1599,6 +2111,465 @@ export async function recreateDockerAgent(
       preservedFields: RECREATE_PRESERVED_FIELDS.filter(f => (oldAgent as unknown as Record<string, unknown>)[f] !== undefined),
     },
     status: result.status,
+  }
+}
+
+/**
+ * Parse the host-side port from a websocketUrl like "ws://localhost:23042/term".
+ * Returns null if the URL is missing or unparseable.
+ */
+export function parsePortFromWebsocketUrl(url: string | undefined): number | null {
+  if (!url) return null
+  const match = url.match(/:(\d+)\//)
+  if (!match) return null
+  const port = parseInt(match[1], 10)
+  return Number.isFinite(port) ? port : null
+}
+
+export interface UpdateRuntimeConfig {
+  mounts?: SandboxMount[]            // Replace operator-supplied mounts wholesale (omit to keep existing)
+  extraEnv?: Record<string, string>  // Replace operator-supplied extraEnv wholesale (omit to keep existing)
+  // Toggle ziggy_default network attach + Ziggy MCP overlay mounts. Omit to
+  // leave the existing agent.deployment.sandbox.ziggy untouched. Explicit
+  // false clears the flag; true sets it and requires the per-agent env file
+  // at /opt/stacks/ai-maestro/agent-envs/<name>.env to exist on host.
+  ziggy?: boolean
+}
+
+/**
+ * Update an existing cloud agent's container mounts and/or extraEnv without
+ * rotating its UUID, AMP keypair, or per-agent state directory.
+ *
+ * Stops + removes the existing container by name, rebuilds the docker run
+ * invocation from the agent record (program, programArgs, model,
+ * workingDirectory, sandbox.mounts, cloud.runtime) with the requested
+ * `config` overrides applied, runs a fresh container under the SAME
+ * containerName + port + websocketUrl, then persists the new mounts/extraEnv
+ * onto the agent record.
+ *
+ * Why this exists: /recreate intentionally rotates the audit-trail UUID
+ * (see recreateDockerAgent), which forces a new AMP keypair, fresh per-agent
+ * state dir, and breaks long-lived references (peer caches, kanban
+ * assignments, dashboards). Operator-driven mid-life mutations — adding a
+ * code mount, overriding HOME for the Shape β agent-home convention — do
+ * NOT need an audit-trail event; they only need the docker run command
+ * rebuilt with the new flags. Going through /recreate for these would burn
+ * UUID rotation per mount, which is unacceptable for routine config edits.
+ *
+ * Atomicity caveat: same shape as recreateDockerAgent — stop+rm + run is
+ * best-effort. If docker run fails after stop+rm, the operator is left with
+ * the container gone but the registry still pointing at the old config.
+ * Recovery: rerun update-runtime with corrected inputs, or /recreate to
+ * fully re-provision (UUID rotation cost). Failure is rare in practice
+ * (mirrors recreate's exposure).
+ *
+ * Limitations matched to /recreate: yolo, prompt, and dashboard-supplied
+ * githubToken are not persisted on the agent record, so a rebuild loses
+ * them. To carry these forward, set them in programArgs or extraEnv.
+ *
+ * Pass `mounts: undefined` to leave the operator-mount list untouched. Same
+ * for `extraEnv`. Pass `mounts: []` or `extraEnv: {}` to explicitly clear.
+ */
+export async function updateContainerMountsAndExtraEnv(
+  agentId: string,
+  config: UpdateRuntimeConfig
+): Promise<ServiceResult<Record<string, unknown>>> {
+  const agent = getAgent(agentId, true)
+  if (!agent) return notFound('Agent', agentId)
+  if (agent.deletedAt) return gone('Agent')
+
+  if (agent.deployment?.type !== 'cloud' || agent.deployment.cloud?.provider !== 'local-container') {
+    return invalidState(
+      `update-runtime is only supported for cloud agents with provider 'local-container' (agent ${agentId} is type=${agent.deployment?.type ?? 'unset'}, provider=${agent.deployment?.cloud?.provider ?? 'unset'})`
+    )
+  }
+
+  // Validate the operator-supplied mounts/extraEnv before doing any destructive
+  // docker work. Empty arrays/objects are valid (= "clear"), so only validate
+  // when the caller actually supplied a value.
+  if (config.mounts !== undefined) {
+    const mountError = validateMounts(config.mounts, { operatorSupplied: true })
+    if (mountError) return invalidRequest(mountError)
+  }
+  if (config.extraEnv !== undefined) {
+    const envError = validateExtraEnv(config.extraEnv, { operatorSupplied: true })
+    if (envError) return invalidRequest(envError)
+  }
+
+  try {
+    await execAsync("docker version --format '{{.Server.Version}}'", { timeout: 5000 })
+  } catch {
+    return invalidRequest('Docker is not available on this host')
+  }
+
+  const containerName = agent.deployment.cloud.containerName
+  if (!containerName) {
+    return invalidState(`agent ${agentId} has no containerName — cannot determine which container to rebuild`)
+  }
+  const port = parsePortFromWebsocketUrl(agent.deployment.cloud.websocketUrl)
+  if (!port) {
+    return invalidState(
+      `agent ${agentId} has no parseable port in deployment.cloud.websocketUrl (${agent.deployment.cloud.websocketUrl ?? 'unset'})`
+    )
+  }
+
+  // Determine the mounts/env to apply: explicit override from config, or fall
+  // back to the persisted values on the agent record.
+  const newMounts = config.mounts !== undefined ? config.mounts : agent.deployment.sandbox?.mounts
+  const existingRuntime = agent.deployment.cloud.runtime ?? {}
+  const newExtraEnv = config.extraEnv !== undefined ? config.extraEnv : existingRuntime.extraEnv
+  const useZiggy = config.ziggy !== undefined ? config.ziggy : (agent.deployment.sandbox?.ziggy === true)
+
+  // Validate the operator pre-flight for Ziggy MCP integration BEFORE docker
+  // stop+rm. Same loud-fail-on-missing-env-file contract as createDockerAgent.
+  // Skipped when useZiggy is false — recreate-with-ziggy=false on a previously-
+  // ziggy=true agent is a valid operation that should succeed without needing
+  // the env file (the network attach + overlay mount just won't be applied).
+  if (useZiggy) {
+    try {
+      fs.mkdirSync(ZIGGY_AGENT_ENVS_DIR, { recursive: true })
+    } catch (err) {
+      console.warn(
+        `[update-runtime] Could not mkdir ${ZIGGY_AGENT_ENVS_DIR}:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+    const envFilePath = path.join(ZIGGY_AGENT_ENVS_DIR, `${agent.name}.env`)
+    if (!fs.existsSync(envFilePath)) {
+      return invalidRequest(
+        `ziggy=true requires a per-agent env file at ${envFilePath}. ` +
+          'Create it on the host with ZIGGY_PROFILE=default and ' +
+          'DATABASE_URL=postgresql://ziggy:<password>@ziggy-postgres:5432/ziggy (pw from /opt/stacks/ziggy/.env), ' +
+          'then retry.',
+      )
+    }
+  }
+
+  // Rebuild AI_TOOL from persisted fields. Matches recreate semantics — yolo,
+  // prompt, and dashboard-supplied githubToken are NOT preserved (same gap
+  // as buildRecreateBody, tracked separately). Resolve the program identifier
+  // to its in-container binary name before composing — see createDockerAgent
+  // for the load-bearing reason (PR-3 hotfix).
+  const program = agent.program || 'claude'
+  let aiTool = resolveStartCommand(program)
+  if (agent.programArgs) {
+    const sanitizedArgs = agent.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+    if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
+  }
+  if (agent.model) {
+    aiTool += ` --model ${agent.model}`
+  }
+
+  const workDir = agent.workingDirectory || '/tmp'
+  const cpus = existingRuntime.cpus ?? 2
+  const memory = existingRuntime.memory ?? '4g'
+  const autoRemove = existingRuntime.autoRemove ?? false
+
+  const hostPort = process.env.PORT || '23000'
+  const hostInternalUrl = `http://host.docker.internal:${hostPort}`
+
+  const baseEnv = buildBaseAgentEnv(agent.name, aiTool, hostInternalUrl)
+  const ampEnv = buildAmpCommonEnv(agentId, agent.name, hostInternalUrl)
+  const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, newExtraEnv)
+
+  const ampMounts = buildAmpCommonMounts(agentId)
+  const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
+  const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
+  const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
+  const restorationSentinelMount = buildCloudRestorationSentinelMount(agentId)
+
+  // Pre-create host-side mount sources so docker doesn't materialize them as
+  // root-owned dirs at run time. Same pattern as createDockerAgent.
+  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount, restorationSentinelMount]) {
+    try {
+      fs.mkdirSync(m.hostPath, { recursive: true })
+    } catch (err) {
+      console.warn(`[update-runtime] Could not pre-create mount source ${m.hostPath}:`, err)
+    }
+  }
+
+  // Clear any stale restoration sentinel from the previous container's run
+  // BEFORE docker stop. Without this, the new container coming up after
+  // docker run would observe the old sentinel during its boot window and
+  // skip the wait, racing host-side prep again. See kanban fcabb870.
+  clearRestorationSentinel(agentId)
+
+  // (Re-)provision Codex Ziggy MCP entry if ziggy=true. Idempotent — the
+  // helper short-circuits when the [mcp_servers.ziggy] block already exists
+  // in config.toml. Mirrors the createDockerAgent provisioning sequence so
+  // /update-runtime applied to a not-yet-Ziggy agent (flipping the flag on)
+  // adds the MCP entry in-place.
+  if (useZiggy) {
+    try {
+      provisionCloudCodexZiggyMcpEntry(agentId)
+    } catch (err) {
+      console.warn('[update-runtime] Could not provision cloud codex ziggy MCP entry:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  const mergedMounts = mergeMounts(
+    [
+      ...ampMounts,
+      buildCloudClaudeSettingsMount(agentId),
+      ...buildCloudClaudePersistMounts(agentId),
+      ...claudeReadthroughMounts,
+      buildCloudGeminiSettingsMount(agentId),
+      buildCloudGeminiOAuthMount(agentId),
+      ...geminiReadthroughMounts,
+      buildCloudAntigravityAppDataMount(agentId),
+      buildCloudCodexVersionMount(agentId),
+      buildCloudCodexAuthMount(agentId),
+      buildCloudCodexConfigTomlMount(agentId),
+      buildCloudCodexHooksMount(agentId),
+      ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(agent.name)] : []),
+      restorationSentinelMount,
+    ],
+    newMounts
+  )
+
+  // Stop + remove the existing container. Non-fatal if already stopped/gone
+  // (the verify-removal step catches "still exists" failures and aborts).
+  const safeContainerName = containerName.replace(/[^a-zA-Z0-9_-]/g, '')
+  try {
+    await execAsync(`docker stop ${safeContainerName}`, { timeout: 60000 })
+  } catch (err) {
+    console.log(`[update-runtime] stop ${containerName} (non-fatal):`, err instanceof Error ? err.message : err)
+  }
+  try {
+    await execAsync(`docker rm ${safeContainerName}`, { timeout: 60000 })
+  } catch (err) {
+    console.log(`[update-runtime] rm ${containerName} (non-fatal):`, err instanceof Error ? err.message : err)
+  }
+  try {
+    await execAsync(`docker inspect ${safeContainerName}`, { timeout: 5000 })
+    return operationFailed(
+      'remove old container',
+      `${containerName} still exists after stop+rm; docker run would fail with a name conflict. Manual cleanup required.`
+    )
+  } catch {
+    // inspect failed → container is gone, proceed
+  }
+
+  const dockerCmd = [
+    'docker run -d',
+    `--name "${containerName}"`,
+    '--add-host=host.docker.internal:host-gateway',
+    // Container hardening — MUST mirror createDockerAgent's flags so a
+    // mount/env update (which destroys+recreates the container) does not
+    // silently drop the security posture. See createDockerAgent for the
+    // cap rationale and the --tmpfs verification flag.
+    '--cap-drop=ALL',
+    '--cap-add=NET_BIND_SERVICE --cap-add=SETGID --cap-add=SETUID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER',
+    '--security-opt no-new-privileges',
+    '--tmpfs /tmp:noexec,nosuid,size=100m',
+    autoRemove ? '' : '--restart unless-stopped',
+    // Single-network attach when useZiggy=true: container joins ziggy_default
+    // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
+    // filesystem (not Docker DNS), so isolation is fine today. If a future
+    // feature needs container-to-container DNS for non-Ziggy agents, attach
+    // the default bridge via `docker network connect bridge <container>`
+    // post-create. Per Hutch ops review PR #157 note A.
+    useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
+    ...buildEnvFlags(mergedEnv),
+    `-v "${workDir}:/workspace"`,
+    ...buildMountFlags(mergedMounts),
+    `-p ${port}:23000`,
+    `--cpus=${cpus}`,
+    `--memory=${memory}`,
+    autoRemove ? '--rm' : '',
+    'ai-maestro-agent:latest',
+  ].filter(Boolean).join(' ')
+
+  let containerId: string
+  try {
+    const { stdout } = await execAsync(dockerCmd, { timeout: 30000 })
+    containerId = stdout.trim().slice(0, 12)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    return operationFailed('start container', message)
+  }
+
+  // Persist the new operator config onto the agent record. Failure here is
+  // non-fatal but logged loudly — the running container has the new mounts,
+  // but the registry would drift, so a future /recreate would lose them.
+  try {
+    updateAgentRuntimeConfig(agentId, {
+      mounts: config.mounts,
+      extraEnv: config.extraEnv,
+      ziggy: config.ziggy,
+    })
+  } catch (err) {
+    console.warn(
+      `[update-runtime] registry update failed for ${agentId} after successful container rebuild — drift between container and registry:`,
+      err instanceof Error ? err.message : err
+    )
+  }
+
+  // Container was just rebuilt with the current registry's AI_TOOL fields, so
+  // any prior PATCH-induced staleness is now resolved. See kanban aa2953b0.
+  // No-op if the flag wasn't set; never fails fatally (mirrors the registry-
+  // update try/catch above).
+  try {
+    clearCloudContainerStale(agentId)
+  } catch (err) {
+    console.warn(
+      `[update-runtime] clearCloudContainerStale failed for ${agentId} — flag may linger until next /update-runtime:`,
+      err instanceof Error ? err.message : err
+    )
+  }
+
+  // Signal the new container that host-side prep is complete and it can
+  // proceed past the restoration-ready gate (kanban fcabb870). Mirrors the
+  // createDockerAgent tail. Best-effort; failure here leaves the container
+  // blocked on its 10s timeout, then it proceeds with a warning.
+  writeRestorationSentinel(agentId)
+
+  return {
+    data: {
+      success: true,
+      agentId,
+      containerId,
+      port,
+      containerName,
+    },
+    status: 200,
+  }
+}
+
+/**
+ * Normalize a docker-inspect `HostConfig.Memory` byte value to the canonical
+ * 'Xg' / 'Xm' string form that createDockerAgent accepts (default '4g'). Round
+ * to nearest integer GiB for typical sizes; fall back to MiB for sub-GiB.
+ */
+export function formatMemoryBytesToString(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    throw new Error(`formatMemoryBytesToString: invalid byte count ${bytes}`)
+  }
+  const gibFloat = bytes / 1024 ** 3
+  if (gibFloat >= 1) {
+    const gibRounded = Math.round(gibFloat)
+    // Within 1% of an integer GiB → use integer form (matches createDockerAgent
+    // defaults of '2g' / '4g' that docker normalizes to exact powers of 1024).
+    if (Math.abs(gibFloat - gibRounded) / gibRounded < 0.01) return `${gibRounded}g`
+    return `${gibFloat.toFixed(2)}g`
+  }
+  const mib = Math.round(bytes / 1024 ** 2)
+  return `${mib}m`
+}
+
+/**
+ * One-time backfill of `deployment.cloud.runtime` (cpus, memory, autoRemove)
+ * from `docker inspect` for legacy cloud agents that predate PR #146's
+ * runtime-persistence write at create time. Without this, `/recreate` and
+ * `/update-runtime` fall back to createDockerAgent's hard-coded defaults
+ * (cpus=2, memory='4g') for these agents — silent downsize for any agent
+ * that was originally created with non-default sizing via dashboard. See
+ * kanban 1ef9eabd.
+ *
+ * Idempotent: skips agents whose runtime block already has BOTH cpus and
+ * memory populated (the two fields that drive the silent-downsize hazard).
+ * autoRemove and extraEnv presence is not part of the idempotency gate
+ * (autoRemove defaults safely to false on a fresh runtime block; extraEnv
+ * is operator-driven and not part of the legacy gap).
+ *
+ * Read-only with respect to the running container — docker inspect doesn't
+ * touch container state, and updateAgentRuntimeConfig is a registry-only
+ * write. No /update-runtime / docker rebuild is triggered.
+ */
+export async function backfillAgentRuntime(
+  agentId: string
+): Promise<ServiceResult<Record<string, unknown>>> {
+  const agent = getAgent(agentId, true)
+  if (!agent) return notFound('Agent', agentId)
+  if (agent.deletedAt) return gone('Agent')
+
+  if (
+    agent.deployment?.type !== 'cloud' ||
+    agent.deployment.cloud?.provider !== 'local-container'
+  ) {
+    return invalidState(
+      `backfill-runtime is only supported for cloud agents with provider 'local-container' (agent ${agentId} is type=${agent.deployment?.type ?? 'unset'}, provider=${agent.deployment?.cloud?.provider ?? 'unset'})`
+    )
+  }
+
+  const existing = agent.deployment.cloud.runtime
+  if (existing?.cpus !== undefined && existing?.memory !== undefined) {
+    return {
+      data: {
+        success: true,
+        agentId,
+        action: 'skipped',
+        reason: 'runtime already populated (cpus + memory present)',
+        runtime: existing,
+      },
+      status: 200,
+    }
+  }
+
+  const containerName = agent.deployment.cloud.containerName
+  if (!containerName) {
+    return invalidState(
+      `agent ${agentId} has no containerName — cannot run docker inspect for backfill`
+    )
+  }
+
+  const safeContainerName = containerName.replace(/[^a-zA-Z0-9_-]/g, '')
+  let inspectOutput: string
+  try {
+    const { stdout } = await execAsync(
+      `docker inspect ${safeContainerName} --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.AutoRemove}}'`,
+      { timeout: 5000 }
+    )
+    inspectOutput = stdout.trim()
+  } catch (err) {
+    return operationFailed(
+      'docker inspect',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+
+  const [nanoCpusStr, memoryStr, autoRemoveStr] = inspectOutput.split('|')
+  const nanoCpus = parseInt(nanoCpusStr ?? '', 10)
+  const memoryBytes = parseInt(memoryStr ?? '', 10)
+  const cpus = nanoCpus / 1e9
+
+  if (!Number.isFinite(cpus) || cpus <= 0) {
+    return operationFailed(
+      'parse docker inspect cpus',
+      `NanoCpus=${nanoCpusStr} (computed cpus=${cpus}) is not a positive number; container may have unbounded CPU. Operator must set cpus explicitly before backfill is safe.`
+    )
+  }
+  if (!Number.isFinite(memoryBytes) || memoryBytes <= 0) {
+    return operationFailed(
+      'parse docker inspect memory',
+      `Memory=${memoryStr} bytes is not a positive number; container may have unbounded memory. Operator must set memory explicitly before backfill is safe.`
+    )
+  }
+
+  let memory: string
+  try {
+    memory = formatMemoryBytesToString(memoryBytes)
+  } catch (err) {
+    return operationFailed(
+      'format memory',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+  const autoRemove = autoRemoveStr === 'true'
+
+  const updated = updateAgentRuntimeConfig(agentId, { cpus, memory, autoRemove })
+  if (!updated) {
+    return invalidState(`agent ${agentId} disappeared during backfill`)
+  }
+
+  return {
+    data: {
+      success: true,
+      agentId,
+      action: 'backfilled',
+      runtime: { cpus, memory, autoRemove },
+    },
+    status: 200,
   }
 }
 

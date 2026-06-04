@@ -9,21 +9,37 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   validateMounts,
   validateExtraEnv,
+  buildAiToolCommand,
   buildMountFlags,
   buildEnvFlags,
   buildAmpCommonMounts,
   buildAmpCommonEnv,
+  buildBaseAgentEnv,
+  formatMemoryBytesToString,
   buildCloudClaudeSettingsMount,
   buildCloudClaudePersistMounts,
+  buildCloudClaudeReadthroughMounts,
   buildCloudGeminiSettingsMount,
   buildCloudGeminiOAuthMount,
+  buildCloudGeminiReadthroughMounts,
+  buildCloudAntigravityAppDataMount,
   buildCloudCodexVersionMount,
   buildCloudCodexAuthMount,
   buildCloudCodexConfigTomlMount,
+  buildCloudCodexHooksMount,
+  buildZiggyCodeMount,
+  buildZiggyEnvOverlayMount,
+  provisionCloudCodexZiggyMcpEntry,
+  ZIGGY_NETWORK,
+  ZIGGY_CODE_PATH,
+  ZIGGY_AGENT_ENVS_DIR,
+  buildCloudRestorationSentinelMount,
+  clearRestorationSentinel,
+  writeRestorationSentinel,
   migrateAgentPersistence,
   provisionCloudClaudeConfig,
   provisionCloudGeminiConfig,
@@ -34,8 +50,11 @@ import {
   mergeMounts,
   mergeEnv,
   buildRecreateBody,
-  buildAiToolCommand,
   RECREATE_PRESERVED_FIELDS,
+  parsePortFromWebsocketUrl,
+  ALWAYS_RESERVED_CONTAINER_PATH_ROOTS,
+  OPERATOR_RESERVED_CONTAINER_PATH_ROOTS,
+  OPERATOR_RESERVED_ENV_KEYS,
 } from '@/services/agents-docker-service'
 import type { Agent, SandboxMount } from '@/types/agent'
 
@@ -108,6 +127,116 @@ describe('validateMounts', () => {
       { hostPath: 'bad', containerPath: '/ok' },
     ]
     expect(validateMounts(mounts)).toMatch(/mounts\[1\]/)
+  })
+
+  describe('operator-mount reservation (kanban 489c4afd)', () => {
+    // ALWAYS_RESERVED applies regardless of operatorSupplied — /workspace is the
+    // operator's workingDirectory bind, and it would conflict whether the mount
+    // came from operator input or anywhere else.
+    it('rejects /workspace exact-match without operatorSupplied flag', () => {
+      const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace' }]
+      expect(validateMounts(mounts)).toMatch(/reserved.*working directory/)
+    })
+
+    it('rejects descendants of /workspace without operatorSupplied flag', () => {
+      const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace/src' }]
+      expect(validateMounts(mounts)).toMatch(/reserved.*working directory/)
+    })
+
+    it('passes system mount paths without operatorSupplied flag', () => {
+      // This is the critical "don't self-reject" property — every system
+      // mount builder produces paths under OPERATOR_RESERVED roots, and the
+      // internal flows in createDockerAgent / updateContainerMountsAndExtraEnv
+      // build the merged mount list AFTER validation of operator input. Tests
+      // that hand system mounts through validateMounts MUST not trigger
+      // operator reservation.
+      const uuid = 'test-uuid-aaaa'
+      const home = '/tmp/test-home'
+      const allSystemMounts: SandboxMount[] = [
+        ...buildAmpCommonMounts(uuid, home, '/tmp/test-repo'),
+        buildCloudClaudeSettingsMount(uuid, home),
+        ...buildCloudClaudePersistMounts(uuid, home),
+        ...buildCloudClaudeReadthroughMounts(uuid, home),
+        buildCloudGeminiSettingsMount(uuid, home),
+        buildCloudGeminiOAuthMount(uuid, home),
+        ...buildCloudGeminiReadthroughMounts(uuid, home),
+        buildCloudAntigravityAppDataMount(uuid, home),
+        buildCloudCodexVersionMount(uuid, home),
+        buildCloudCodexAuthMount(uuid, home),
+        buildCloudCodexConfigTomlMount(uuid, home),
+      ]
+      expect(validateMounts(allSystemMounts)).toBeNull()
+    })
+
+    it('rejects operator mounts at each OPERATOR_RESERVED root exact-match', () => {
+      for (const root of OPERATOR_RESERVED_CONTAINER_PATH_ROOTS) {
+        const mounts: SandboxMount[] = [{ hostPath: '/tmp/src', containerPath: root }]
+        const err = validateMounts(mounts, { operatorSupplied: true })
+        expect(err, `expected rejection for root ${root}`).toMatch(/reserved by AI Maestro/)
+        expect(err).toContain(root)
+      }
+    })
+
+    it('rejects operator mounts at descendants of OPERATOR_RESERVED roots', () => {
+      for (const root of OPERATOR_RESERVED_CONTAINER_PATH_ROOTS) {
+        const mounts: SandboxMount[] = [{ hostPath: '/tmp/src', containerPath: `${root}/child` }]
+        const err = validateMounts(mounts, { operatorSupplied: true })
+        expect(err, `expected rejection for descendant of ${root}`).toMatch(/reserved by AI Maestro/)
+      }
+    })
+
+    it('accepts operator mounts that are siblings of reserved roots (no false-positive on substring)', () => {
+      // /home/claude/.claude is reserved; /home/claude/.claude-other shares
+      // the prefix as a substring but is NOT a descendant. Must not reject.
+      const mounts: SandboxMount[] = [
+        { hostPath: '/tmp/a', containerPath: '/home/claude/.claude-other' },
+        { hostPath: '/tmp/b', containerPath: '/home/claude/code' },
+        { hostPath: '/tmp/c', containerPath: '/home/operator/files' },
+        { hostPath: '/tmp/d', containerPath: '/mnt/data' },
+        { hostPath: '/tmp/e', containerPath: '/opt/tools' },
+      ]
+      expect(validateMounts(mounts, { operatorSupplied: true })).toBeNull()
+    })
+
+    it('rejects operator mount at /workspace via ALWAYS_RESERVED path (operatorSupplied also tripped)', () => {
+      const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace' }]
+      // ALWAYS_RESERVED fires first; either error is acceptable here.
+      expect(validateMounts(mounts, { operatorSupplied: true })).toMatch(/reserved/)
+    })
+
+    it('reservation completeness: every system mount builder containerPath maps to a reserved root', () => {
+      // If a future PR adds a new system-mount builder under a path that isn't
+      // in OPERATOR_RESERVED_CONTAINER_PATH_ROOTS, the operator could shadow it.
+      // This test forces the RESERVED list to stay in sync with the builders.
+      const uuid = 'test-uuid-completeness'
+      const home = '/tmp/test-home'
+      const allSystemMounts: SandboxMount[] = [
+        ...buildAmpCommonMounts(uuid, home, '/tmp/test-repo'),
+        buildCloudClaudeSettingsMount(uuid, home),
+        ...buildCloudClaudePersistMounts(uuid, home),
+        ...buildCloudClaudeReadthroughMounts(uuid, home),
+        buildCloudGeminiSettingsMount(uuid, home),
+        buildCloudGeminiOAuthMount(uuid, home),
+        ...buildCloudGeminiReadthroughMounts(uuid, home),
+        buildCloudAntigravityAppDataMount(uuid, home),
+        buildCloudCodexVersionMount(uuid, home),
+        buildCloudCodexAuthMount(uuid, home),
+        buildCloudCodexConfigTomlMount(uuid, home),
+      ]
+      const allReserved = [
+        ...ALWAYS_RESERVED_CONTAINER_PATH_ROOTS,
+        ...OPERATOR_RESERVED_CONTAINER_PATH_ROOTS,
+      ]
+      for (const m of allSystemMounts) {
+        const matched = allReserved.find(
+          r => m.containerPath === r || m.containerPath.startsWith(`${r}/`)
+        )
+        expect(
+          matched,
+          `system mount at ${m.containerPath} has no reserved root — operator could shadow it`
+        ).toBeDefined()
+      }
+    })
   })
 })
 
@@ -197,6 +326,101 @@ describe('validateExtraEnv', () => {
 
   it('rejects non-string values', () => {
     expect(validateExtraEnv({ FOO: 123 as unknown as string })).toMatch(/must be a string/)
+  })
+
+  describe('operator-env reservation (kanban 489c4afd)', () => {
+    it('passes system env keys without operatorSupplied flag', () => {
+      // buildAmpCommonEnv populates exactly these keys; internal callers hand
+      // this output through validateExtraEnv (transitively via flow tests).
+      const sysEnv = buildAmpCommonEnv(
+        'test-uuid-bbbb',
+        'test-agent',
+        'http://host.docker.internal:23000'
+      )
+      // Plus the baseEnv keys the docker service layers in:
+      const fullSystemEnv = {
+        ...sysEnv,
+        TMUX_SESSION_NAME: 'test-agent',
+        AI_TOOL: 'claude',
+        AGENT_ID: 'test-agent',
+        AIMAESTRO_HOST_URL: 'http://host.docker.internal:23000',
+      }
+      expect(validateExtraEnv(fullSystemEnv)).toBeNull()
+    })
+
+    it('rejects each OPERATOR_RESERVED key when operatorSupplied is true', () => {
+      for (const key of OPERATOR_RESERVED_ENV_KEYS) {
+        const err = validateExtraEnv({ [key]: 'evil' }, { operatorSupplied: true })
+        expect(err, `expected rejection for key ${key}`).toMatch(/reserved by AI Maestro/)
+        expect(err).toContain(key)
+      }
+    })
+
+    it('accepts the same keys when operatorSupplied is false', () => {
+      // Internal callers hand the same keys through this validator without the
+      // flag (e.g., the merged env that goes to buildEnvFlags). Reservation
+      // must not self-reject.
+      for (const key of OPERATOR_RESERVED_ENV_KEYS) {
+        expect(validateExtraEnv({ [key]: 'system-value' })).toBeNull()
+      }
+    })
+
+    it('does NOT reserve HOME (Shape β operator override use case)', () => {
+      // HOME=/workspace/<name> is the canonical Shape β agent-home override —
+      // operator must be able to set it via extraEnv.
+      expect(
+        validateExtraEnv({ HOME: '/workspace/myagent' }, { operatorSupplied: true })
+      ).toBeNull()
+    })
+
+    it('does NOT reserve GITHUB_TOKEN (alternative to body.githubToken)', () => {
+      // Operator may want to rotate GITHUB_TOKEN via extraEnv as an
+      // alternative to body.githubToken at create time.
+      expect(
+        validateExtraEnv({ GITHUB_TOKEN: 'ghp_example' }, { operatorSupplied: true })
+      ).toBeNull()
+    })
+
+    it('reservation completeness: every buildAmpCommonEnv key is reserved', () => {
+      // If a future PR adds a new key to buildAmpCommonEnv without updating
+      // OPERATOR_RESERVED_ENV_KEYS, the operator could shadow it.
+      const ampKeys = Object.keys(
+        buildAmpCommonEnv('test-uuid', 'test-agent', 'http://host.docker.internal:23000')
+      )
+      for (const key of ampKeys) {
+        expect(
+          OPERATOR_RESERVED_ENV_KEYS,
+          `buildAmpCommonEnv emits ${key} but it's not in OPERATOR_RESERVED_ENV_KEYS`
+        ).toContain(key)
+      }
+    })
+
+    it('reservation completeness: every buildBaseAgentEnv key is reserved', () => {
+      // Parallel guard for the per-container agent-identity env that
+      // createDockerAgent + updateContainerMountsAndExtraEnv both layer into
+      // the merged env before operator extraEnv. Future addition to
+      // buildBaseAgentEnv that isn't also added to OPERATOR_RESERVED_ENV_KEYS
+      // would let an operator silently fake agent identity.
+      const baseKeys = Object.keys(
+        buildBaseAgentEnv('test-agent', 'claude', 'http://host.docker.internal:23000')
+      )
+      for (const key of baseKeys) {
+        expect(
+          OPERATOR_RESERVED_ENV_KEYS,
+          `buildBaseAgentEnv emits ${key} but it's not in OPERATOR_RESERVED_ENV_KEYS`
+        ).toContain(key)
+      }
+    })
+
+    it('accepts operator env with reserved-key-substring (no false positive)', () => {
+      // PATH is reserved; PATH_EXTRA is not (full-key match, not prefix).
+      expect(
+        validateExtraEnv(
+          { PATH_EXTRA: '/opt/foo/bin', MY_AGENT_ID: 'something' },
+          { operatorSupplied: true }
+        )
+      ).toBeNull()
+    })
   })
 })
 
@@ -405,6 +629,15 @@ describe('provisionCloudClaudeConfig', () => {
     const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     expect(settings.skipDangerousModePermissionPrompt).toBe(true)
+  })
+
+  it('seeds statusLine pointing at the container-side amp-statusline.sh path (host/cloud UX-parity, kanban 172e170d)', () => {
+    const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(settings.statusLine).toEqual({
+      type: 'command',
+      command: '/home/claude/.local/share/aimaestro/cli/amp-statusline.sh',
+    })
   })
 
   it('does not reference the host repo path in the generated settings', () => {
@@ -830,6 +1063,164 @@ describe('buildCloudCodexConfigTomlMount', () => {
   })
 })
 
+describe('buildCloudCodexHooksMount', () => {
+  it('returns a file-level bind mount for /home/claude/.codex/hooks.json', () => {
+    const uuid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+    const home = '/home/operator'
+    const m = buildCloudCodexHooksMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-hooks.json`)
+    expect(m.containerPath).toBe('/home/claude/.codex/hooks.json')
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+    const uuid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+    expect(validateMounts([buildCloudCodexHooksMount(uuid, '/home/operator')])).toBeNull()
+  })
+})
+
+describe('provisionCloudCodexConfig — codex-hooks.json skeleton', () => {
+  const uuid = '99999999-9999-9999-9999-999999999999'
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-codex-hooks-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('writes codex-hooks.json with empty {} skeleton when missing', () => {
+    const { hooksPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(hooksPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-hooks.json'))
+    expect(fs.readFileSync(hooksPath, 'utf8')).toBe('{}\n')
+  })
+
+  it('seeds hooks.json with restrictive 0600 perms', () => {
+    const { hooksPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.statSync(hooksPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('preserves existing codex-hooks.json content across re-runs (operator-written hooks intent)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    const hooksPath = path.join(agentDir, 'codex-hooks.json')
+    const existing = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/opt/recall.sh"}]}]}}\n'
+    fs.writeFileSync(hooksPath, existing)
+    provisionCloudCodexConfig(uuid, tmpHome)
+    expect(fs.readFileSync(hooksPath, 'utf8')).toBe(existing)
+  })
+})
+
+describe('Ziggy MCP integration helpers', () => {
+  describe('constants', () => {
+    it('uses ziggy_default as the docker network name', () => {
+      // Verified live 2026-05-27 — docker network ls + ziggy-postgres container
+      // present at 172.19.0.3. Pinning the literal here so a rename surfaces at
+      // CI rather than during a deploy.
+      expect(ZIGGY_NETWORK).toBe('ziggy_default')
+    })
+
+    it('uses /home/gosub/code/ziggy as the canonical ziggy repo path', () => {
+      // The path MUST match host-side absolute path verbatim because start.sh
+      // derives ZIGGY_ROOT from its own location via $(dirname). A path remap
+      // (e.g. /opt/ziggy-mcp/) would break the .env-loading + DATABASE_URL
+      // construction logic.
+      expect(ZIGGY_CODE_PATH).toBe('/home/gosub/code/ziggy')
+    })
+
+    it('uses /opt/stacks/ai-maestro/agent-envs as the per-agent env directory', () => {
+      // Operator-owned; ai-maestro reads <name>.env files but never writes.
+      expect(ZIGGY_AGENT_ENVS_DIR).toBe('/opt/stacks/ai-maestro/agent-envs')
+    })
+  })
+
+  describe('buildZiggyCodeMount', () => {
+    it('returns a read-only same-path bind for the ziggy repo', () => {
+      const m = buildZiggyCodeMount()
+      expect(m.hostPath).toBe('/home/gosub/code/ziggy')
+      expect(m.containerPath).toBe('/home/gosub/code/ziggy')
+      expect(m.readOnly).toBe(true)
+    })
+
+    it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+      expect(validateMounts([buildZiggyCodeMount()])).toBeNull()
+    })
+  })
+
+  describe('buildZiggyEnvOverlayMount', () => {
+    it('returns a read-only file overlay shadowing the host ziggy .env', () => {
+      const m = buildZiggyEnvOverlayMount('ops-homelab-nodie')
+      expect(m.hostPath).toBe('/opt/stacks/ai-maestro/agent-envs/ops-homelab-nodie.env')
+      expect(m.containerPath).toBe('/home/gosub/code/ziggy/.env')
+      expect(m.readOnly).toBe(true)
+    })
+
+    it('uses agent name verbatim — agent names are slug-validated upstream', () => {
+      const m = buildZiggyEnvOverlayMount('my-agent_42')
+      expect(m.hostPath).toBe('/opt/stacks/ai-maestro/agent-envs/my-agent_42.env')
+    })
+
+    it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
+      expect(validateMounts([buildZiggyEnvOverlayMount('nodie')])).toBeNull()
+    })
+  })
+
+  describe('provisionCloudCodexZiggyMcpEntry', () => {
+    const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    let tmpHome: string
+
+    beforeEach(() => {
+      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-ziggy-mcp-'))
+    })
+
+    afterEach(() => {
+      fs.rmSync(tmpHome, { recursive: true, force: true })
+    })
+
+    it('appends [mcp_servers.ziggy] block pointing at the canonical start.sh', () => {
+      // Pre-seed config.toml as provisionCloudCodexConfig would have written it.
+      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+      fs.mkdirSync(agentDir, { recursive: true })
+      const configTomlPath = path.join(agentDir, 'codex-config.toml')
+      fs.writeFileSync(configTomlPath, '[projects."/workspace"]\ntrust_level = "trusted"\n')
+
+      const { mcpBlockAdded } = provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      expect(mcpBlockAdded).toBe(true)
+      const body = fs.readFileSync(configTomlPath, 'utf8')
+      expect(body).toContain('[mcp_servers.ziggy]')
+      expect(body).toContain('command = "/home/gosub/code/ziggy/apps/mcp-server/bin/start.sh"')
+      // Pre-existing trust block must be preserved (operator config compat).
+      expect(body).toContain('[projects."/workspace"]')
+    })
+
+    it('is idempotent — re-running short-circuits and does not duplicate', () => {
+      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+      fs.mkdirSync(agentDir, { recursive: true })
+      const configTomlPath = path.join(agentDir, 'codex-config.toml')
+      fs.writeFileSync(configTomlPath, '[projects."/workspace"]\ntrust_level = "trusted"\n')
+
+      provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      const { mcpBlockAdded } = provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      expect(mcpBlockAdded).toBe(false)
+      const body = fs.readFileSync(configTomlPath, 'utf8')
+      // Block appears exactly once.
+      expect(body.match(/\[mcp_servers\.ziggy\]/g) ?? []).toHaveLength(1)
+    })
+
+    it('writes a minimal config.toml if no pre-existing file (defensive — provisionCloudCodexConfig should run first)', () => {
+      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+      fs.mkdirSync(agentDir, { recursive: true })
+      // Do NOT pre-seed config.toml — test the defensive branch.
+      const { mcpBlockAdded, configTomlPath } = provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
+      expect(mcpBlockAdded).toBe(true)
+      const body = fs.readFileSync(configTomlPath, 'utf8')
+      expect(body).toContain('[mcp_servers.ziggy]')
+    })
+  })
+})
+
 describe('buildCloudGeminiSettingsMount', () => {
   it('returns a file-level bind mount for /home/claude/.gemini/settings.json', () => {
     const uuid = '77777777-aaaa-7777-aaaa-777777777777'
@@ -844,6 +1235,37 @@ describe('buildCloudGeminiSettingsMount', () => {
     const uuid = '77777777-aaaa-7777-aaaa-777777777777'
     const home = '/home/operator'
     expect(validateMounts([buildCloudGeminiSettingsMount(uuid, home)])).toBeNull()
+  })
+})
+
+describe('buildCloudAntigravityAppDataMount (kanban 49cc27d7, OPT-B single-dir)', () => {
+  it('returns a dir-level bind mount sourced at <agent>/antigravity-app-data and targeting /home/claude/.gemini/antigravity-cli', () => {
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const home = '/home/operator'
+    const m = buildCloudAntigravityAppDataMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/antigravity-app-data`)
+    expect(m.containerPath).toBe('/home/claude/.gemini/antigravity-cli')
+    // Dir-mount over the entire CLI app-data tree is RW by design — agy
+    // rotates oauth-token via temp+rename on refresh, which would silently
+    // stale a file-level mount but works inside a dir-mount.
+    expect(m.readOnly).toBeUndefined()
+  })
+
+  it('passes validateMounts as a non-operator-supplied system mount', () => {
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const home = '/home/operator'
+    expect(validateMounts([buildCloudAntigravityAppDataMount(uuid, home)])).toBeNull()
+  })
+
+  it('is operator-reserved (containerPath descends from CONTAINER_HOME/.gemini, which is in OPERATOR_RESERVED_CONTAINER_PATH_ROOTS)', () => {
+    // Operator-supplied flag must reject this path so an operator-declared
+    // mount cannot shadow the system mount of antigravity state.
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const home = '/home/operator'
+    const mount = buildCloudAntigravityAppDataMount(uuid, home)
+    expect(
+      validateMounts([mount], { operatorSupplied: true }),
+    ).toMatch(/reserved by AI Maestro/)
   })
 })
 
@@ -1360,11 +1782,18 @@ describe('buildAmpCommonEnv', () => {
     expect(buildAmpCommonEnv(uuid, name, hostUrl)).toEqual({
       CLAUDE_AGENT_ID: uuid,
       CLAUDE_AGENT_NAME: name,
+      AMP_AGENT_ID: uuid,
       AMP_DIR: `/home/claude/.agent-messaging/agents/${uuid}`,
       AMP_MAESTRO_URL: hostUrl,
       PATH: '/home/claude/.local/bin:/home/claude/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',
     })
+  })
+
+  it('aliases AMP_AGENT_ID = CLAUDE_AGENT_ID for amp-statusline.sh priority-1 resolution (kanban 172e170d)', () => {
+    const env = buildAmpCommonEnv(uuid, name, hostUrl)
+    expect(env.AMP_AGENT_ID).toBe(env.CLAUDE_AGENT_ID)
+    expect(env.AMP_AGENT_ID).toBe(uuid)
   })
 
   it('puts the AMP CLI dir ahead of the standard path', () => {
@@ -1503,7 +1932,7 @@ describe('buildRecreateBody', () => {
     const agent = makeCloudAgent({
       deployment: {
         type: 'cloud',
-        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running', websocketUrl: 'ws://localhost:46000/term' },
+        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
         sandbox: { mounts },
       },
     })
@@ -1550,6 +1979,59 @@ describe('buildRecreateBody', () => {
   it('handles missing deployment.sandbox without throwing', () => {
     const agent = makeCloudAgent() // no sandbox key at all
     expect(buildRecreateBody(agent).mounts).toBeUndefined()
+    expect(buildRecreateBody(agent).ziggy).toBeUndefined()
+  })
+
+  it('preserves sandbox.ziggy=true through recreate so the network attach survives UUID rotation', () => {
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        sandbox: { ziggy: true },
+      },
+    })
+    expect(buildRecreateBody(agent).ziggy).toBe(true)
+  })
+
+  it('maps deployment.cloud.runtime fields back into the create body', () => {
+    // Closes kanban 105b82a0 — without persisting runtime config on the agent
+    // record, recreate fell back to createDockerAgent's hard-coded defaults
+    // (cpus=2, memory=4g, autoRemove=undefined → restart unless-stopped) and
+    // silently dropped any operator-supplied extraEnv (e.g. HOME=/workspace
+    // overrides). Now runtime carries through deterministically.
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: {
+          provider: 'local-container',
+          containerName: 'aim-x',
+          status: 'running',
+          runtime: {
+            cpus: 4,
+            memory: '8g',
+            autoRemove: true,
+            extraEnv: { HOME: '/workspace/myagent', FOO: 'bar' },
+          },
+        },
+      },
+    })
+    const body = buildRecreateBody(agent)
+    expect(body.cpus).toBe(4)
+    expect(body.memory).toBe('8g')
+    expect(body.autoRemove).toBe(true)
+    expect(body.extraEnv).toEqual({ HOME: '/workspace/myagent', FOO: 'bar' })
+  })
+
+  it('leaves runtime fields undefined when not persisted', () => {
+    // Legacy agents predating PR #146 have no deployment.cloud.runtime. Body
+    // should reflect "not set" so createDockerAgent's existing defaults
+    // (cpus=2, memory=4g) apply unchanged.
+    const agent = makeCloudAgent()
+    const body = buildRecreateBody(agent)
+    expect(body.cpus).toBeUndefined()
+    expect(body.memory).toBeUndefined()
+    expect(body.autoRemove).toBeUndefined()
+    expect(body.extraEnv).toBeUndefined()
   })
 })
 
@@ -1571,7 +2053,6 @@ describe('RECREATE_PRESERVED_FIELDS', () => {
       'preferences',
       'meshAware',
       'owner',
-      'permissionMode',
     ])
   })
 
@@ -1587,6 +2068,226 @@ describe('RECREATE_PRESERVED_FIELDS', () => {
     for (const field of mustNotInclude) {
       expect(RECREATE_PRESERVED_FIELDS).not.toContain(field)
     }
+  })
+})
+
+describe('parsePortFromWebsocketUrl', () => {
+  it('extracts port from a ws://localhost:PORT/term URL', () => {
+    expect(parsePortFromWebsocketUrl('ws://localhost:23042/term')).toBe(23042)
+  })
+
+  it('returns null for undefined', () => {
+    expect(parsePortFromWebsocketUrl(undefined)).toBeNull()
+  })
+
+  it('returns null for empty string', () => {
+    expect(parsePortFromWebsocketUrl('')).toBeNull()
+  })
+
+  it('returns null when no port is present in the URL', () => {
+    expect(parsePortFromWebsocketUrl('ws://localhost/term')).toBeNull()
+  })
+
+  it('returns null for malformed input', () => {
+    expect(parsePortFromWebsocketUrl('not-a-url')).toBeNull()
+  })
+
+  it('handles wss URLs', () => {
+    expect(parsePortFromWebsocketUrl('wss://agent.example.com:443/term')).toBe(443)
+  })
+})
+
+describe('formatMemoryBytesToString (kanban 1ef9eabd)', () => {
+  // Maps docker inspect HostConfig.Memory (bytes) back to the canonical
+  // 'Xg' / 'Xm' string that createDockerAgent accepts (default '4g').
+  it('formats canonical createDockerAgent defaults exactly', () => {
+    // 2g default and 4g default — verify these round-trip cleanly through
+    // bytes → string with no precision loss.
+    expect(formatMemoryBytesToString(2 * 1024 ** 3)).toBe('2g')
+    expect(formatMemoryBytesToString(4 * 1024 ** 3)).toBe('4g')
+  })
+
+  it('rounds to integer GiB when within 1% of an integer', () => {
+    // docker inspect bytes for 4 GiB is exactly 4 * 1024^3 = 4294967296.
+    // Some configurations report off-by-a-few-bytes; round-to-integer keeps
+    // the canonical 'Xg' form when intent is obvious.
+    expect(formatMemoryBytesToString(4 * 1024 ** 3 + 100)).toBe('4g')
+    expect(formatMemoryBytesToString(4 * 1024 ** 3 - 100)).toBe('4g')
+  })
+
+  it('returns decimal GiB when not close to an integer', () => {
+    expect(formatMemoryBytesToString(Math.round(1.5 * 1024 ** 3))).toBe('1.50g')
+    expect(formatMemoryBytesToString(Math.round(3.25 * 1024 ** 3))).toBe('3.25g')
+  })
+
+  it('falls back to MiB for sub-GiB sizes', () => {
+    expect(formatMemoryBytesToString(512 * 1024 ** 2)).toBe('512m')
+    expect(formatMemoryBytesToString(256 * 1024 ** 2)).toBe('256m')
+  })
+
+  it('throws on non-positive or non-finite input', () => {
+    // backfillAgentRuntime gates this branch separately (returns operationFailed
+    // before calling format), but throw-guard keeps the helper honest if it's
+    // ever called from a new site.
+    expect(() => formatMemoryBytesToString(0)).toThrow(/invalid byte count/)
+    expect(() => formatMemoryBytesToString(-1)).toThrow(/invalid byte count/)
+    expect(() => formatMemoryBytesToString(NaN)).toThrow(/invalid byte count/)
+    expect(() => formatMemoryBytesToString(Infinity)).toThrow(/invalid byte count/)
+  })
+})
+
+// ============================================================================
+// kanban fcabb870 — restoration-ready sentinel host helpers
+// ============================================================================
+
+describe('buildCloudRestorationSentinelMount', () => {
+  it('binds per-agent restoration dir to /restoration-ready in the container, read-only', () => {
+    const mount = buildCloudRestorationSentinelMount('agent-uuid', '/tmp/test-home')
+    expect(mount).toEqual({
+      hostPath: '/tmp/test-home/.aimaestro/agents/agent-uuid/restoration',
+      containerPath: '/restoration-ready',
+      readOnly: true,
+    })
+  })
+
+  it('hostPath is namespaced per agentId so multiple agents do not collide', () => {
+    const a = buildCloudRestorationSentinelMount('agent-a', '/tmp/home')
+    const b = buildCloudRestorationSentinelMount('agent-b', '/tmp/home')
+    expect(a.hostPath).not.toBe(b.hostPath)
+    expect(a.containerPath).toBe(b.containerPath) // same container-side endpoint
+  })
+
+  it('is read-only (least-privilege — container reads, host writes)', () => {
+    // CelestIA polish on PR #154: container only polls existsSync, never
+    // writes. RW would expose the sentinel to in-container tampering that
+    // could prematurely unblock the gate or stall it.
+    const mount = buildCloudRestorationSentinelMount('agent-x')
+    expect(mount.readOnly).toBe(true)
+  })
+})
+
+describe('writeRestorationSentinel', () => {
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-sentinel-write-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('creates restoration/complete with an ISO timestamp body', () => {
+    writeRestorationSentinel('agent-1', tmpHome)
+    const sentinelPath = path.join(tmpHome, '.aimaestro/agents/agent-1/restoration/complete')
+    expect(fs.existsSync(sentinelPath)).toBe(true)
+    const body = fs.readFileSync(sentinelPath, 'utf8')
+    expect(body).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+  })
+
+  it('creates the parent restoration/ dir if missing (fresh-agent shape)', () => {
+    const restorationDir = path.join(tmpHome, '.aimaestro/agents/fresh/restoration')
+    expect(fs.existsSync(restorationDir)).toBe(false)
+    writeRestorationSentinel('fresh', tmpHome)
+    expect(fs.existsSync(restorationDir)).toBe(true)
+  })
+
+  it('overwrites an existing sentinel (idempotent for repeated /update-runtime)', () => {
+    writeRestorationSentinel('agent-2', tmpHome)
+    const sentinelPath = path.join(tmpHome, '.aimaestro/agents/agent-2/restoration/complete')
+    const first = fs.readFileSync(sentinelPath, 'utf8')
+    // 5ms gap ensures a measurably-later ISO timestamp
+    return new Promise<void>(resolve => setTimeout(() => {
+      writeRestorationSentinel('agent-2', tmpHome)
+      const second = fs.readFileSync(sentinelPath, 'utf8')
+      expect(second).not.toBe(first)
+      expect(second).toMatch(/^\d{4}-\d{2}-\d{2}/)
+      resolve()
+    }, 5))
+  })
+
+  it('is best-effort: a write failure logs warning but does not throw', () => {
+    // Point at a read-only-ish parent that mkdirSync can't create. /proc/1 is a
+    // standard sentinel for "real path that cannot be a parent of new dirs."
+    // Using mocked path with a guaranteed mkdir error keeps the test portable.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {
+      throw new Error('EACCES: permission denied')
+    })
+    try {
+      expect(() => writeRestorationSentinel('agent-fail', tmpHome)).not.toThrow()
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/could not write sentinel for agent-fail/),
+        expect.stringMatching(/EACCES/),
+      )
+    } finally {
+      mkdirSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+  })
+})
+
+describe('clearRestorationSentinel', () => {
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-sentinel-clear-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('removes an existing sentinel file', () => {
+    writeRestorationSentinel('agent-c1', tmpHome)
+    const sentinelPath = path.join(tmpHome, '.aimaestro/agents/agent-c1/restoration/complete')
+    expect(fs.existsSync(sentinelPath)).toBe(true)
+
+    clearRestorationSentinel('agent-c1', tmpHome)
+    expect(fs.existsSync(sentinelPath)).toBe(false)
+  })
+
+  it('is silent + does not throw when the sentinel is already absent (ENOENT)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(() => clearRestorationSentinel('never-existed', tmpHome)).not.toThrow()
+      // ENOENT is the success case for clear — we should NOT log a warning,
+      // otherwise every fresh-create's no-op clear floods the log.
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('logs warning on non-ENOENT failure (e.g. EACCES) but does not throw', () => {
+    writeRestorationSentinel('agent-c2', tmpHome)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {
+      const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException
+      err.code = 'EACCES'
+      throw err
+    })
+    try {
+      expect(() => clearRestorationSentinel('agent-c2', tmpHome)).not.toThrow()
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/could not unlink/),
+        expect.stringMatching(/EACCES/),
+      )
+    } finally {
+      unlinkSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('does not remove sibling files in the restoration/ dir', () => {
+    writeRestorationSentinel('agent-c3', tmpHome)
+    const restorationDir = path.join(tmpHome, '.aimaestro/agents/agent-c3/restoration')
+    const sibling = path.join(restorationDir, 'sibling.txt')
+    fs.writeFileSync(sibling, 'untouched')
+
+    clearRestorationSentinel('agent-c3', tmpHome)
+    expect(fs.existsSync(path.join(restorationDir, 'complete'))).toBe(false)
+    expect(fs.existsSync(sibling)).toBe(true)
   })
 })
 
