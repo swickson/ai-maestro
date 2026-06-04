@@ -1810,7 +1810,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     '--cap-drop=ALL',
     '--cap-add=NET_BIND_SERVICE --cap-add=SETGID --cap-add=SETUID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER',
     '--security-opt no-new-privileges',
-    '--tmpfs /tmp:noexec,nosuid,size=100m',
+    // noexec dropped: it breaks TMPDIR-exec tooling (pip-from-source, cmake/ninja,
+    // test harnesses spawning helper scripts) — reproduced on Oliver burn-in 2026-06-04.
+    // cap-drop=ALL + no-new-privileges + nosuid + size cap retained (still strictly
+    // harder than pre-merge baseline; cap-drop=ALL is the biggest privilege win).
+    '--tmpfs /tmp:nosuid,size=100m',
     body.autoRemove ? '' : '--restart unless-stopped',
     // Single-network attach when useZiggy=true: container joins ziggy_default
     // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
@@ -2361,7 +2365,11 @@ export async function updateContainerMountsAndExtraEnv(
     '--cap-drop=ALL',
     '--cap-add=NET_BIND_SERVICE --cap-add=SETGID --cap-add=SETUID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER',
     '--security-opt no-new-privileges',
-    '--tmpfs /tmp:noexec,nosuid,size=100m',
+    // noexec dropped: it breaks TMPDIR-exec tooling (pip-from-source, cmake/ninja,
+    // test harnesses spawning helper scripts) — reproduced on Oliver burn-in 2026-06-04.
+    // cap-drop=ALL + no-new-privileges + nosuid + size cap retained (still strictly
+    // harder than pre-merge baseline; cap-drop=ALL is the biggest privilege win).
+    '--tmpfs /tmp:nosuid,size=100m',
     autoRemove ? '' : '--restart unless-stopped',
     // Single-network attach when useZiggy=true: container joins ziggy_default
     // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
