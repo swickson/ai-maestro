@@ -177,13 +177,15 @@ function findReservedRoot(p: string, roots: readonly string[]): string | null {
 // controlled (an agent mutating its own mounts, unprivileged operators), add
 // realpath + prefix-check against an allow-list of host roots before shelling.
 //
-// `options.operatorSupplied` enables the reservation check against
-// OPERATOR_RESERVED_CONTAINER_PATH_ROOTS — call sites that hand internal
-// system-mount builders' output through this validator (tests, internal
-// merges) MUST omit the flag to avoid self-rejection.
+// `source` is a required discriminated value: 'operator' enables the
+// OPERATOR_RESERVED_CONTAINER_PATH_ROOTS reservation check; 'system' skips
+// it so internal system-mount builders' output can route through this
+// validator for format/always-reserved checks without self-rejection. The
+// required arg makes the safety contract structural — a missing or
+// forgotten flag is a TypeScript error rather than a silent fail-open.
 export function validateMounts(
   mounts: SandboxMount[] | undefined,
-  options: { operatorSupplied?: boolean } = {}
+  source: 'operator' | 'system'
 ): string | null {
   if (!mounts) return null
   for (const [i, m] of mounts.entries()) {
@@ -200,7 +202,7 @@ export function validateMounts(
     if (alwaysReserved) {
       return `mounts[${i}]: containerPath "${m.containerPath}" is reserved (${alwaysReserved} is the agent working directory)`
     }
-    if (options.operatorSupplied) {
+    if (source === 'operator') {
       const operatorReserved = findReservedRoot(m.containerPath, OPERATOR_RESERVED_CONTAINER_PATH_ROOTS)
       if (operatorReserved) {
         return `mounts[${i}]: containerPath "${m.containerPath}" is reserved by AI Maestro (matches "${operatorReserved}") — operator-declared mounts cannot shadow AMP common mounts or claude/gemini/codex state, these are managed automatically per-agent`
@@ -210,12 +212,14 @@ export function validateMounts(
   return null
 }
 
-// `options.operatorSupplied` enables the reservation check against
-// OPERATOR_RESERVED_ENV_KEYS — call sites that hand internal env (baseEnv,
-// buildAmpCommonEnv output) through this validator MUST omit the flag.
+// `source` is a required discriminated value: 'operator' enables the
+// OPERATOR_RESERVED_ENV_KEYS reservation check; 'system' skips it so internal
+// env builders (baseEnv, buildAmpCommonEnv output) can route through this
+// validator for format checks without self-rejection. Required arg = a
+// missing flag is a TypeScript error, not a silent fail-open.
 export function validateExtraEnv(
   env: Record<string, string> | undefined,
-  options: { operatorSupplied?: boolean } = {}
+  source: 'operator' | 'system'
 ): string | null {
   if (!env) return null
   for (const [key, value] of Object.entries(env)) {
@@ -228,7 +232,7 @@ export function validateExtraEnv(
     if (UNSAFE_ENV_VALUE_CHARS.test(value)) {
       return `extraEnv["${key}"]: value must not contain quotes, backticks, $, backslashes, or newlines`
     }
-    if (options.operatorSupplied && OPERATOR_RESERVED_ENV_KEYS.includes(key)) {
+    if (source === 'operator' && OPERATOR_RESERVED_ENV_KEYS.includes(key)) {
       return `extraEnv["${key}"]: key is reserved by AI Maestro — operator-declared extraEnv cannot shadow agent identity (AGENT_ID, TMUX_SESSION_NAME, AI_TOOL, AIMAESTRO_HOST_URL) or AMP routing (AMP_*, CLAUDE_AGENT_*, PATH, GEMINI_CLI_TRUST_WORKSPACE)`
     }
   }
@@ -1557,12 +1561,12 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return missingField('name')
   }
 
-  const mountError = validateMounts(body.mounts, { operatorSupplied: true })
+  const mountError = validateMounts(body.mounts, 'operator')
   if (mountError) {
     return invalidRequest(mountError)
   }
 
-  const envError = validateExtraEnv(body.extraEnv, { operatorSupplied: true })
+  const envError = validateExtraEnv(body.extraEnv, 'operator')
   if (envError) {
     return invalidRequest(envError)
   }
@@ -2195,11 +2199,11 @@ export async function updateContainerMountsAndExtraEnv(
   // docker work. Empty arrays/objects are valid (= "clear"), so only validate
   // when the caller actually supplied a value.
   if (config.mounts !== undefined) {
-    const mountError = validateMounts(config.mounts, { operatorSupplied: true })
+    const mountError = validateMounts(config.mounts, 'operator')
     if (mountError) return invalidRequest(mountError)
   }
   if (config.extraEnv !== undefined) {
-    const envError = validateExtraEnv(config.extraEnv, { operatorSupplied: true })
+    const envError = validateExtraEnv(config.extraEnv, 'operator')
     if (envError) return invalidRequest(envError)
   }
 
