@@ -57,6 +57,7 @@ import {
   linkSession,
   unlinkSession,
   markCloudContainerStale,
+  setCloudContainerStatus,
 } from '@/lib/agent-registry'
 import { resolveAgentIdentifier } from '@/lib/messageQueue'
 import { getHosts, getSelfHost, getSelfHostId, isSelf, updateHostRaw } from '@/lib/hosts-config'
@@ -1699,6 +1700,15 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
       if (status === 'running' || status === 'paused') {
         console.log(`[Wake] Agent ${agentName} (${agentId}) — running in CONTAINER ${containerName} (already ${status})`)
         updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory)
+        // Reconcile the persisted cloud lifecycle status — the container is
+        // confirmed running, but cloud.status can be stale (e.g. left 'stopped'
+        // after a hibernate, or when the container was started outside the app),
+        // which makes the UI render a live agent as stopped. We deliberately do
+        // NOT re-fire the on-wake hook here: this matches the host already-running
+        // branch (which also only marks the session online), and avoids injecting
+        // a wake prompt into a possibly-busy live session. The hook fires only on
+        // a fresh start (the stopped/created branch below).
+        setCloudContainerStatus(agentId, 'running')
         return {
           data: {
             success: true,
@@ -1720,6 +1730,10 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
           await startContainer(containerName)
           console.log(`[Wake] Agent ${agentName} (${agentId}) — running in CONTAINER ${containerName} (started)`)
           updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory, true)
+          // Reconcile persisted cloud lifecycle status to running — startContainer
+          // brings the container up but does not itself update the registry's
+          // cloud.status, so without this a hibernate→wake cycle leaves it 'stopped'.
+          setCloudContainerStatus(agentId, 'running')
 
           // Dispatch on-wake hook into the in-container tmux session. agent-server.js
           // re-launches AI_TOOL from baked env on every container start; we only
