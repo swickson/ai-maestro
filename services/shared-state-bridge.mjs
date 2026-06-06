@@ -17,12 +17,7 @@ if (!globalThis._sharedState) {
     terminalSessions: new Map(),     // sessionName -> { clients, ptyProcess, logStream, ... }
     statusSubscribers: new Set(),    // Set<WebSocket> for /status subscribers
     companionClients: new Map(),     // agentId -> Set<WebSocket> for /companion-ws
-    callSessions: new Map(),         // agentId -> CallSessionState for companion call forks
   }
-}
-// Ensure callSessions exists for hot-reload / late initialization
-if (!globalThis._sharedState.callSessions) {
-  globalThis._sharedState.callSessions = new Map()
 }
 
 const state = globalThis._sharedState
@@ -32,22 +27,6 @@ export const agentActivity = state.agentActivity
 export const terminalSessions = state.terminalSessions
 export const statusSubscribers = state.statusSubscribers
 export const companionClients = state.companionClients
-export const callSessions = state.callSessions
-
-/**
- * Broadcast a chat event to all chat-subscribed WebSocket clients for a session.
- * Chat clients subscribe via the terminal WebSocket with { type: 'chat:subscribe' }.
- */
-export function broadcastChatEvent(sessionName, type, payload) {
-  const sessions = globalThis._sharedState?.terminalSessions
-  if (!sessions) return
-  const session = sessions.get(sessionName)
-  if (!session?.chatClients) return
-  const msg = JSON.stringify({ type, ...payload })
-  for (const ws of session.chatClients) {
-    if (ws.readyState === 1) ws.send(msg)
-  }
-}
 
 /**
  * Broadcast a status update to all /status WebSocket subscribers.

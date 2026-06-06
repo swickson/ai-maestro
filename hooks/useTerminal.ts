@@ -229,10 +229,8 @@ export function useTerminal(options: UseTerminalOptions = {}) {
       optionsRef.current.onRegister(fitAddon)
     }
 
-    // Debounced ResizeObserver — batch resize events to prevent layout thrashing.
-    // 300ms debounce lets CSS transitions and layout shifts fully settle before
-    // refitting, which prevents the rapid fit→resize→tmux-redraw cascade that
-    // causes terminal content to visually jump/rewrite.
+    // Debounced ResizeObserver - batch resize events to prevent layout thrashing
+    // 150ms debounce allows CSS transitions to complete before refitting
     const debouncedFit = debounce(() => {
       if (fitAddonRef.current && terminalRef.current) {
         try {
@@ -241,7 +239,7 @@ export function useTerminal(options: UseTerminalOptions = {}) {
           console.warn('[Terminal] Fit failed during resize:', e)
         }
       }
-    }, 300)
+    }, 150)
 
     const resizeObserver = new ResizeObserver(() => {
       debouncedFit()

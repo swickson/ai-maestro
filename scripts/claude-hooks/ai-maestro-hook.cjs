@@ -70,46 +70,19 @@ async function broadcastStatusUpdate(cwd, state) {
         const sessionName = agent.name || agent.alias || agent.session?.tmuxSessionName;
         if (!sessionName) return;
 
-        // Build hookState payload for events that produce meaningful state
-        // (permission requests + notifications). Consumed by the activity/update
-        // route → broadcastActivityUpdate(sessionName, status, hookStatus,
-        // notificationType, agentId, hookState).
-        const hookStateData = (state.status === 'permission_request' || state.notificationType)
-            ? {
-                status: state.status,
-                toolName: state.toolName,
-                toolInput: state.toolInput,
-                description: state.description,
-                options: state.options,
-                message: state.message,
-                notificationType: state.notificationType,
-              }
-            : undefined;
-
         // Broadcast the status update
         await fetch(`${MAESTRO_HOST_URL}/api/sessions/activity/update`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionName,
-                agentId: agent.id,
                 status: state.status,
                 hookStatus: state.status,
-                notificationType: state.notificationType,
-                ...(hookStateData && { hookState: hookStateData })
+                notificationType: state.notificationType
             })
         });
 
-        // Also send heartbeat so standalone agents appear in dashboard
-        if (agent.id) {
-            await fetch(`${MAESTRO_HOST_URL}/api/agents/${encodeURIComponent(agent.id)}/heartbeat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ status: state.status })
-            }).catch(() => {});
-        }
-
-        debugLog({ event: 'status_broadcast', sessionName, agentId: agent.id, status: state.status });
+        debugLog({ event: 'status_broadcast', sessionName, status: state.status });
     } catch (err) {
         debugLog({ event: 'status_broadcast_error', error: err.message });
     }

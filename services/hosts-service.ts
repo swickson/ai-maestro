@@ -38,8 +38,6 @@ import {
   getOrganizationInfo,
   hasOrganization,
   adoptOrganization,
-  loadAllHostsRaw,
-  updateHostRaw,
 } from '@/lib/hosts-config'
 import { addHostWithSync, syncWithAllPeers, getPublicUrl, hasProcessedPropagation, markPropagationProcessed } from '@/lib/host-sync'
 import type { Host } from '@/types/host'
@@ -52,7 +50,6 @@ import type {
   HostIdentityResponse,
 } from '@/types/host-sync'
 import { type ServiceResult, missingField, invalidField, notFound, operationFailed, invalidRequest } from '@/services/service-errors'
-import { resetCircuitBreaker, isCircuitOpen } from '@/services/agents-core-service'
 
 const execAsync = promisify(exec)
 
@@ -81,41 +78,6 @@ async function getDockerStatus(): Promise<{ available: boolean; version?: string
     dockerCache = { available: false, checkedAt: Date.now() }
   }
   return dockerCache!
-}
-
-// ---------------------------------------------------------------------------
-// Cloud capability detection (terraform + AWS CLI)
-// ---------------------------------------------------------------------------
-
-let cloudCache: { terraform: boolean; aws: boolean; awsRegion: string; checkedAt: number } | null = null
-const CLOUD_CACHE_TTL = 60000 // 60 seconds
-
-async function getCloudStatus(): Promise<{ terraform: boolean; aws: boolean; awsRegion: string }> {
-  if (cloudCache && Date.now() - cloudCache.checkedAt < CLOUD_CACHE_TTL) {
-    return cloudCache
-  }
-
-  let terraformAvailable = false
-  try {
-    await execAsync('terraform version', { timeout: 3000 })
-    terraformAvailable = true
-  } catch {}
-
-  let awsAvailable = false
-  let awsRegion = 'us-east-1'
-  if (terraformAvailable) {
-    try {
-      await execAsync('aws sts get-caller-identity', { timeout: 5000 })
-      awsAvailable = true
-      try {
-        const { stdout } = await execAsync('aws configure get region', { timeout: 3000 })
-        if (stdout.trim()) awsRegion = stdout.trim()
-      } catch {}
-    } catch {}
-  }
-
-  cloudCache = { terraform: terraformAvailable, aws: awsAvailable, awsRegion, checkedAt: Date.now() }
-  return cloudCache
 }
 
 // ---------------------------------------------------------------------------
@@ -331,9 +293,8 @@ export async function listHosts(): Promise<ServiceResult<{ hosts: any[] }>> {
   try {
     const hosts = getHosts()
 
-    // Start Docker + Cloud checks in parallel
+    // Start Docker check in parallel
     const dockerStatusPromise = getDockerStatus()
-    const cloudStatusPromise = getCloudStatus()
 
     // Add isSelf flag to each host right away
     const hostsWithSelf = hosts.map(host => ({
@@ -341,47 +302,18 @@ export async function listHosts(): Promise<ServiceResult<{ hosts: any[] }>> {
       isSelf: isSelf(host.id),
     }))
 
-    // Await Docker + Cloud status (returns from cache instantly after first check)
-    const [docker, cloud] = await Promise.all([dockerStatusPromise, cloudStatusPromise])
+    // Await Docker status (returns from cache instantly after first check)
+    const docker = await dockerStatusPromise
     for (const host of hostsWithSelf) {
       if (host.isSelf) {
         (host as any).capabilities = {
           docker: docker.available,
           dockerVersion: docker.version,
-          cloud: {
-            aws: cloud.aws && cloud.terraform,
-            terraform: cloud.terraform,
-            awsRegion: cloud.awsRegion,
-          },
         }
-      }
-
-      // Add online/offline/unknown status based on cached sync data
-      if (host.isSelf) {
-        (host as any).status = 'online'
-      } else if (host.lastSyncSuccess) {
-        const syncAge = Date.now() - new Date(host.lastSyncSuccess).getTime();
-        // 5 minute threshold for considering a host online
-        (host as any).status = syncAge < 300000 ? 'online' : 'offline'
-      } else if (host.lastSyncError) {
-        (host as any).status = 'offline'
-      } else {
-        (host as any).status = 'unknown'
       }
     }
 
-    // Append disabled (circuit-broken) hosts so the UI can show them
-    const allRaw = loadAllHostsRaw()
-    const enabledIds = new Set(hostsWithSelf.map(h => h.id.toLowerCase()))
-    const disabledHosts = allRaw
-      .filter(h => h.enabled === false && !enabledIds.has(h.id.toLowerCase()))
-      .map(h => ({
-        ...h,
-        isSelf: false,
-        status: 'disabled' as const,
-      }))
-
-    return { data: { hosts: [...hostsWithSelf, ...disabledHosts] }, status: 200 }
+    return { data: { hosts: hostsWithSelf }, status: 200 }
   } catch (error) {
     console.error('[Hosts API] Failed to fetch hosts:', error)
     return operationFailed('fetch hosts')
@@ -842,38 +774,6 @@ export async function registerPeer(body: PeerRegistrationRequest): Promise<Servi
       }
     }
 
-    // Check if this peer was circuit-broken — re-enable it
-    const allRaw = loadAllHostsRaw()
-    const circuitBroken = allRaw.find(
-      h => h.id.toLowerCase() === body.host.id.toLowerCase() && h.enabled === false
-    )
-    if (circuitBroken) {
-      console.log(`[Host Sync] Re-enabling circuit-broken host '${circuitBroken.id}' via peer registration`)
-      updateHostRaw(circuitBroken.id, {
-        enabled: true,
-        offlineReason: undefined,
-        offlineSince: undefined,
-        lastSyncError: undefined,
-        url: body.host.url,
-        aliases: body.host.aliases || circuitBroken.aliases,
-        syncedAt: new Date().toISOString(),
-        syncSource: body.source?.initiator || 'peer-registration',
-      })
-      resetCircuitBreaker(circuitBroken.id)
-      clearHostsCache()
-      return {
-        data: {
-          success: true,
-          registered: false,
-          alreadyKnown: true,
-          host: getLocalHostIdentity(),
-          knownHosts: getKnownHostIdentities(body.host.id),
-          ...getOrgInfo(),
-        },
-        status: 200,
-      }
-    }
-
     // Build list of all identifiers to check for duplicates
     const incomingIdentifiers: string[] = [
       body.host.id,
@@ -885,8 +785,6 @@ export async function registerPeer(body: PeerRegistrationRequest): Promise<Servi
     const existingHostById = getHostById(body.host.id)
     if (existingHostById) {
       console.log(`[Host Sync] Peer ${body.host.name} (${body.host.id}) already known by ID`)
-      // Peer is alive — reset circuit breaker if it was tripped
-      resetCircuitBreaker(body.host.id)
       return {
         data: {
           success: true,
@@ -904,6 +802,47 @@ export async function registerPeer(body: PeerRegistrationRequest): Promise<Servi
     for (const identifier of incomingIdentifiers) {
       const existingHost = findHostByAnyIdentifier(identifier)
       if (existingHost && !isSelf(existingHost.id)) {
+        // If the host ID has changed (e.g. hostname migration: milo-dock → shanes-m3-pro-mbp),
+        // update the existing record with the new ID and merge aliases so both old and new
+        // hostnames are recognized. This mirrors the self-host migration in validateHosts().
+        if (existingHost.id !== body.host.id) {
+          const oldId = existingHost.id
+          const mergedAliases = Array.from(new Set([
+            ...(existingHost.aliases || []),
+            ...(body.host.aliases || []),
+            oldId,  // preserve old hostname as alias
+          ]))
+
+          const currentHosts = getHosts()
+          const hostIndex = currentHosts.findIndex(h => h.id === oldId)
+          if (hostIndex !== -1) {
+            currentHosts[hostIndex] = {
+              ...currentHosts[hostIndex],
+              id: body.host.id,
+              name: body.host.name,
+              url: body.host.url,
+              aliases: mergedAliases,
+              syncedAt: new Date().toISOString(),
+              syncSource: body.source?.initiator || 'peer-registration',
+            }
+            saveHosts(currentHosts)
+            clearHostsCache()
+            console.log(`[Host Sync] Migrated peer hostname: ${oldId} → ${body.host.id} (matched by "${identifier}")`)
+
+            return {
+              data: {
+                success: true,
+                registered: true,
+                alreadyKnown: false,
+                host: getLocalHostIdentity(),
+                knownHosts: getKnownHostIdentities(body.host.id),
+                ...getOrgInfo(),
+              },
+              status: 200,
+            }
+          }
+        }
+
         console.log(`[Host Sync] Host with identifier "${identifier}" already exists as ${existingHost.id}`)
         return {
           data: {
@@ -985,60 +924,6 @@ export async function registerPeer(body: PeerRegistrationRequest): Promise<Servi
       },
       status: 500,
     }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// POST /api/hosts/:id/reactivate — re-enable a circuit-broken host
-// ---------------------------------------------------------------------------
-
-export async function reactivateHost(id: string): Promise<ServiceResult<{ success: boolean; host?: Host }>> {
-  try {
-    if (!id) {
-      return missingField('id')
-    }
-
-    const allHosts = loadAllHostsRaw()
-    const host = allHosts.find(h => h.id.toLowerCase() === id.toLowerCase())
-
-    if (!host) {
-      return notFound('Host', id)
-    }
-
-    const isDisabled = host.enabled === false
-    const isCircuitBroken = isCircuitOpen(host.id)
-
-    if (!isDisabled && !isCircuitBroken) {
-      return invalidRequest(`Host '${id}' is already enabled and circuit is closed`)
-    }
-
-    if (isDisabled) {
-      const result = updateHostRaw(id, {
-        enabled: true,
-        offlineReason: undefined,
-        offlineSince: undefined,
-        lastSyncError: undefined,
-      })
-      if (!result.success) {
-        return operationFailed('reactivate host', result.error)
-      }
-    } else {
-      // Host is enabled but circuit-broken — just clear error metadata
-      updateHostRaw(id, {
-        offlineReason: undefined,
-        offlineSince: undefined,
-        lastSyncError: undefined,
-      })
-    }
-
-    resetCircuitBreaker(id)
-    clearHostsCache()
-
-    console.log(`[Hosts] Reactivated host: ${id} (was ${isDisabled ? 'disabled' : 'circuit-broken'})`)
-    return { data: { success: true, host }, status: 200 }
-  } catch (error) {
-    console.error(`[Hosts] Failed to reactivate host '${id}':`, error)
-    return operationFailed('reactivate host')
   }
 }
 
@@ -1153,10 +1038,36 @@ export async function exchangePeers(body: PeerExchangeRequest): Promise<ServiceR
         continue
       }
 
-      // Check if URL already exists
+      // Check if URL already exists (possibly under a different hostname)
       const hosts = getHosts()
       const hostWithSameUrl = hosts.find(h => h.url === peerHost.url && !isSelf(h.id))
       if (hostWithSameUrl) {
+        // If the ID has changed (hostname migration), update the existing record
+        if (hostWithSameUrl.id !== peerHost.id) {
+          const oldId = hostWithSameUrl.id
+          const mergedAliases = Array.from(new Set([
+            ...(hostWithSameUrl.aliases || []),
+            ...(peerHost.aliases || []),
+            oldId,
+          ]))
+          const hostIndex = hosts.findIndex(h => h.id === oldId)
+          if (hostIndex !== -1) {
+            hosts[hostIndex] = {
+              ...hosts[hostIndex],
+              id: peerHost.id,
+              name: peerHost.name,
+              url: peerHost.url,
+              aliases: mergedAliases,
+              syncedAt: new Date().toISOString(),
+              syncSource: body.fromHost.id,
+            }
+            saveHosts(hosts)
+            clearHostsCache()
+            console.log(`[Host Sync] Migrated peer hostname in exchange: ${oldId} → ${peerHost.id}`)
+            alreadyKnown.push(peerHost.id)
+            continue
+          }
+        }
         console.log(`[Host Sync] Skipping ${peerHost.name} (${peerHost.id}): URL ${peerHost.url} already exists as ${hostWithSameUrl.id}`)
         alreadyKnown.push(peerHost.id)
         continue

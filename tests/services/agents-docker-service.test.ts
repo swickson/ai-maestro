@@ -13,7 +13,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   validateMounts,
   validateExtraEnv,
-  buildAiToolCommand,
   buildMountFlags,
   buildEnvFlags,
   buildAmpCommonMounts,
@@ -60,44 +59,44 @@ import type { Agent, SandboxMount } from '@/types/agent'
 
 describe('validateMounts', () => {
   it('returns null for undefined mounts', () => {
-    expect(validateMounts(undefined, 'system')).toBeNull()
+    expect(validateMounts(undefined)).toBeNull()
   })
 
   it('returns null for empty array', () => {
-    expect(validateMounts([], 'system')).toBeNull()
+    expect(validateMounts([])).toBeNull()
   })
 
   it('accepts a well-formed mount', () => {
     const mounts: SandboxMount[] = [
       { hostPath: '/home/user/code', containerPath: '/work/code' },
     ]
-    expect(validateMounts(mounts, 'system')).toBeNull()
+    expect(validateMounts(mounts)).toBeNull()
   })
 
   it('accepts readOnly flag', () => {
     const mounts: SandboxMount[] = [
       { hostPath: '/etc/secrets', containerPath: '/secrets', readOnly: true },
     ]
-    expect(validateMounts(mounts, 'system')).toBeNull()
+    expect(validateMounts(mounts)).toBeNull()
   })
 
   it('rejects relative hostPath', () => {
     const mounts: SandboxMount[] = [
       { hostPath: 'relative/path', containerPath: '/work' },
     ]
-    expect(validateMounts(mounts, 'system')).toMatch(/absolute/)
+    expect(validateMounts(mounts)).toMatch(/absolute/)
   })
 
   it('rejects relative containerPath', () => {
     const mounts: SandboxMount[] = [
       { hostPath: '/home/user', containerPath: 'work' },
     ]
-    expect(validateMounts(mounts, 'system')).toMatch(/absolute/)
+    expect(validateMounts(mounts)).toMatch(/absolute/)
   })
 
   it('rejects missing hostPath', () => {
     const mounts = [{ containerPath: '/work' } as unknown as SandboxMount]
-    expect(validateMounts(mounts, 'system')).toMatch(/hostPath/)
+    expect(validateMounts(mounts)).toMatch(/hostPath/)
   })
 
   it('rejects shell-injection characters in paths', () => {
@@ -110,7 +109,7 @@ describe('validateMounts', () => {
       [{ hostPath: '/home/user\\evil', containerPath: '/work' }],
     ]
     for (const mounts of cases) {
-      expect(validateMounts(mounts, 'system')).toMatch(/quotes|backticks|\$|backslashes|newlines/)
+      expect(validateMounts(mounts)).toMatch(/quotes|backticks|\$|backslashes|newlines/)
     }
   })
 
@@ -118,7 +117,7 @@ describe('validateMounts', () => {
     const mounts: SandboxMount[] = [
       { hostPath: '/home/user/code', containerPath: '/workspace' },
     ]
-    expect(validateMounts(mounts, 'system')).toMatch(/reserved/)
+    expect(validateMounts(mounts)).toMatch(/reserved/)
   })
 
   it('reports the offending index when multiple mounts are provided', () => {
@@ -126,24 +125,24 @@ describe('validateMounts', () => {
       { hostPath: '/ok', containerPath: '/ok' },
       { hostPath: 'bad', containerPath: '/ok' },
     ]
-    expect(validateMounts(mounts, 'system')).toMatch(/mounts\[1\]/)
+    expect(validateMounts(mounts)).toMatch(/mounts\[1\]/)
   })
 
   describe('operator-mount reservation (kanban 489c4afd)', () => {
-    // ALWAYS_RESERVED applies regardless of source — /workspace is the
+    // ALWAYS_RESERVED applies regardless of operatorSupplied — /workspace is the
     // operator's workingDirectory bind, and it would conflict whether the mount
     // came from operator input or anywhere else.
-    it('rejects /workspace exact-match with source = "system"', () => {
+    it('rejects /workspace exact-match without operatorSupplied flag', () => {
       const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace' }]
-      expect(validateMounts(mounts, 'system')).toMatch(/reserved.*working directory/)
+      expect(validateMounts(mounts)).toMatch(/reserved.*working directory/)
     })
 
-    it('rejects descendants of /workspace with source = "system"', () => {
+    it('rejects descendants of /workspace without operatorSupplied flag', () => {
       const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace/src' }]
-      expect(validateMounts(mounts, 'system')).toMatch(/reserved.*working directory/)
+      expect(validateMounts(mounts)).toMatch(/reserved.*working directory/)
     })
 
-    it('passes system mount paths with source = "system"', () => {
+    it('passes system mount paths without operatorSupplied flag', () => {
       // This is the critical "don't self-reject" property — every system
       // mount builder produces paths under OPERATOR_RESERVED roots, and the
       // internal flows in createDockerAgent / updateContainerMountsAndExtraEnv
@@ -165,13 +164,13 @@ describe('validateMounts', () => {
         buildCloudCodexAuthMount(uuid, home),
         buildCloudCodexConfigTomlMount(uuid, home),
       ]
-      expect(validateMounts(allSystemMounts, 'system')).toBeNull()
+      expect(validateMounts(allSystemMounts)).toBeNull()
     })
 
     it('rejects operator mounts at each OPERATOR_RESERVED root exact-match', () => {
       for (const root of OPERATOR_RESERVED_CONTAINER_PATH_ROOTS) {
         const mounts: SandboxMount[] = [{ hostPath: '/tmp/src', containerPath: root }]
-        const err = validateMounts(mounts, 'operator')
+        const err = validateMounts(mounts, { operatorSupplied: true })
         expect(err, `expected rejection for root ${root}`).toMatch(/reserved by AI Maestro/)
         expect(err).toContain(root)
       }
@@ -180,7 +179,7 @@ describe('validateMounts', () => {
     it('rejects operator mounts at descendants of OPERATOR_RESERVED roots', () => {
       for (const root of OPERATOR_RESERVED_CONTAINER_PATH_ROOTS) {
         const mounts: SandboxMount[] = [{ hostPath: '/tmp/src', containerPath: `${root}/child` }]
-        const err = validateMounts(mounts, 'operator')
+        const err = validateMounts(mounts, { operatorSupplied: true })
         expect(err, `expected rejection for descendant of ${root}`).toMatch(/reserved by AI Maestro/)
       }
     })
@@ -195,13 +194,13 @@ describe('validateMounts', () => {
         { hostPath: '/tmp/d', containerPath: '/mnt/data' },
         { hostPath: '/tmp/e', containerPath: '/opt/tools' },
       ]
-      expect(validateMounts(mounts, 'operator')).toBeNull()
+      expect(validateMounts(mounts, { operatorSupplied: true })).toBeNull()
     })
 
-    it('rejects operator mount at /workspace via ALWAYS_RESERVED path (source = "operator" reservation also tripped)', () => {
+    it('rejects operator mount at /workspace via ALWAYS_RESERVED path (operatorSupplied also tripped)', () => {
       const mounts: SandboxMount[] = [{ hostPath: '/x', containerPath: '/workspace' }]
       // ALWAYS_RESERVED fires first; either error is acceptable here.
-      expect(validateMounts(mounts, 'operator')).toMatch(/reserved/)
+      expect(validateMounts(mounts, { operatorSupplied: true })).toMatch(/reserved/)
     })
 
     it('reservation completeness: every system mount builder containerPath maps to a reserved root', () => {
@@ -292,22 +291,22 @@ describe('buildMountFlags', () => {
 
 describe('validateExtraEnv', () => {
   it('returns null for undefined', () => {
-    expect(validateExtraEnv(undefined, 'system')).toBeNull()
+    expect(validateExtraEnv(undefined)).toBeNull()
   })
 
   it('returns null for empty object', () => {
-    expect(validateExtraEnv({}, 'system')).toBeNull()
+    expect(validateExtraEnv({})).toBeNull()
   })
 
   it('accepts well-formed env entries', () => {
-    expect(validateExtraEnv({ FOO: 'bar', BAZ_QUX: '1', _LEADING: 'ok' }, 'system')).toBeNull()
+    expect(validateExtraEnv({ FOO: 'bar', BAZ_QUX: '1', _LEADING: 'ok' })).toBeNull()
   })
 
   it('rejects invalid key shapes', () => {
-    expect(validateExtraEnv({ '1FOO': 'bar' }, 'system')).toMatch(/invalid key/)
-    expect(validateExtraEnv({ 'foo-bar': 'baz' }, 'system')).toMatch(/invalid key/)
-    expect(validateExtraEnv({ 'FOO BAR': 'baz' }, 'system')).toMatch(/invalid key/)
-    expect(validateExtraEnv({ '': 'baz' }, 'system')).toMatch(/invalid key/)
+    expect(validateExtraEnv({ '1FOO': 'bar' })).toMatch(/invalid key/)
+    expect(validateExtraEnv({ 'foo-bar': 'baz' })).toMatch(/invalid key/)
+    expect(validateExtraEnv({ 'FOO BAR': 'baz' })).toMatch(/invalid key/)
+    expect(validateExtraEnv({ '': 'baz' })).toMatch(/invalid key/)
   })
 
   it('rejects shell-injection characters in values', () => {
@@ -320,16 +319,16 @@ describe('validateExtraEnv', () => {
       { FOO: 'a\\b' },
     ]
     for (const env of cases) {
-      expect(validateExtraEnv(env, 'system')).toMatch(/quotes|backticks|\$|backslashes|newlines/)
+      expect(validateExtraEnv(env)).toMatch(/quotes|backticks|\$|backslashes|newlines/)
     }
   })
 
   it('rejects non-string values', () => {
-    expect(validateExtraEnv({ FOO: 123 as unknown as string }, 'system')).toMatch(/must be a string/)
+    expect(validateExtraEnv({ FOO: 123 as unknown as string })).toMatch(/must be a string/)
   })
 
   describe('operator-env reservation (kanban 489c4afd)', () => {
-    it('passes system env keys with source = "system"', () => {
+    it('passes system env keys without operatorSupplied flag', () => {
       // buildAmpCommonEnv populates exactly these keys; internal callers hand
       // this output through validateExtraEnv (transitively via flow tests).
       const sysEnv = buildAmpCommonEnv(
@@ -345,23 +344,23 @@ describe('validateExtraEnv', () => {
         AGENT_ID: 'test-agent',
         AIMAESTRO_HOST_URL: 'http://host.docker.internal:23000',
       }
-      expect(validateExtraEnv(fullSystemEnv, 'system')).toBeNull()
+      expect(validateExtraEnv(fullSystemEnv)).toBeNull()
     })
 
-    it('rejects each OPERATOR_RESERVED key with source = "operator"', () => {
+    it('rejects each OPERATOR_RESERVED key when operatorSupplied is true', () => {
       for (const key of OPERATOR_RESERVED_ENV_KEYS) {
-        const err = validateExtraEnv({ [key]: 'evil' }, 'operator')
+        const err = validateExtraEnv({ [key]: 'evil' }, { operatorSupplied: true })
         expect(err, `expected rejection for key ${key}`).toMatch(/reserved by AI Maestro/)
         expect(err).toContain(key)
       }
     })
 
-    it('accepts the same keys with source = "system"', () => {
+    it('accepts the same keys when operatorSupplied is false', () => {
       // Internal callers hand the same keys through this validator without the
       // flag (e.g., the merged env that goes to buildEnvFlags). Reservation
       // must not self-reject.
       for (const key of OPERATOR_RESERVED_ENV_KEYS) {
-        expect(validateExtraEnv({ [key]: 'system-value' }, 'system')).toBeNull()
+        expect(validateExtraEnv({ [key]: 'system-value' })).toBeNull()
       }
     })
 
@@ -369,7 +368,7 @@ describe('validateExtraEnv', () => {
       // HOME=/workspace/<name> is the canonical Shape β agent-home override —
       // operator must be able to set it via extraEnv.
       expect(
-        validateExtraEnv({ HOME: '/workspace/myagent' }, 'operator')
+        validateExtraEnv({ HOME: '/workspace/myagent' }, { operatorSupplied: true })
       ).toBeNull()
     })
 
@@ -377,7 +376,7 @@ describe('validateExtraEnv', () => {
       // Operator may want to rotate GITHUB_TOKEN via extraEnv as an
       // alternative to body.githubToken at create time.
       expect(
-        validateExtraEnv({ GITHUB_TOKEN: 'ghp_example' }, 'operator')
+        validateExtraEnv({ GITHUB_TOKEN: 'ghp_example' }, { operatorSupplied: true })
       ).toBeNull()
     })
 
@@ -417,7 +416,7 @@ describe('validateExtraEnv', () => {
       expect(
         validateExtraEnv(
           { PATH_EXTRA: '/opt/foo/bin', MY_AGENT_ID: 'something' },
-          'operator'
+          { operatorSupplied: true }
         )
       ).toBeNull()
     })
@@ -508,7 +507,7 @@ describe('buildAmpCommonMounts', () => {
 
   it('passes the SandboxMount validator', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
-    expect(validateMounts(mounts, 'system')).toBeNull()
+    expect(validateMounts(mounts)).toBeNull()
   })
 })
 
@@ -527,7 +526,7 @@ describe('buildCloudClaudeSettingsMount', () => {
   })
 
   it('passes the SandboxMount validator', () => {
-    expect(validateMounts([buildCloudClaudeSettingsMount(uuid, home)], 'system')).toBeNull()
+    expect(validateMounts([buildCloudClaudeSettingsMount(uuid, home)])).toBeNull()
   })
 })
 
@@ -581,7 +580,7 @@ describe('buildCloudClaudePersistMounts', () => {
   })
 
   it('passes the SandboxMount validator', () => {
-    expect(validateMounts(buildCloudClaudePersistMounts(uuid, home), 'system')).toBeNull()
+    expect(validateMounts(buildCloudClaudePersistMounts(uuid, home))).toBeNull()
   })
 })
 
@@ -1059,7 +1058,7 @@ describe('buildCloudCodexConfigTomlMount', () => {
   it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
     const uuid = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
     const home = '/home/operator'
-    expect(validateMounts([buildCloudCodexConfigTomlMount(uuid, home)], 'system')).toBeNull()
+    expect(validateMounts([buildCloudCodexConfigTomlMount(uuid, home)])).toBeNull()
   })
 })
 
@@ -1075,7 +1074,7 @@ describe('buildCloudCodexHooksMount', () => {
 
   it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
     const uuid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
-    expect(validateMounts([buildCloudCodexHooksMount(uuid, '/home/operator')], 'system')).toBeNull()
+    expect(validateMounts([buildCloudCodexHooksMount(uuid, '/home/operator')])).toBeNull()
   })
 })
 
@@ -1145,7 +1144,7 @@ describe('Ziggy MCP integration helpers', () => {
     })
 
     it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
-      expect(validateMounts([buildZiggyCodeMount()], 'system')).toBeNull()
+      expect(validateMounts([buildZiggyCodeMount()])).toBeNull()
     })
   })
 
@@ -1163,7 +1162,7 @@ describe('Ziggy MCP integration helpers', () => {
     })
 
     it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
-      expect(validateMounts([buildZiggyEnvOverlayMount('nodie')], 'system')).toBeNull()
+      expect(validateMounts([buildZiggyEnvOverlayMount('nodie')])).toBeNull()
     })
   })
 
@@ -1234,7 +1233,7 @@ describe('buildCloudGeminiSettingsMount', () => {
   it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
     const uuid = '77777777-aaaa-7777-aaaa-777777777777'
     const home = '/home/operator'
-    expect(validateMounts([buildCloudGeminiSettingsMount(uuid, home)], 'system')).toBeNull()
+    expect(validateMounts([buildCloudGeminiSettingsMount(uuid, home)])).toBeNull()
   })
 })
 
@@ -1254,7 +1253,7 @@ describe('buildCloudAntigravityAppDataMount (kanban 49cc27d7, OPT-B single-dir)'
   it('passes validateMounts as a non-operator-supplied system mount', () => {
     const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     const home = '/home/operator'
-    expect(validateMounts([buildCloudAntigravityAppDataMount(uuid, home)], 'system')).toBeNull()
+    expect(validateMounts([buildCloudAntigravityAppDataMount(uuid, home)])).toBeNull()
   })
 
   it('is operator-reserved (containerPath descends from CONTAINER_HOME/.gemini, which is in OPERATOR_RESERVED_CONTAINER_PATH_ROOTS)', () => {
@@ -1264,7 +1263,7 @@ describe('buildCloudAntigravityAppDataMount (kanban 49cc27d7, OPT-B single-dir)'
     const home = '/home/operator'
     const mount = buildCloudAntigravityAppDataMount(uuid, home)
     expect(
-      validateMounts([mount], 'operator'),
+      validateMounts([mount], { operatorSupplied: true }),
     ).toMatch(/reserved by AI Maestro/)
   })
 })
@@ -1282,7 +1281,7 @@ describe('buildCloudCodexVersionMount', () => {
   it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
     const uuid = '88888888-bbbb-8888-bbbb-888888888888'
     const home = '/home/operator'
-    expect(validateMounts([buildCloudCodexVersionMount(uuid, home)], 'system')).toBeNull()
+    expect(validateMounts([buildCloudCodexVersionMount(uuid, home)])).toBeNull()
   })
 })
 
@@ -1468,7 +1467,7 @@ describe('buildCloudCodexAuthMount', () => {
   it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
     const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
     const home = '/home/operator'
-    expect(validateMounts([buildCloudCodexAuthMount(uuid, home)], 'system')).toBeNull()
+    expect(validateMounts([buildCloudCodexAuthMount(uuid, home)])).toBeNull()
   })
 })
 
@@ -1580,7 +1579,7 @@ describe('buildCloudGeminiOAuthMount', () => {
   it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
     const uuid = 'gggggggg-gggg-gggg-gggg-gggggggggggg'
     const home = '/home/operator'
-    expect(validateMounts([buildCloudGeminiOAuthMount(uuid, home)], 'system')).toBeNull()
+    expect(validateMounts([buildCloudGeminiOAuthMount(uuid, home)])).toBeNull()
   })
 })
 
@@ -1807,7 +1806,7 @@ describe('buildAmpCommonEnv', () => {
   })
 
   it('passes the extraEnv validator', () => {
-    expect(validateExtraEnv(buildAmpCommonEnv(uuid, name, hostUrl), 'system')).toBeNull()
+    expect(validateExtraEnv(buildAmpCommonEnv(uuid, name, hostUrl))).toBeNull()
   })
 })
 
@@ -2288,63 +2287,5 @@ describe('clearRestorationSentinel', () => {
     clearRestorationSentinel('agent-c3', tmpHome)
     expect(fs.existsSync(path.join(restorationDir, 'complete'))).toBe(false)
     expect(fs.existsSync(sibling)).toBe(true)
-  })
-})
-
-// --- buildAiToolCommand --- permission mode → AI_TOOL env var ---
-
-describe('buildAiToolCommand', () => {
-  it('uses --permission-mode auto for permissionMode smartAuto (not --dangerously-skip-permissions)', () => {
-    const result = buildAiToolCommand({ program: 'claude', permissionMode: 'smartAuto' })
-    expect(result).toBe('claude --permission-mode auto')
-    expect(result).not.toContain('--dangerously-skip-permissions')
-  })
-
-  it('maps yolo: true to --permission-mode bypassPermissions (backward compat)', () => {
-    const result = buildAiToolCommand({ program: 'claude', yolo: true })
-    expect(result).toBe('claude --permission-mode bypassPermissions')
-  })
-
-  it('does NOT add --permission-mode for supervised (default behavior)', () => {
-    const result = buildAiToolCommand({ program: 'claude', permissionMode: 'supervised' })
-    expect(result).toBe('claude')
-    expect(result).not.toContain('--permission-mode')
-  })
-
-  it('permissionMode wins over yolo when both are provided', () => {
-    const result = buildAiToolCommand({ program: 'claude', yolo: true, permissionMode: 'trustEdits' })
-    expect(result).toBe('claude --permission-mode acceptEdits')
-    expect(result).not.toContain('bypassPermissions')
-  })
-
-  it('does NOT add --permission-mode for non-claude programs even with permissionMode set', () => {
-    const result = buildAiToolCommand({ program: 'codex', permissionMode: 'fullAutonomy' })
-    expect(result).toBe('codex')
-    expect(result).not.toContain('--permission-mode')
-  })
-
-  it('defaults to claude when no program specified', () => {
-    const result = buildAiToolCommand({ permissionMode: 'planOnly' })
-    expect(result).toBe('claude --permission-mode plan')
-  })
-
-  it('defaults to supervised when neither permissionMode nor yolo are set', () => {
-    const result = buildAiToolCommand({ program: 'claude' })
-    expect(result).toBe('claude')
-  })
-
-  it('appends programArgs after permission-mode flag', () => {
-    const result = buildAiToolCommand({ program: 'claude', permissionMode: 'smartAuto', programArgs: '--continue' })
-    expect(result).toBe('claude --permission-mode auto --continue')
-  })
-
-  it('appends model after programArgs', () => {
-    const result = buildAiToolCommand({ program: 'claude', permissionMode: 'fullAutonomy', model: 'claude-sonnet-4-6' })
-    expect(result).toBe('claude --permission-mode bypassPermissions --model claude-sonnet-4-6')
-  })
-
-  it('treats claude-code program name as claude-compatible (receives permission flags)', () => {
-    const result = buildAiToolCommand({ program: 'claude-code', permissionMode: 'trustEdits' })
-    expect(result).toBe('claude-code --permission-mode acceptEdits')
   })
 })

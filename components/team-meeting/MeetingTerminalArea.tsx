@@ -34,7 +34,9 @@ function MeetingTerminalAreaInner({ agents, activeAgentId }: MeetingTerminalArea
     )
   }
 
-  if (!session) {
+  const hasTerminal = !!activeAgent.session?.tmuxSessionName
+
+  if (!hasTerminal) {
     return (
       <div className="flex-1 relative">
         <div className="absolute inset-0 flex items-center justify-center">
@@ -54,7 +56,7 @@ function MeetingTerminalAreaInner({ agents, activeAgentId }: MeetingTerminalArea
         className="absolute inset-0 flex flex-col"
       >
         <TerminalView
-          session={session}
+          session={session!}
           isVisible={true}
           hideFooter={true}
         />

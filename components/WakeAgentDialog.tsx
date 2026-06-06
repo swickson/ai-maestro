@@ -3,17 +3,14 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Terminal, Cpu, Code2, Sparkles, Play, ChevronRight } from 'lucide-react'
-import TrustLevelSelector from './TrustLevelSelector'
-import type { AgentPermissionMode } from '@/types/agent'
+import { X, Terminal, Cpu, Code2, Sparkles, Play } from 'lucide-react'
 
 interface WakeAgentDialogProps {
   isOpen: boolean
   onClose: () => void
-  onConfirm: (program: string, options?: { permissionMode?: AgentPermissionMode }) => void
+  onConfirm: (program: string) => void
   agentName: string
   agentAlias?: string
-  defaultPermissionMode?: AgentPermissionMode
 }
 
 const CLI_OPTIONS = [
@@ -46,6 +43,20 @@ const CLI_OPTIONS = [
     command: 'cursor'
   },
   {
+    id: 'antigravity',
+    name: 'Antigravity CLI',
+    description: 'Google\'s Antigravity AI CLI',
+    icon: Sparkles,
+    command: 'agy'
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    description: 'Open-source AI coding tool',
+    icon: Code2,
+    command: 'opencode'
+  },
+  {
     id: 'terminal',
     name: 'Terminal Only',
     description: 'Plain shell without AI assistant',
@@ -59,12 +70,9 @@ export default function WakeAgentDialog({
   onClose,
   onConfirm,
   agentName,
-  agentAlias,
-  defaultPermissionMode
+  agentAlias
 }: WakeAgentDialogProps) {
   const [selectedProgram, setSelectedProgram] = useState<string>('claude')
-  const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>(defaultPermissionMode || 'supervised')
-  const [showAdvanced, setShowAdvanced] = useState(false)
   const [isWaking, setIsWaking] = useState(false)
   const [mounted, setMounted] = useState(false)
 
@@ -75,28 +83,17 @@ export default function WakeAgentDialog({
     setMounted(true)
   }, [])
 
-  // Reset state when dialog closes or opens
+  // Reset isWaking state when dialog closes or opens
   useEffect(() => {
     if (!isOpen) {
       setIsWaking(false)
       setSelectedProgram('claude')
-      setPermissionMode(defaultPermissionMode || 'supervised')
-      setShowAdvanced(false)
     }
-  }, [isOpen, defaultPermissionMode])
-
-  // Reset permission mode when switching away from Claude Code
-  const handleProgramChange = (program: string) => {
-    setSelectedProgram(program)
-    if (program !== 'claude') {
-      setPermissionMode(defaultPermissionMode || 'supervised')
-      setShowAdvanced(false)
-    }
-  }
+  }, [isOpen])
 
   const handleConfirm = () => {
     setIsWaking(true)
-    onConfirm(selectedProgram, selectedProgram === 'claude' ? { permissionMode } : undefined)
+    onConfirm(selectedProgram)
     // Dialog will be closed by parent after wake completes
   }
 
@@ -169,7 +166,7 @@ export default function WakeAgentDialog({
                     return (
                       <button
                         key={option.id}
-                        onClick={() => handleProgramChange(option.id)}
+                        onClick={() => setSelectedProgram(option.id)}
                         disabled={isWaking}
                         className={`w-full flex items-center gap-4 p-3 rounded-lg border transition-all ${
                           isSelected
@@ -214,25 +211,6 @@ export default function WakeAgentDialog({
                   })}
                 </div>
               </div>
-
-              {/* Advanced Options — only for Claude Code */}
-              {selectedProgram === 'claude' && (
-                <div className="px-6 pb-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowAdvanced(!showAdvanced)}
-                    className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-                  >
-                    <ChevronRight className={`w-3 h-3 transition-transform ${showAdvanced ? 'rotate-90' : ''}`} />
-                    Permission Mode
-                  </button>
-                  {showAdvanced && (
-                    <div className="mt-3">
-                      <TrustLevelSelector value={permissionMode} onChange={setPermissionMode} compact />
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* Footer */}
               <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-zinc-700 bg-zinc-800/50">

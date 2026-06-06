@@ -25,6 +25,7 @@ const {
   mockMessageQueue,
   mockFs,
   mockUuid,
+  mockContainerUtils,
 } = vi.hoisted(() => {
   const mockRuntime = {
     listSessions: vi.fn().mockResolvedValue([]),
@@ -54,6 +55,7 @@ const {
       searchAgents: vi.fn().mockReturnValue([]),
       linkSession: vi.fn(),
       unlinkSession: vi.fn(),
+      markCloudContainerStale: vi.fn(),
     },
     mockHostsConfig: {
       getHosts: vi.fn().mockReturnValue([{ id: 'test-host', name: 'Test Host', url: 'http://localhost:23000' }]),
@@ -93,6 +95,12 @@ const {
     mockUuid: {
       v4: vi.fn(() => `uuid-${++uuidCounter}`),
     },
+    mockContainerUtils: {
+      inspectContainerStatus: vi.fn().mockResolvedValue('missing' as const),
+      startContainer: vi.fn().mockResolvedValue(undefined),
+      stopContainer: vi.fn().mockResolvedValue(undefined),
+      removeContainer: vi.fn().mockResolvedValue(undefined),
+    },
   }
 })
 
@@ -108,19 +116,11 @@ vi.mock('@/lib/agent-startup', () => mockAgentStartup)
 vi.mock('@/lib/messageQueue', () => mockMessageQueue)
 vi.mock('fs', () => mockFs)
 vi.mock('uuid', () => mockUuid)
-vi.mock('@/lib/container-utils', () => ({
-  capturePaneFromContainer: vi.fn().mockResolvedValue(''),
-  inspectContainerStatus: vi.fn().mockResolvedValue('missing'),
-  removeContainer: vi.fn().mockResolvedValue(undefined),
-  sendKeysToContainer: vi.fn().mockResolvedValue(undefined),
-  startContainer: vi.fn().mockResolvedValue(undefined),
-  stopContainer: vi.fn().mockResolvedValue(undefined),
-  tmuxHasSessionInContainer: vi.fn().mockResolvedValue(false),
-}))
 vi.mock('child_process', () => ({
   exec: vi.fn((_cmd: string, cb: Function) => cb(null, { stdout: '', stderr: '' })),
   execSync: vi.fn().mockReturnValue(''),
 }))
+vi.mock('@/lib/container-utils', () => mockContainerUtils)
 
 // ============================================================================
 // Import module under test (after mocks)
@@ -144,6 +144,10 @@ import {
   initializeStartup,
   getStartupInfo,
   proxyHealthCheck,
+  MESH_PRIMER,
+  loadMeshPrimer,
+  FIRST_RUN_MODAL_PATTERN,
+  resolveStartCommand,
 } from '@/services/agents-core-service'
 
 // ============================================================================
@@ -162,6 +166,10 @@ beforeEach(() => {
   mockHostsConfig.getSelfHost.mockReturnValue({ id: 'test-host', name: 'Test Host', url: 'http://localhost:23000' })
   mockHostsConfig.getHosts.mockReturnValue([{ id: 'test-host', name: 'Test Host', url: 'http://localhost:23000' }])
   mockHostsConfig.isSelf.mockReturnValue(true)
+  mockContainerUtils.inspectContainerStatus.mockResolvedValue('missing')
+  mockContainerUtils.startContainer.mockResolvedValue(undefined)
+  mockContainerUtils.stopContainer.mockResolvedValue(undefined)
+  mockContainerUtils.removeContainer.mockResolvedValue(undefined)
 })
 
 // ============================================================================
@@ -204,36 +212,6 @@ describe('listAgents', () => {
     expect((result.data as any)?.stats.orphans).toBe(1)
     // Orphan should be saved to registry
     expect(mockAgentRegistry.saveAgents).toHaveBeenCalled()
-  })
-
-  it('does NOT create orphan agents for __call sessions', async () => {
-    mockAgentRegistry.loadAgents.mockReturnValue([])
-    mockRuntime.listSessions.mockResolvedValue([
-      { name: 'my-agent__call', workingDirectory: '/home', createdAt: '2025-01-01T00:00:00Z', windows: 1 },
-    ])
-
-    const result = await listAgents()
-
-    expect((result.data as any)?.agents).toHaveLength(0)
-    expect((result.data as any)?.stats.orphans).toBe(0)
-    expect(mockAgentRegistry.saveAgents).not.toHaveBeenCalled()
-  })
-
-  it('filters __call sessions while keeping real sessions', async () => {
-    const agent = makeAgent({ name: 'my-agent' })
-    mockAgentRegistry.loadAgents.mockReturnValue([agent])
-    mockRuntime.listSessions.mockResolvedValue([
-      { name: 'my-agent', workingDirectory: '/home', createdAt: '2025-01-01T00:00:00Z', windows: 1 },
-      { name: 'my-agent__call', workingDirectory: '/home', createdAt: '2025-01-01T00:00:00Z', windows: 1 },
-    ])
-
-    const result = await listAgents()
-
-    // Should only see the real agent, not the call fork
-    expect((result.data as any)?.agents).toHaveLength(1)
-    expect((result.data as any)?.agents[0].name).toBe('my-agent')
-    expect((result.data as any)?.agents[0].status).toBe('active')
-    expect((result.data as any)?.stats.orphans).toBe(0)
   })
 
   it('marks agents offline when no matching tmux session', async () => {
@@ -430,6 +408,129 @@ describe('updateAgentById', () => {
     expect(result.status).toBe(400)
     expect((result.data as ServiceError).message).toBe('Name taken')
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // kanban aa2953b0 — mark cloud container stale on AI_TOOL-composing change
+  // ──────────────────────────────────────────────────────────────────────────
+
+  it('marks cloud container stale when program changes', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, program: 'antigravity' }
+    const stale = {
+      ...updated,
+      deployment: {
+        ...updated.deployment!,
+        cloud: { ...updated.deployment!.cloud!, containerStaleSince: 1700000000000 },
+      },
+    }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+    mockAgentRegistry.markCloudContainerStale.mockReturnValue(stale)
+
+    const result = updateAgentById('agent-cloud', { program: 'antigravity' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).toHaveBeenCalledWith('agent-cloud')
+    expect(result.status).toBe(200)
+    expect((result.data as any)?.agent.deployment.cloud.containerStaleSince).toBe(1700000000000)
+  })
+
+  it('marks cloud container stale when programArgs changes', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      programArgs: '--yolo',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, programArgs: '--dangerously-skip-permissions' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+    mockAgentRegistry.markCloudContainerStale.mockReturnValue(updated)
+
+    updateAgentById('agent-cloud', { programArgs: '--dangerously-skip-permissions' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).toHaveBeenCalledWith('agent-cloud')
+  })
+
+  it('marks cloud container stale when model changes', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      model: 'claude-sonnet-4-6',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, model: 'claude-opus-4-7' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+    mockAgentRegistry.markCloudContainerStale.mockReturnValue(updated)
+
+    updateAgentById('agent-cloud', { model: 'claude-opus-4-7' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).toHaveBeenCalledWith('agent-cloud')
+  })
+
+  it('does NOT mark stale when only non-AI_TOOL fields change (name, tags)', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    const updated = { ...existing, taskDescription: 'new task' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+
+    updateAgentById('agent-cloud', { taskDescription: 'new task' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
+  })
+
+  it('does NOT mark stale when PATCH supplies same value for program (no real change)', () => {
+    const existing = makeAgent({
+      id: 'agent-cloud',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://x:1/term' } },
+    })
+    // updateAgent returns the agent with program unchanged
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(existing)
+
+    updateAgentById('agent-cloud', { program: 'claude' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
+  })
+
+  it('does NOT mark stale for local (non-cloud) agents even when program changes', () => {
+    const existing = makeAgent({
+      id: 'agent-local',
+      program: 'claude',
+      deployment: { type: 'local', local: { hostname: 'host', platform: 'linux' } },
+    })
+    const updated = { ...existing, program: 'antigravity' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+
+    updateAgentById('agent-local', { program: 'antigravity' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
+  })
+
+  it('does NOT mark stale for cloud agents with non-local-container provider', () => {
+    // Future-proofing: aws/gcp/digitalocean/azure providers go through their
+    // own rebuild path, not /update-runtime, so this gap doesn't apply.
+    const existing = makeAgent({
+      id: 'agent-aws',
+      program: 'claude',
+      deployment: { type: 'cloud', cloud: { provider: 'aws', websocketUrl: 'wss://aws/term' } },
+    })
+    const updated = { ...existing, program: 'antigravity' }
+    mockAgentRegistry.getAgent.mockReturnValue(existing)
+    mockAgentRegistry.updateAgent.mockReturnValue(updated)
+
+    updateAgentById('agent-aws', { program: 'antigravity' })
+
+    expect(mockAgentRegistry.markCloudContainerStale).not.toHaveBeenCalled()
+  })
 })
 
 // ============================================================================
@@ -486,6 +587,170 @@ describe('deleteAgentById', () => {
     const result = await deleteAgentById('agent-1', true)
 
     expect(result.status).toBe(200)
+  })
+
+  // ─── Cloud-agent (containerized) hard-delete teardown — fix for #84 ──────
+  // Hard-delete must stop + remove the docker container before clearing the
+  // registry record, otherwise `aim-<name>` leaks (resource waste + blocks
+  // recreate-with-same-name at `docker run`). Soft-delete intentionally
+  // skips teardown — soft-delete is recoverable.
+  describe('cloud (containerized) hard-delete', () => {
+    function makeCloudAgent(overrides: Record<string, unknown> = {}) {
+      return makeAgent({
+        id: 'cloud-1',
+        name: 'cloud-agent',
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            containerName: 'aim-cloud-agent',
+            websocketUrl: 'ws://localhost:23001/term',
+            healthCheckUrl: 'http://localhost:23001/health',
+            status: 'running',
+          },
+        },
+        ...overrides,
+      })
+    }
+
+    it('stops + removes the container before registry delete when running', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+
+      const callOrder: string[] = []
+      mockContainerUtils.stopContainer.mockImplementationOnce(async () => {
+        callOrder.push('stop')
+      })
+      mockContainerUtils.removeContainer.mockImplementationOnce(async () => {
+        callOrder.push('rm')
+      })
+      mockAgentRegistry.deleteAgent.mockImplementationOnce(() => {
+        callOrder.push('registryDelete')
+        return true
+      })
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockContainerUtils.removeContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      // Ordering is load-bearing: registry delete must run AFTER docker teardown.
+      expect(callOrder).toEqual(['stop', 'rm', 'registryDelete'])
+    })
+
+    it('skips stop but still removes the container when stopped (frees the name slot)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('stopped')
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).toHaveBeenCalledWith('aim-cloud-agent')
+    })
+
+    it('skips both stop and rm when container is missing (no slot to free)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).not.toHaveBeenCalled()
+    })
+
+    it('skips rm when docker daemon is down but still completes registry delete', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('docker_down')
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).not.toHaveBeenCalled()
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('treats stopContainer failures as non-fatal — registry delete still runs', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.stopContainer.mockRejectedValueOnce(new Error('docker stop timed out'))
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.removeContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('treats removeContainer failures as non-fatal — registry delete still runs', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.removeContainer.mockRejectedValueOnce(new Error('container in use'))
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('does NOT touch docker on soft-delete (recoverable; container preserved)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+
+      const result = await deleteAgentById('cloud-1', false)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+      expect(mockContainerUtils.removeContainer).not.toHaveBeenCalled()
+    })
+
+    it('does NOT touch docker when cloud agent has no containerName configured', async () => {
+      const agent = makeCloudAgent({
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            websocketUrl: 'ws://localhost:23001/term',
+            // containerName intentionally missing
+          },
+        },
+      })
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+
+      const result = await deleteAgentById('cloud-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+      expect(mockAgentRegistry.deleteAgent).toHaveBeenCalledWith('cloud-1', true)
+    })
+
+    it('does NOT touch docker on hard-delete of host (non-cloud) agent', async () => {
+      const hostAgent = makeAgent({ id: 'host-1', name: 'host-agent' })
+      mockAgentRegistry.getAgent.mockReturnValue(hostAgent)
+      mockAgentRegistry.deleteAgent.mockReturnValue(true)
+
+      const result = await deleteAgentById('host-1', true)
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+    })
   })
 })
 
@@ -689,85 +954,185 @@ describe('wakeAgent', () => {
     expect(result.status).toBe(500)
   })
 
-  it('sends --permission-mode auto when agent.permissionMode is smartAuto', async () => {
-    const agent = makeAgent({ id: 'agent-1', name: 'my-agent', program: 'claude code', permissionMode: 'smartAuto' })
-    mockAgentRegistry.getAgent.mockReturnValue(agent)
-    mockRuntime.sessionExists.mockResolvedValue(false)
-    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+  // ─── Cloud-agent (containerized) wake path — fix for #6 ───────────────────
+  describe('cloud (containerized) wake', () => {
+    function makeCloudAgent(overrides: Record<string, unknown> = {}) {
+      return makeAgent({
+        id: 'cloud-1',
+        name: 'cloud-agent',
+        workingDirectory: '/workspace',
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            containerName: 'aim-cloud-agent',
+            websocketUrl: 'ws://localhost:23001/term',
+            healthCheckUrl: 'http://localhost:23001/health',
+            status: 'running',
+          },
+        },
+        ...overrides,
+      })
+    }
 
-    const result = await wakeAgent('agent-1', {})
+    it('returns alreadyRunning when container is running and skips host tmux', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
 
-    expect(result.status).toBe(200)
-    // Find the sendKeys call that launches the program (the one with { enter: true })
-    const programCall = mockRuntime.sendKeys.mock.calls.find(
-      (call: any[]) => call[2]?.enter === true
-    )
-    expect(programCall).toBeDefined()
-    expect(programCall![1]).toContain('--permission-mode auto')
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.alreadyRunning).toBe(true)
+      expect(mockContainerUtils.startContainer).not.toHaveBeenCalled()
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('starts the container when stopped and skips host tmux', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('stopped')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.programStarted).toBe(true)
+      expect(mockContainerUtils.startContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('refuses host fallback by default when container is missing', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(400)
+      expect((result.data as ServiceError)?.message).toMatch(/container .* does not exist/i)
+      expect((result.data as ServiceError)?.message).toMatch(/sandbox/i)
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('refuses host fallback by default when docker daemon is down', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('docker_down')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(400)
+      expect((result.data as ServiceError)?.message).toMatch(/docker daemon/i)
+      expect(mockRuntime.createSession).not.toHaveBeenCalled()
+    })
+
+    it('falls through to host tmux when allowHostFallback=true and container missing', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockRuntime.sessionExists.mockResolvedValue(false)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await wakeAgent('cloud-1', { startProgram: false, allowHostFallback: true })
+
+      expect(result.status).toBe(200)
+      expect(mockRuntime.createSession).toHaveBeenCalledWith('cloud-agent', '/workspace')
+    })
+
+    it('returns 400 when cloud agent has no containerName configured', async () => {
+      const agent = makeCloudAgent({
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            websocketUrl: 'ws://localhost:23001/term',
+            // containerName intentionally missing
+          },
+        },
+      })
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+
+      const result = await wakeAgent('cloud-1', { startProgram: false })
+
+      expect(result.status).toBe(400)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+    })
+  })
+})
+
+// ============================================================================
+// Mesh-awareness primer (loadMeshPrimer + MESH_PRIMER)
+// ============================================================================
+
+describe('loadMeshPrimer', () => {
+  it('returns the primer when meshAware is undefined (default enabled)', () => {
+    const agent = makeAgent({ id: 'a1', name: 'alpha' })
+    // meshAware intentionally not set
+    expect(loadMeshPrimer(agent)).toBe(MESH_PRIMER)
   })
 
-  it('does NOT send --permission-mode flag when permissionMode is supervised', async () => {
-    const agent = makeAgent({ id: 'agent-1', name: 'my-agent', program: 'claude code', permissionMode: 'supervised' })
-    mockAgentRegistry.getAgent.mockReturnValue(agent)
-    mockRuntime.sessionExists.mockResolvedValue(false)
-    mockAgentRegistry.loadAgents.mockReturnValue([agent])
-
-    const result = await wakeAgent('agent-1', {})
-
-    expect(result.status).toBe(200)
-    const programCall = mockRuntime.sendKeys.mock.calls.find(
-      (call: any[]) => call[2]?.enter === true
-    )
-    expect(programCall).toBeDefined()
-    expect(programCall![1]).not.toContain('--permission-mode')
+  it('returns the primer when meshAware is explicitly true', () => {
+    const agent = makeAgent({ id: 'a2', name: 'beta', meshAware: true })
+    expect(loadMeshPrimer(agent)).toBe(MESH_PRIMER)
   })
 
-  it('params.permissionMode overrides agent.permissionMode', async () => {
-    const agent = makeAgent({ id: 'agent-1', name: 'my-agent', program: 'claude code', permissionMode: 'supervised' })
-    mockAgentRegistry.getAgent.mockReturnValue(agent)
-    mockRuntime.sessionExists.mockResolvedValue(false)
-    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+  it('returns empty string when meshAware is explicitly false (opt-out)', () => {
+    const agent = makeAgent({ id: 'a3', name: 'gamma', meshAware: false })
+    expect(loadMeshPrimer(agent)).toBe('')
+  })
+})
 
-    const result = await wakeAgent('agent-1', { permissionMode: 'trustEdits' })
-
-    expect(result.status).toBe(200)
-    const programCall = mockRuntime.sendKeys.mock.calls.find(
-      (call: any[]) => call[2]?.enter === true
-    )
-    expect(programCall).toBeDefined()
-    expect(programCall![1]).toContain('--permission-mode acceptEdits')
+describe('MESH_PRIMER content', () => {
+  it('names the amp-send command so agents know the entry point', () => {
+    expect(MESH_PRIMER).toMatch(/amp-send/)
   })
 
-  it('does NOT inject --permission-mode for non-claude programs', async () => {
-    const agent = makeAgent({ id: 'agent-1', name: 'my-agent', program: 'codex', permissionMode: 'fullAutonomy' })
-    mockAgentRegistry.getAgent.mockReturnValue(agent)
-    mockRuntime.sessionExists.mockResolvedValue(false)
-    mockAgentRegistry.loadAgents.mockReturnValue([agent])
-
-    const result = await wakeAgent('agent-1', {})
-
-    expect(result.status).toBe(200)
-    const programCall = mockRuntime.sendKeys.mock.calls.find(
-      (call: any[]) => call[2]?.enter === true
-    )
-    expect(programCall).toBeDefined()
-    expect(programCall![1]).not.toContain('--permission-mode')
+  it('points at amp-primer as the full-docs escape hatch', () => {
+    expect(MESH_PRIMER).toMatch(/amp-primer/)
   })
 
-  it('sends --permission-mode bypassPermissions for fullAutonomy', async () => {
-    const agent = makeAgent({ id: 'agent-1', name: 'my-agent', program: 'claude code', permissionMode: 'fullAutonomy' })
-    mockAgentRegistry.getAgent.mockReturnValue(agent)
-    mockRuntime.sessionExists.mockResolvedValue(false)
-    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+  it('uses the real --priority flag syntax, not the fictional positional form', () => {
+    // Regression guard: an earlier draft documented
+    //   amp-send <recipient> "<subject>" "<body>" <priority> <type>
+    // which doesn't match the actual CLI. Agents following the positional
+    // form fail on first amp-send with an argument-count error.
+    expect(MESH_PRIMER).toMatch(/--priority/)
+    expect(MESH_PRIMER).toMatch(/--type/)
+    expect(MESH_PRIMER).not.toMatch(/"<body>"\s+<priority>/)
+  })
 
-    const result = await wakeAgent('agent-1', {})
+  it('keeps shell quotes around multi-word placeholders to prevent word-splitting', () => {
+    // Regression guard: the v2 pass briefly dropped the quotes around
+    // <subject> and <body> when restructuring to the flag form. Without
+    // the quotes, an agent running
+    //   amp-send mason Touch target sizing "body here" --priority high
+    // gets "Touch", "target", "sizing" as three separate positional args
+    // and amp-send errors out. The quotes are the cheapest prevention
+    // against the most likely first-use failure.
+    expect(MESH_PRIMER).toMatch(/"<subject>"/)
+    expect(MESH_PRIMER).toMatch(/"<body>"/)
+  })
 
-    expect(result.status).toBe(200)
-    const programCall = mockRuntime.sendKeys.mock.calls.find(
-      (call: any[]) => call[2]?.enter === true
-    )
-    expect(programCall).toBeDefined()
-    expect(programCall![1]).toContain('--permission-mode bypassPermissions')
+  it('enumerates the real priority values (low, normal, high, urgent)', () => {
+    expect(MESH_PRIMER).toMatch(/low\|normal\|high\|urgent/)
+  })
+
+  it('enumerates the real message type values, including task and status', () => {
+    expect(MESH_PRIMER).toMatch(/request\|response\|notification\|task\|status/)
+  })
+
+  it('does not hardcode a specific install directory like ~/.local/bin', () => {
+    // Hardcoding the path lies on hosts that install amp-* elsewhere.
+    // The primer says "in your PATH" instead.
+    expect(MESH_PRIMER).not.toMatch(/~\/\.local\/bin/)
+  })
+
+  it('is short enough to stay well under any plausible sendKeys size limit', () => {
+    // Empirical safe bound for a single tmux sendKeys is multi-kilobyte;
+    // MESH_PRIMER should be < 1KB so primer + user prompt stays comfortable.
+    expect(MESH_PRIMER.length).toBeLessThan(1024)
   })
 })
 
@@ -841,6 +1206,207 @@ describe('hibernateAgent', () => {
     // Should send Ctrl-C then "exit" before kill
     expect(mockRuntime.sendKeys).toHaveBeenCalledWith('my-agent', 'C-c')
     expect(mockRuntime.sendKeys).toHaveBeenCalledWith('my-agent', '"exit"', { enter: true })
+  })
+
+  it('clears the agentActivity heartbeat after hibernating an active session', async () => {
+    const agent = makeAgent({ id: 'agent-1', name: 'my-agent' })
+    mockAgentRegistry.getAgent.mockReturnValue(agent)
+    mockRuntime.sessionExists.mockResolvedValue(true)
+    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+    mockSharedState.agentActivity.set('agent-1', Date.now())
+
+    await hibernateAgent('agent-1', {})
+
+    expect(mockSharedState.agentActivity.has('agent-1')).toBe(false)
+  })
+
+  it('clears the agentActivity heartbeat when session was already terminated', async () => {
+    const agent = makeAgent({ id: 'agent-1', name: 'my-agent' })
+    mockAgentRegistry.getAgent.mockReturnValue(agent)
+    mockRuntime.sessionExists.mockResolvedValue(false)
+    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+    mockSharedState.agentActivity.set('agent-1', Date.now())
+
+    await hibernateAgent('agent-1', {})
+
+    expect(mockSharedState.agentActivity.has('agent-1')).toBe(false)
+  })
+
+  // ─── Cloud-agent (containerized) hibernate path — symmetric to wakeAgent ──
+  describe('cloud (containerized) hibernate', () => {
+    function makeCloudAgent(overrides: Record<string, unknown> = {}) {
+      return makeAgent({
+        id: 'cloud-1',
+        name: 'cloud-agent',
+        workingDirectory: '/workspace',
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            containerName: 'aim-cloud-agent',
+            websocketUrl: 'ws://localhost:23001/term',
+            healthCheckUrl: 'http://localhost:23001/health',
+            status: 'running',
+          },
+        },
+        ...overrides,
+      })
+    }
+
+    it('stops the running container and skips host tmux', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.hibernated).toBe(true)
+      expect((result.data as any)?.message).toMatch(/has been stopped/i)
+      expect(mockContainerUtils.stopContainer).toHaveBeenCalledWith('aim-cloud-agent')
+      expect(mockRuntime.killSession).not.toHaveBeenCalled()
+      expect(mockRuntime.sendKeys).not.toHaveBeenCalled()
+    })
+
+    it('also stops a paused container', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('paused')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect(mockContainerUtils.stopContainer).toHaveBeenCalledWith('aim-cloud-agent')
+    })
+
+    it('returns success without calling docker stop when container already stopped', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('stopped')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.hibernated).toBe(true)
+      expect((result.data as any)?.message).toMatch(/already stopped/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns success when container is missing (treated as already-hibernated)', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('missing')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.message).toMatch(/does not exist/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns success without docker stop when container is in created state', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('created')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(200)
+      expect((result.data as any)?.message).toMatch(/created but never started/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns 500 when docker daemon is down', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('docker_down')
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(500)
+      expect((result.data as ServiceError)?.message).toMatch(/docker daemon/i)
+      expect(mockContainerUtils.stopContainer).not.toHaveBeenCalled()
+    })
+
+    it('returns 500 when docker stop fails', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.stopContainer.mockRejectedValueOnce(new Error('docker stop timeout'))
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(500)
+      expect((result.data as ServiceError)?.message).toMatch(/docker stop timeout/i)
+    })
+
+    it('clears the agentActivity heartbeat after stopping a running container', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockAgentRegistry.loadAgents.mockReturnValue([agent])
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockSharedState.agentActivity.set('cloud-1', Date.now())
+
+      await hibernateAgent('cloud-1', {})
+
+      expect(mockSharedState.agentActivity.has('cloud-1')).toBe(false)
+    })
+
+    it('clears the agentActivity heartbeat on the early-return paths (stopped/missing/created)', async () => {
+      for (const status of ['stopped', 'missing', 'created'] as const) {
+        const agent = makeCloudAgent()
+        mockAgentRegistry.getAgent.mockReturnValue(agent)
+        mockAgentRegistry.loadAgents.mockReturnValue([agent])
+        mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce(status)
+        mockSharedState.agentActivity.set('cloud-1', Date.now())
+
+        await hibernateAgent('cloud-1', {})
+
+        expect(
+          mockSharedState.agentActivity.has('cloud-1'),
+          `agentActivity should be cleared on ${status} branch`
+        ).toBe(false)
+      }
+    })
+
+    it('does not clear the heartbeat when docker stop fails', async () => {
+      const agent = makeCloudAgent()
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+      mockContainerUtils.inspectContainerStatus.mockResolvedValueOnce('running')
+      mockContainerUtils.stopContainer.mockRejectedValueOnce(new Error('docker stop timeout'))
+      const heartbeatTs = Date.now()
+      mockSharedState.agentActivity.set('cloud-1', heartbeatTs)
+
+      await hibernateAgent('cloud-1', {})
+
+      // Container is still up; heartbeat should not be cleared so the agent
+      // doesn't appear offline while it's actually still running.
+      expect(mockSharedState.agentActivity.get('cloud-1')).toBe(heartbeatTs)
+    })
+
+    it('returns 400 when cloud agent has no containerName configured', async () => {
+      const agent = makeCloudAgent({
+        deployment: {
+          type: 'cloud',
+          cloud: {
+            provider: 'local-container',
+            websocketUrl: 'ws://localhost:23001/term',
+            // containerName intentionally missing
+          },
+        },
+      })
+      mockAgentRegistry.getAgent.mockReturnValue(agent)
+
+      const result = await hibernateAgent('cloud-1', {})
+
+      expect(result.status).toBe(400)
+      expect(mockContainerUtils.inspectContainerStatus).not.toHaveBeenCalled()
+    })
   })
 })
 
@@ -1156,5 +1722,119 @@ describe('proxyHealthCheck', () => {
     const result = await proxyHealthCheck(null as any)
 
     expect(result.status).toBe(400)
+  })
+})
+
+// ============================================================================
+// Cloud-wake first-run modal pattern (FIRST_RUN_MODAL_PATTERN)
+// ============================================================================
+//
+// Regression guards for the cloud-wake auto-dismiss heuristic in
+// waitForPromptInContainer. Pane snippets here are captured from real
+// fresh-recreate cloud agents on the v0.30.30 image (2026-04-28). If a CLI
+// upgrades and changes its first-launch UX, these tests will tell us before
+// the on-wake hook starts disappearing into a menu in production.
+//
+// Important non-coverage: codex's first-launch screen is an OAuth account
+// picker, NOT a workspace-trust modal. Pressing Enter on it triggers a
+// non-completable sign-in flow. We INTENTIONALLY do not match codex —
+// dismissal would make things worse, not better. The codex case is handled
+// by provision-time auth bootstrap (separate kanban), not run-time dismissal.
+describe('FIRST_RUN_MODAL_PATTERN', () => {
+  it('matches the claude Trust-folder modal', () => {
+    const pane = [
+      'Do you trust the files in this folder?',
+      '/workspace',
+      '❯ 1. Trust folder (workspace)',
+      '  2. Trust parent folder ()',
+      "  3. Don't trust",
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(true)
+  })
+
+  it("matches the claude theme picker modal", () => {
+    const pane = [
+      "Let's get started.",
+      'Choose the text style that looks best with your terminal',
+      'To change this later, run /theme',
+      '  1. Auto (match terminal)',
+      '❯ 2. Dark mode ✔',
+      '  3. Light mode',
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(true)
+  })
+
+  it('does NOT match the codex auth picker (would push container into broken sign-in)', () => {
+    const pane = [
+      "Welcome to Codex, OpenAI's command-line coding agent",
+      'Sign in with ChatGPT to use Codex as part of your paid plan',
+      'or connect an API key for usage-based billing',
+      '> 1. Sign in with ChatGPT',
+      '     Usage included with Plus, Pro, Business, and Enterprise plans',
+      '  2. Sign in with Device Code',
+      '  3. Provide your own API key',
+      'Press Enter to continue',
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(false)
+  })
+
+  it('does not match a normal claude prompt (so the dismiss path stays out of the way)', () => {
+    const pane = [
+      'Welcome back to /workspace',
+      '',
+      '  How can I help today?',
+      '',
+      '> ',
+    ].join('\n')
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(false)
+  })
+
+  it('does not match an empty bash shell prompt', () => {
+    const pane = 'claude@aim-test:/workspace$ '
+    expect(FIRST_RUN_MODAL_PATTERN.test(pane)).toBe(false)
+  })
+})
+
+// ============================================================================
+// resolveStartCommand (PR-3 hotfix coverage)
+// ============================================================================
+
+describe('resolveStartCommand', () => {
+  // Mostly-identity mappings — program identifier equals binary name.
+  it('claude → claude', () => {
+    expect(resolveStartCommand('claude')).toBe('claude')
+    expect(resolveStartCommand('claude-code')).toBe('claude')
+    expect(resolveStartCommand('claude code')).toBe('claude')
+  })
+
+  it('codex → codex', () => {
+    expect(resolveStartCommand('codex')).toBe('codex')
+  })
+
+  it('aider / cursor / gemini / opencode → themselves', () => {
+    expect(resolveStartCommand('aider')).toBe('aider')
+    expect(resolveStartCommand('cursor')).toBe('cursor')
+    expect(resolveStartCommand('gemini')).toBe('gemini')
+    expect(resolveStartCommand('opencode')).toBe('opencode')
+  })
+
+  // The load-bearing case for the PR-3 hotfix: program identifier
+  // "antigravity" MUST resolve to the binary name "agy". Without this
+  // remap, services/agents-docker-service.ts composed AI_TOOL=`antigravity
+  // <args>`, baked it into the container env, and agent-container/
+  // agent-server.js:167's `tmux send-keys "unset CI && ${AI_TOOL}"`
+  // wake-line fired `command not found: antigravity` on first wake of
+  // cloud antigravity agents. Verified empirically on Han 2026-05-22.
+  it('antigravity → agy (PR-3 hotfix — binary name, not identifier)', () => {
+    expect(resolveStartCommand('antigravity')).toBe('agy')
+    // Resolver matches lowercase substrings, mirroring host-wake call sites
+    // that lowercase before calling. The cloud-side caller (agents-docker-
+    // service.ts) passes agent.program which is the dropdown `value` field
+    // (lowercase 'antigravity'), so no defensive lowercasing here.
+  })
+
+  it('falls back to claude for unknown programs', () => {
+    expect(resolveStartCommand('mystery')).toBe('claude')
+    expect(resolveStartCommand('')).toBe('claude')
   })
 })

@@ -7,7 +7,6 @@ import MobileMessageCenter from './MobileMessageCenter'
 import MobileWorkTree from './MobileWorkTree'
 import MobileHostsList from './MobileHostsList'
 import MobileConversationDetail from './MobileConversationDetail'
-import MobileCallOverlay from './MobileCallOverlay'
 import { Terminal, Mail, RefreshCw, Activity, Server, MessageSquare, Phone } from 'lucide-react'
 import { agentToSession, getAgentBaseUrl } from '@/lib/agent-utils'
 import type { Agent } from '@/types/agent'
@@ -36,7 +35,6 @@ export default function MobileDashboard({
     projectPath: string
   } | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<{ [agentId: string]: boolean }>({})
-  const [callActive, setCallActive] = useState(false)
 
   // Filter to only online agents for terminal tabs
   const onlineAgents = useMemo(
@@ -223,8 +221,6 @@ export default function MobileDashboard({
                         <MobileChatView
                           agentId={agent.id}
                           agentName={getAgentDisplayName(agent)}
-                          sessionName={(agent as any).session?.tmuxSessionName || agent.name || agent.alias}
-                          hostId={agent.hostId}
                         />
                       </div>
                     )}
@@ -301,15 +297,15 @@ export default function MobileDashboard({
           </button>
 
           {/* Central Call Button */}
-          <div className="flex flex-col items-center justify-center px-2 flex-1 relative z-30">
+          <div className="flex flex-col items-center justify-center px-2 flex-1">
             <button
               onClick={() => {
                 if (activeAgentId) {
-                  setCallActive(true)
+                  window.open(`/companion?agent=${encodeURIComponent(activeAgentId)}&popup=1`, '_blank')
                 }
               }}
               disabled={!activeAgentId || !isActiveAgentConnected}
-              className="w-14 h-14 -mt-5 rounded-full bg-green-500 hover:bg-green-400 disabled:bg-gray-700 disabled:opacity-50 text-white flex items-center justify-center shadow-lg shadow-green-500/30 transition-all active:scale-95"
+              className="w-14 h-14 -mt-7 rounded-full bg-green-500 hover:bg-green-400 disabled:bg-gray-700 disabled:opacity-50 text-white flex items-center justify-center shadow-lg shadow-green-500/30 transition-all active:scale-95"
             >
               <Phone className="w-6 h-6" />
             </button>
@@ -383,14 +379,6 @@ export default function MobileDashboard({
           </p>
         </div>
       </footer>
-
-      {/* Call Overlay */}
-      {callActive && activeAgent && (
-        <MobileCallOverlay
-          agent={activeAgent}
-          onClose={() => setCallActive(false)}
-        />
-      )}
     </div>
   )
 }

@@ -5,7 +5,6 @@ import { useEffect, useRef, useCallback } from 'react'
 interface UseCompanionWebSocketOptions {
   agentId: string | null
   onSpeech: (text: string) => void
-  onInterrupt?: () => void
 }
 
 /**
@@ -13,11 +12,9 @@ interface UseCompanionWebSocketOptions {
  * Connects to /companion-ws?agent={agentId}, receives speech events,
  * and can send user messages back to the voice subsystem.
  */
-export function useCompanionWebSocket({ agentId, onSpeech, onInterrupt }: UseCompanionWebSocketOptions) {
+export function useCompanionWebSocket({ agentId, onSpeech }: UseCompanionWebSocketOptions) {
   const onSpeechRef = useRef(onSpeech)
   onSpeechRef.current = onSpeech
-  const onInterruptRef = useRef(onInterrupt)
-  onInterruptRef.current = onInterrupt
 
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -46,11 +43,6 @@ export function useCompanionWebSocket({ agentId, onSpeech, onInterrupt }: UseCom
     function connect() {
       if (!mounted) return
 
-      // Close any existing socket to prevent orphaned connections
-      if (ws && ws.readyState !== WebSocket.CLOSED) {
-        ws.close()
-      }
-
       ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
@@ -64,8 +56,6 @@ export function useCompanionWebSocket({ agentId, onSpeech, onInterrupt }: UseCom
           const data = JSON.parse(event.data)
           if (data.type === 'speech' && data.text) {
             onSpeechRef.current(data.text)
-          } else if (data.type === 'interrupt') {
-            onInterruptRef.current?.()
           }
         } catch {
           // Ignore non-JSON messages
@@ -73,8 +63,6 @@ export function useCompanionWebSocket({ agentId, onSpeech, onInterrupt }: UseCom
       }
 
       ws.onclose = () => {
-        // Guard against stale closures from orphaned sockets
-        if (wsRef.current !== ws) return
         wsRef.current = null
         if (mounted && retryCount < maxRetries) {
           const delay = retryDelays[retryCount] || retryDelays[retryDelays.length - 1]
