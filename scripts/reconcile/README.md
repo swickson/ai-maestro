@@ -2,6 +2,15 @@
 
 Deterministic gate for re-landing the 23blocks fork reconciliation after the PR #161 incident.
 
+> **STATUS (post-reland): MANUAL reconciliation-time tool, NOT a perpetual test.**
+> The reland (#165, v0.31.2) is merged, rolled mesh-wide, and soaking — `main` *is* the
+> partitioned tree, so the partition is now historical. The vitest wrapper
+> (`tests/reconcile-gate.test.ts`) was **removed**: as a permanent `yarn test` invariant it
+> froze the ~208 keep-ours/adopt-upstream contested files against any future edit (it asserts
+> they stay byte-matched to the partition forever). These scripts remain as **manual tools** —
+> run them by hand during a *future* fork-merge (regenerate the manifest for the new contested
+> set first). They are not part of the standard test suite.
+
 ## Why this exists
 
 PR #161 (v0.31.0) merged the reconciliation, then was reverted (PR #164) after a **systematic
