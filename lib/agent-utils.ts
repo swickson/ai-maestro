@@ -28,6 +28,26 @@ export function getAgentBaseUrl(agent: { hostUrl?: string; isSelf?: boolean } | 
   return agent.hostUrl
 }
 
+/**
+ * Single source of truth for "is this agent online?" across the sidebar/badges.
+ *
+ * Checks BOTH liveness signals:
+ *  - `agent.session` (singular): the live/derived session status the unified
+ *    /api/agents endpoint computes (heartbeat-based; the authoritative liveness
+ *    for standalone/cloud-container agents that have no host tmux session).
+ *  - `agent.sessions[0]` (array): the registry session entry (host tmux session).
+ *
+ * Either being 'online' means online. This MUST be used everywhere instead of
+ * re-deriving inline — render paths that checked only `sessions[0].status`
+ * grayed live cloud agents whose only online signal is the derived `session`.
+ */
+export function agentIsOnline(
+  agent: Pick<Agent, 'session' | 'sessions'> | null | undefined
+): boolean {
+  if (!agent) return false
+  return agent.session?.status === 'online' || agent.sessions?.[0]?.status === 'online'
+}
+
 // Fun AI-themed aliases - split by gender to match avatar photos
 // IA names are feminine (Spanish style), AI names are masculine
 export const FEMALE_ALIASES = [
