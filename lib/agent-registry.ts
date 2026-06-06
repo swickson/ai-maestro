@@ -2721,3 +2721,40 @@ export function clearCloudContainerStale(id: string): Agent | null {
   invalidateAgentCache()
   return agents[index]
 }
+
+/**
+ * Reconcile the persisted `deployment.cloud.status` for a cloud agent.
+ * Called by wakeAgent after confirming the container is running (whether it
+ * was just started or was already running) so the registry's cloud lifecycle
+ * status reflects reality. Without this, a wake-while-running — or a wake
+ * after the create-path set it once — leaves cloud.status stale (e.g. the
+ * UI showing a live container as "stopped").
+ *
+ * No-op if the agent is missing or has no `cloud` block, and skips the write
+ * entirely when the status is already correct.
+ */
+export function setCloudContainerStatus(
+  id: string,
+  status: NonNullable<Agent['deployment']['cloud']>['status']
+): Agent | null {
+  const agents = loadAgents()
+  const index = agents.findIndex(a => a.id === id)
+  if (index === -1) return null
+
+  const agent = agents[index]
+  const cloud = agent.deployment?.cloud
+  if (!cloud) return agent // no cloud block — nothing to reconcile
+  if (cloud.status === status) return agent // already correct — avoid a redundant write
+
+  agents[index] = {
+    ...agent,
+    deployment: {
+      ...agent.deployment!,
+      cloud: { ...cloud, status },
+    },
+    lastActive: new Date().toISOString(),
+  }
+  saveAgents(agents)
+  invalidateAgentCache()
+  return agents[index]
+}
