@@ -3,7 +3,7 @@ import { resolveUser } from '@/services/users-service'
 
 // GET /api/users/resolve?alias=gosub
 // GET /api/users/resolve?platform=discord&platformUserId=123
-// GET /api/users/resolve?displayName=Jane+Doe
+// GET /api/users/resolve?displayName=Shane+Wickson
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
 

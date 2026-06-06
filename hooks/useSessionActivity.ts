@@ -105,10 +105,6 @@ export function useSessionActivity() {
               if (data.agentId) next[data.agentId] = update
               return next
             })
-            // Dispatch DOM event so ChatView can trigger immediate fetch
-            window.dispatchEvent(new CustomEvent('agent-activity', {
-              detail: { sessionName: data.sessionName, agentId: data.agentId, status: data.status }
-            }))
           }
         } catch (err) {
           console.error('[useSessionActivity] Failed to parse message:', err)
@@ -116,9 +112,6 @@ export function useSessionActivity() {
       }
 
       ws.onclose = () => {
-        // Guard against stale closures from orphaned sockets
-        if (wsRef.current !== ws) return
-
         console.log('[useSessionActivity] WebSocket disconnected')
         setConnected(false)
         // Resume polling as fallback

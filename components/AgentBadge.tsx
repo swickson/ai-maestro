@@ -11,11 +11,10 @@ import {
   Power,
   Copy,
   Mail,
-  Star,
+  Box,
 } from 'lucide-react'
 import { computeHash, getAvatarUrl } from '@/lib/hash-utils'
-import { Agent, AgentSession } from '@/types/agent'
-import InfraIcon from './InfraIcon'
+import { Agent, AgentSession, AgentSessionStatus } from '@/types/agent'
 import { SessionActivityStatus } from '@/hooks/useSessionActivity'
 
 interface AgentBadgeProps {
@@ -31,8 +30,6 @@ interface AgentBadgeProps {
   onOpenTerminal?: (agent: Agent) => void
   onSendMessage?: (agent: Agent) => void
   onCopyId?: (agent: Agent) => void
-  isFavorite?: boolean
-  onToggleFavorite?: (agent: Agent) => void
   showActions?: boolean
 }
 
@@ -65,14 +62,16 @@ function isEmoji(str: string): boolean {
   return /\p{Emoji_Presentation}|\p{Extended_Pictographic}/u.test(str)
 }
 
-// Get status info from agent state
+// Get status info from agent state.
+// Accepts either AgentSession (tmux-derived, from agent.sessions[]) or
+// AgentSessionStatus (heartbeat-derived, from agent.session). Only the
+// `status` field is read here, which has the same shape on both types.
 function getStatusInfo(
-  session: AgentSession | undefined,
+  session: AgentSession | AgentSessionStatus | undefined,
   isHibernated: boolean,
-  activityStatus?: SessionActivityStatus,
-  standaloneOnline?: boolean
+  activityStatus?: SessionActivityStatus
 ): { color: string; bgColor: string; label: string; pulse?: boolean } {
-  const isOnline = session?.status === 'online' || standaloneOnline
+  const isOnline = session?.status === 'online'
 
   if (isOnline) {
     if (activityStatus === 'waiting') {
@@ -104,19 +103,19 @@ export default function AgentBadge({
   onOpenTerminal,
   onSendMessage,
   onCopyId,
-  isFavorite,
-  onToggleFavorite,
   showActions = true,
 }: AgentBadgeProps) {
   const [showMenu, setShowMenu] = React.useState(false)
   const menuRef = React.useRef<HTMLDivElement>(null)
 
-  // Get the primary session — check runtime session status (covers standalone agents)
-  const session = agent.sessions?.[0]
-  const isOnline = session?.status === 'online' || agent.session?.status === 'online'
+  // Get the primary session. Use agent.session (singular) — populated by listAgents
+  // from heartbeat-derived sessionStatus — so cloud agents (no host tmux but heartbeating)
+  // render as online. agent.sessions[0] would be tmux-derived and wrongly mark them offline.
+  const session = agent.session
+  const isOnline = session?.status === 'online'
   const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
 
-  const statusInfo = getStatusInfo(session, isHibernated, activityStatus, agent.session?.status === 'online')
+  const statusInfo = getStatusInfo(session, isHibernated, activityStatus)
   const ringColor = stringToRingColor(agent.name)
 
   // Avatar priority: stored URL > stored emoji > computed from ID
@@ -231,19 +230,6 @@ export default function AgentBadge({
                 </button>
               )}
 
-              {onToggleFavorite && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleMenuAction(() => onToggleFavorite(agent))
-                  }}
-                  className="w-full px-3 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-700 flex items-center gap-2"
-                >
-                  <Star className={`w-3.5 h-3.5 ${isFavorite ? 'fill-yellow-400 text-yellow-400' : ''}`} />
-                  {isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
-                </button>
-              )}
-
               {onRename && (
                 <button
                   onClick={(e) => {
@@ -319,35 +305,30 @@ export default function AgentBadge({
       {/* Badge content */}
       <div className="p-3 pt-10 flex flex-col items-center text-center">
         {/* Avatar - Photo or Emoji */}
-        <div className="relative">
-          <div
-            className={`
-              relative w-20 h-20 rounded-full overflow-hidden
-              ring-4 ${ringColor} shadow-lg
-              ${isHibernated ? 'opacity-50 grayscale' : ''}
-            `}
-          >
-            {hasEmojiAvatar ? (
-              <div className="w-full h-full bg-slate-700 flex items-center justify-center">
-                <span className="text-4xl">{agent.avatar}</span>
-              </div>
-            ) : imageError ? (
-              <div className="w-full h-full bg-gradient-to-br from-slate-600 to-slate-800 flex items-center justify-center">
-                <span className="text-2xl font-bold text-white/70">
-                  {(agent.label || agent.name || '??').slice(0, 2).toUpperCase()}
-                </span>
-              </div>
-            ) : (
-              <img
-                src={avatarUrl}
-                alt={agent.label || agent.name}
-                className="w-full h-full object-cover"
-                onError={() => setImageError(true)}
-              />
-            )}
-          </div>
-          {isFavorite && (
-            <Star className="absolute -bottom-0.5 -left-0.5 w-4 h-4 fill-yellow-400 text-yellow-400 drop-shadow" />
+        <div
+          className={`
+            relative w-20 h-20 rounded-full overflow-hidden
+            ring-4 ${ringColor} shadow-lg
+            ${isHibernated ? 'opacity-50 grayscale' : ''}
+          `}
+        >
+          {hasEmojiAvatar ? (
+            <div className="w-full h-full bg-slate-700 flex items-center justify-center">
+              <span className="text-4xl">{agent.avatar}</span>
+            </div>
+          ) : imageError ? (
+            <div className="w-full h-full bg-gradient-to-br from-slate-600 to-slate-800 flex items-center justify-center">
+              <span className="text-2xl font-bold text-white/70">
+                {(agent.label || agent.name || '??').slice(0, 2).toUpperCase()}
+              </span>
+            </div>
+          ) : (
+            <img
+              src={avatarUrl}
+              alt={agent.label || agent.name}
+              className="w-full h-full object-cover"
+              onError={() => setImageError(true)}
+            />
           )}
         </div>
 
@@ -368,7 +349,11 @@ export default function AgentBadge({
             ${isHibernated ? 'text-slate-600' : 'text-slate-400'}
           `}>
             {agent.name}
-            <InfraIcon agent={agent} size={12} />
+            {agent.deployment?.cloud?.provider === 'local-container' && (
+              <span className="flex-shrink-0" aria-label="Docker container">
+                <Box className="w-3 h-3 text-blue-400" />
+              </span>
+            )}
           </p>
 
           {agent.hostId && (

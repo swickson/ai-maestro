@@ -1,15 +1,11 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { SendHorizontal, ChevronDown, ChevronRight, Loader2, Wrench, Copy, Check } from 'lucide-react'
-import MobileToolBurstGroup from '@/components/chat/MobileToolBurstGroup'
-import { groupMessages, getToolPreviewText, type ToolBurst } from '@/lib/chat-utils'
 
 interface MobileChatViewProps {
   agentId: string
   agentName: string
-  sessionName?: string  // tmux session name for WebSocket (falls back to agentName)
-  hostId?: string       // Host ID for remote agent routing (e.g., 'mac-mini')
 }
 
 interface ChatMessage {
@@ -23,15 +19,22 @@ interface ChatMessage {
       type: string
       text?: string
       name?: string
-      id?: string
-      input?: { command?: string; file_path?: string; pattern?: string; query?: string; questions?: any[]; [key: string]: any }
+      input?: { command?: string; file_path?: string; pattern?: string; query?: string }
       thinking?: string
-      tool_use_id?: string
     }>
   }
-  // For queue-operation type
-  operation?: 'enqueue' | 'dequeue'
-  content?: string
+}
+
+interface ChatAPIResponse {
+  success: boolean
+  messages: ChatMessage[]
+  hookState?: {
+    status?: string
+    updatedAt?: string
+  }
+  terminalPrompt?: string | null
+  promptType?: 'permission' | 'input' | null
+  lastModified?: string
 }
 
 // Copy button with checkmark feedback
@@ -77,11 +80,11 @@ function CopyButton({ text, className = '' }: { text: string; className?: string
 // Code block with copy button
 function CodeBlock({ code }: { code: string }) {
   return (
-    <div className="relative group my-1 overflow-hidden">
+    <div className="relative group my-1">
       <div className="absolute top-1 right-1 z-10">
         <CopyButton text={code} />
       </div>
-      <pre className="bg-gray-900 rounded-md px-3 py-2 pr-9 overflow-x-auto max-w-full text-xs font-mono text-gray-200 select-text">
+      <pre className="bg-gray-900 rounded-md px-3 py-2 pr-9 overflow-x-auto text-xs font-mono text-gray-200 select-text">
         {code}
       </pre>
     </div>
@@ -130,7 +133,7 @@ function renderMarkdown(text: string): JSX.Element {
     // Regular line
     if (line.trim()) {
       elements.push(
-        <p key={i} className="whitespace-pre-wrap break-words" style={{ overflowWrap: 'anywhere' }}>
+        <p key={i} className="whitespace-pre-wrap">
           {renderInline(line)}
         </p>
       )
@@ -187,32 +190,20 @@ function extractText(msg: ChatMessage): string {
       .map(b => b.text!)
       .join('\n')
   }
-  // Handle queue-operation (enqueued user messages)
-  if (msg.type === 'queue-operation' && msg.content) {
-    return msg.content
-  }
   return ''
 }
 
 // Extract tool use info from a message
-function extractToolUses(msg: ChatMessage): { name: string; preview: string }[] {
+function extractToolUses(msg: ChatMessage): { name: string; target: string }[] {
   const content = msg.message?.content
   if (!Array.isArray(content)) return []
   return content
     .filter(b => b.type === 'tool_use' && b.name)
-    .map(b => ({
-      name: b.name!,
-      preview: getToolPreviewText(b.name!, b.input)
-    }))
-}
-
-// Extract AskUserQuestion tool_use from a message
-function extractAskUserQuestion(msg: ChatMessage): { id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }> } | null {
-  const content = msg.message?.content
-  if (!Array.isArray(content)) return null
-  const block = content.find(b => b.type === 'tool_use' && b.name === 'AskUserQuestion')
-  if (!block?.input?.questions) return null
-  return { id: block.id, questions: block.input.questions }
+    .map(b => {
+      const target = b.input?.file_path || b.input?.command || b.input?.pattern || b.input?.query || ''
+      const shortTarget = target.length > 60 ? '...' + target.slice(-57) : target
+      return { name: b.name!, target: shortTarget }
+    })
 }
 
 function ThinkingBlock({ text }: { text: string }) {
@@ -229,7 +220,7 @@ function ThinkingBlock({ text }: { text: string }) {
         <span className="italic">Thinking</span>
       </div>
       {expanded ? (
-        <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap select-text max-h-48 overflow-y-auto">{text}</p>
+        <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap select-text">{text}</p>
       ) : (
         <p className="text-xs text-gray-500 mt-0.5 truncate">{preview}</p>
       )}
@@ -237,241 +228,89 @@ function ThinkingBlock({ text }: { text: string }) {
   )
 }
 
-export default function MobileChatView({ agentId, agentName, sessionName: sessionNameProp, hostId }: MobileChatViewProps) {
+export default function MobileChatView({ agentId, agentName }: MobileChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [hookState, setHookState] = useState<{
-    status?: string;
-    description?: string;
-    message?: string;
-    toolName?: string;
-    toolInput?: {
-      command?: string;
-      file_path?: string;
-      path?: string;
-      [key: string]: any;
-    };
-    options?: Array<{
-      key: string;
-      label: string;
-      action: string;
-    }>;
-    updatedAt?: string;
-  } | null>(null)
+  const [hookState, setHookState] = useState<ChatAPIResponse['hookState']>(undefined)
+  const [terminalPrompt, setTerminalPrompt] = useState<string | null>(null)
+  const [promptType, setPromptType] = useState<ChatAPIResponse['promptType']>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [pendingMessages, setPendingMessages] = useState<Array<{ text: string; timestamp: string }>>([])
-  const [answeredQuestions, setAnsweredQuestions] = useState<Set<string>>(new Set())
-  const [liveActivity, setLiveActivity] = useState<{ label: string; detail?: string } | null>(null)
 
-  const [chatWsConnected, setChatWsConnected] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const prevLastMsgIdRef = useRef<string | null>(null)
-  const lastPongRef = useRef<number>(Date.now())
-  const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
-  const reconnectAttemptsRef = useRef(0)
+  const prevMessageCountRef = useRef(0)
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const burstTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
-  // The session name to use for the WebSocket URL
-  const wsSessionName = sessionNameProp || agentName
-
-  // ── WebSocket connection for chat ─────────────────────────────────
-  const getChatWsUrl = useCallback(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host
-    let url = `${protocol}//${host}/term?name=${encodeURIComponent(wsSessionName)}&chatOnly=1`
-    if (hostId && hostId !== 'local') {
-      url += `&host=${encodeURIComponent(hostId)}`
-    }
-    return url
-  }, [wsSessionName, hostId])
-
-  const sendChatWs = useCallback((type: string, payload?: Record<string, any>) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, ...payload }))
-      return true
-    }
-    return false
-  }, [])
-
-  // Connect WebSocket on mount
-  useEffect(() => {
-    if (!agentId) return
-
-    const connect = () => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) return
-      // Close zombie sockets stuck in CONNECTING
-      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-        wsRef.current.close()
-        wsRef.current = null
+  // Fetch messages
+  const fetchMessages = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/agents/${agentId}/chat?limit=50`)
+      if (!res.ok) {
+        setError('Failed to fetch messages')
+        return
       }
-
-      const ws = new WebSocket(getChatWsUrl())
-
-      ws.onopen = () => {
-        console.log(`[MobileChatView] Connected to chat WS for ${wsSessionName}`)
-        setChatWsConnected(true)
-        reconnectAttemptsRef.current = 0
-        ws.send(JSON.stringify({ type: 'chat:requestHistory', agentId }))
+      const data: ChatAPIResponse = await res.json()
+      if (data.success) {
+        setMessages(data.messages)
+        setHookState(data.hookState)
+        setTerminalPrompt(data.terminalPrompt ?? null)
+        setPromptType(data.promptType ?? null)
         setError(null)
       }
+    } catch {
+      setError('Connection error')
+    }
+  }, [agentId])
 
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
+  // Auto-scroll when new messages arrive
+  useEffect(() => {
+    if (messages.length > prevMessageCountRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+    prevMessageCountRef.current = messages.length
+  }, [messages.length])
 
-          switch (data.type) {
-            case 'chat:history': {
-              const history = data.data || {}
-              setMessages(history.messages || [])
-              setHookState(history.hookState || null)
-              break
-            }
+  // Polling with visibility API
+  useEffect(() => {
+    fetchMessages()
 
-            case 'chat:messages': {
-              const newMsgs = data.data || []
-              if (newMsgs.length > 0) {
-                setMessages(prev => {
-                  const existingUuids = new Set(prev.map(m => m.uuid).filter(Boolean))
-                  const uniqueNew = newMsgs.filter((m: ChatMessage) =>
-                    !m.uuid || !existingUuids.has(m.uuid)
-                  )
-                  if (uniqueNew.length === 0) return prev
-                  return [...prev, ...uniqueNew].slice(-200)
-                })
-                setPendingMessages([])
-                if (newMsgs.some((m: ChatMessage) => m.type === 'assistant')) {
-                  setLiveActivity(null)
-                }
-              }
-              break
-            }
-
-            case 'chat:hookState': {
-              setHookState(data.data || null)
-              // Don't clear pending here — let chat:messages confirm with content match
-              break
-            }
-
-            case 'chat:sent': {
-              break
-            }
-
-            case 'chat:activity': {
-              setLiveActivity(data.data || null)
-              break
-            }
-
-            case 'pong': {
-              lastPongRef.current = Date.now()
-              break
-            }
-
-            case 'chat:error': {
-              setError(data.error || 'Unknown error')
-              break
-            }
-          }
-        } catch {
-          // Not JSON — ignore
-        }
-      }
-
-      ws.onclose = () => {
-        setChatWsConnected(false)
-        // Guard against stale closures
-        if (wsRef.current !== ws) return
-        wsRef.current = null
-
-        // Auto-reconnect with backoff
-        if (reconnectAttemptsRef.current < 5) {
-          reconnectAttemptsRef.current++
-          reconnectTimeoutRef.current = setTimeout(connect, 3000)
-        }
-      }
-
-      ws.onerror = () => {
-        // onclose will fire after — reconnect handled there
-      }
-
-      wsRef.current = ws
+    const startPolling = () => {
+      pollTimerRef.current = setInterval(fetchMessages, 3000)
     }
 
-    connect()
+    const stopPolling = () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+    }
 
-    // Reconnect on visibility change (mobile tab switching / background recovery)
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-          reconnectAttemptsRef.current = 0
-          if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-            wsRef.current.close()
-          }
-        }
+      if (document.hidden) {
+        stopPolling()
       } else {
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current)
-        }
+        fetchMessages()
+        startPolling()
       }
     }
+
+    startPolling()
     document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
+      stopPolling()
+      burstTimersRef.current.forEach(t => clearTimeout(t))
       document.removeEventListener('visibilitychange', handleVisibility)
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current)
-      }
-      if (wsRef.current) {
-        wsRef.current.close()
-        wsRef.current = null
-      }
-      setChatWsConnected(false)
     }
-  }, [agentId, wsSessionName, getChatWsUrl])
+  }, [fetchMessages])
 
-  // Heartbeat: send ping every 15s, force reconnect if no pong for 45s
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        if (Date.now() - lastPongRef.current > 45000) {
-          console.log('[MobileChatView] No pong in 45s — forcing reconnect')
-          wsRef.current.close()
-          return
-        }
-        wsRef.current.send(JSON.stringify({ type: 'ping' }))
-      }
-    }, 15000)
-    return () => clearInterval(interval)
-  }, [])
-
-  // Auto-scroll when new messages or pending messages arrive
-  useEffect(() => {
-    const lastMsg = messages[messages.length - 1]
-    const lastId = lastMsg?.uuid || lastMsg?.timestamp || null
-    const hasNewMessages = lastId !== prevLastMsgIdRef.current
-    prevLastMsgIdRef.current = lastId
-
-    if (hasNewMessages || pendingMessages.length > 0) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [messages, pendingMessages])
-
-  // Send message via WebSocket
-  const sendMessage = () => {
+  // Send message
+  const sendMessage = async () => {
     const text = input.trim()
     if (!text || sending) return
-
-    // Check connection BEFORE clearing input
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setError('Not connected — reconnecting...')
-      reconnectAttemptsRef.current = 0
-      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-        wsRef.current.close()
-      }
-      return
-    }
 
     setSending(true)
     setInput('')
@@ -481,44 +320,44 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
       textareaRef.current.style.height = 'auto'
     }
 
-    const pendingMsg = { text, timestamp: new Date().toISOString() }
-    setPendingMessages(prev => [...prev, pendingMsg])
-
-    const sent = sendChatWs('chat:send', { message: text })
-    if (!sent) {
-      setError('Failed to send — try again')
-      setPendingMessages(prev => prev.filter(p => p.timestamp !== pendingMsg.timestamp))
-      setInput(text)
+    try {
+      const res = await fetch(`/api/agents/${agentId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text })
+      })
+      if (!res.ok) {
+        setError('Failed to send message')
+      } else {
+        // Burst re-polls to catch the response as soon as it's written
+        // Poll at 0.5s, 1s, 2s, 4s, 8s, 15s, 25s after send
+        burstTimersRef.current.forEach(t => clearTimeout(t))
+        burstTimersRef.current = [500, 1000, 2000, 4000, 8000, 15000, 25000].map(
+          delay => setTimeout(fetchMessages, delay)
+        )
+      }
+    } catch {
+      setError('Failed to send')
+    } finally {
+      setSending(false)
     }
-
-    setSending(false)
   }
 
   // Send quick response (for permission prompts)
-  const sendQuickResponse = (text: string) => {
+  const sendQuickResponse = async (text: string) => {
     setSending(true)
-    const pendingMsg = { text, timestamp: new Date().toISOString() }
-    setPendingMessages(prev => [...prev, pendingMsg])
-
-    const sent = sendChatWs('chat:send', { message: text })
-    if (!sent) {
-      setError('Not connected')
-      setPendingMessages(prev => prev.filter(p => p.timestamp !== pendingMsg.timestamp))
+    try {
+      await fetch(`/api/agents/${agentId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text })
+      })
+      setTimeout(fetchMessages, 500)
+    } catch {
+      setError('Failed to send')
+    } finally {
+      setSending(false)
     }
-    setSending(false)
-  }
-
-  // Check if an AskUserQuestion has been answered
-  const isQuestionAnswered = (toolUseId?: string): boolean => {
-    if (!toolUseId) return false
-    if (answeredQuestions.has(toolUseId)) return true
-    return messages.some(m =>
-      m.type === 'user' &&
-      Array.isArray(m.message?.content) &&
-      m.message!.content!.some(block =>
-        block.type === 'tool_result' && block.tool_use_id === toolUseId
-      )
-    )
   }
 
   // Auto-grow textarea
@@ -537,14 +376,10 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
     }
   }
 
-  // Group consecutive tool-only messages into collapsible bursts
-  const groupedItems = useMemo(() => groupMessages(messages as any[], 'power'), [messages])
-
   // Determine status
-  const isPermission = hookState?.status === 'permission_request'
-  const isWaiting = hookState?.status === 'waiting_for_input'
-  const isWorking = pendingMessages.length > 0 || (messages.length > 0 && !isWaiting && !isPermission &&
-    (messages[messages.length - 1]?.type === 'user' || messages[messages.length - 1]?.type === 'human'))
+  const isWaiting = hookState?.status === 'waiting_for_input' || promptType === 'input'
+  const isPermission = promptType === 'permission'
+  const isWorking = !isWaiting && !isPermission && messages.length > 0
 
   return (
     <div className="flex flex-col h-full bg-gray-900">
@@ -563,19 +398,7 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
           </div>
         )}
 
-        {groupedItems.map((item, i) => {
-          // Tool burst — render collapsible group
-          if ('_isBurst' in item) {
-            const burst = item as ToolBurst
-            return (
-              <MobileToolBurstGroup
-                key={`burst-${burst.startTimestamp || i}`}
-                burst={burst}
-              />
-            )
-          }
-
-          const msg = item as ChatMessage
+        {messages.map((msg, i) => {
           const key = msg.uuid ? `${msg.uuid}-${i}` : `msg-${i}`
 
           // Thinking block
@@ -583,21 +406,8 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
             return <ThinkingBlock key={key} text={msg.thinking} />
           }
 
-          // Summary divider
-          if (msg.type === 'summary') {
-            return (
-              <div key={key} className="flex items-center gap-3 my-2 mx-3">
-                <div className="flex-1 border-t border-gray-700/50" />
-                <span className="text-xs text-gray-500 italic whitespace-nowrap">
-                  {(msg as any).summary || 'Conversation compacted'}
-                </span>
-                <div className="flex-1 border-t border-gray-700/50" />
-              </div>
-            )
-          }
-
-          // Human/user message
-          if (msg.type === 'human' || msg.type === 'user') {
+          // Human message
+          if (msg.type === 'human') {
             const text = extractText(msg)
             if (!text) return null
             return (
@@ -614,92 +424,21 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
             )
           }
 
-          // Queue-operation (enqueued user messages)
-          if (msg.type === 'queue-operation' && msg.operation === 'enqueue') {
-            const text = extractText(msg)
-            if (!text) return null
-            return (
-              <div key={key} className="flex justify-end mx-3 my-1.5">
-                <div className="max-w-[85%]">
-                  <div className="px-3 py-2 rounded-2xl rounded-br-sm bg-yellow-600/80 text-white text-sm border border-yellow-500 select-text">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      <span className="text-xs opacity-70">Queued</span>
-                    </div>
-                    <p className="whitespace-pre-wrap">{text}</p>
-                  </div>
-                </div>
-              </div>
-            )
-          }
-
           // Assistant message
           if (msg.type === 'assistant') {
             const text = extractText(msg)
             const tools = extractToolUses(msg)
-            const askQ = extractAskUserQuestion(msg)
-            const answered = askQ ? isQuestionAnswered(askQ.id) : false
 
-            // AskUserQuestion-only message (no text, just the question)
-            if (!text && askQ) {
-              return (
-                <div key={key} className="mx-3 my-1.5">
-                  <div className="max-w-[90%] min-w-0 overflow-hidden">
-                    {askQ.questions.map((q, qIdx) => (
-                      <div key={qIdx} className="bg-cyan-900/30 rounded-xl border border-cyan-700/40 p-3 mb-2">
-                        {q.header && (
-                          <div className="text-xs font-medium text-cyan-400 mb-1">{q.header}</div>
-                        )}
-                        <div className="text-sm text-cyan-100 mb-2">{q.question}</div>
-                        <div className="space-y-1.5">
-                          {q.options.map((opt, optIdx) => (
-                            <button
-                              key={optIdx}
-                              onClick={() => { if (!answered && askQ?.id) { setAnsweredQuestions(prev => new Set(prev).add(askQ.id!)); sendQuickResponse(String(optIdx + 1)) } }}
-                              disabled={answered || sending}
-                              className={`flex items-start gap-2 w-full text-left px-3 py-2 rounded-lg transition-all ${
-                                answered
-                                  ? 'opacity-50 cursor-default bg-gray-800/30'
-                                  : 'bg-cyan-800/20 hover:bg-cyan-700/30 border border-cyan-600/30 active:bg-cyan-600/40'
-                              }`}
-                            >
-                              <span className="text-cyan-400 font-bold w-5 text-center flex-shrink-0 mt-0.5">{optIdx + 1}</span>
-                              <div className="min-w-0 flex-1">
-                                <span className="text-sm text-cyan-200">{opt.label}</span>
-                                {opt.description && (
-                                  <p className="text-xs text-cyan-400/60 mt-0.5">{opt.description}</p>
-                                )}
-                              </div>
-                            </button>
-                          ))}
-                          {!answered && (
-                            <button
-                              onClick={() => textareaRef.current?.focus()}
-                              disabled={sending}
-                              className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg bg-gray-800/30 active:bg-gray-700/40 border border-gray-600/30 transition-all"
-                            >
-                              <span className="text-gray-400 font-bold w-5 text-center flex-shrink-0">{q.options.length + 1}</span>
-                              <span className="text-sm text-gray-300">Other</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            }
-
-            // Tool-only message (no text content) — not in a burst (1-2 consecutive)
+            // Tool-only message (no text content)
             if (!text && tools.length > 0) {
               return (
                 <div key={key} className="mx-3 my-1">
-                  {tools.filter(t => t.name !== 'AskUserQuestion').map((tool, j) => (
+                  {tools.map((tool, j) => (
                     <div key={j} className="flex items-center gap-1.5 text-xs text-gray-500 italic py-0.5">
                       <Wrench className="w-3 h-3 flex-shrink-0" />
                       <span className="truncate">
-                        <span className="text-gray-400">{tool.name}</span>
-                        {tool.preview && <span className="text-gray-600 font-mono"> {tool.preview}</span>}
+                        Used <span className="text-gray-400">{tool.name}</span>
+                        {tool.target && <span className="text-gray-600"> on {tool.target}</span>}
                       </span>
                     </div>
                   ))}
@@ -707,13 +446,13 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
               )
             }
 
-            // Text message (may also include tools and/or AskUserQuestion)
-            if (text || askQ) {
+            // Text message (may also include tools)
+            if (text) {
               return (
                 <div key={key} className="mx-3 my-1.5">
                   {tools.length > 0 && (
                     <div className="mb-1">
-                      {tools.filter(t => t.name !== 'AskUserQuestion').map((tool, j) => (
+                      {tools.map((tool, j) => (
                         <div key={j} className="flex items-center gap-1.5 text-xs text-gray-500 italic py-0.5">
                           <Wrench className="w-3 h-3 flex-shrink-0" />
                           <span className="truncate">
@@ -723,60 +462,14 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
                       ))}
                     </div>
                   )}
-                  {text && (
-                    <div className="max-w-[90%] min-w-0 overflow-hidden relative">
-                      <div className="px-3 py-2 rounded-2xl rounded-bl-sm bg-gray-800 text-gray-200 text-sm select-text overflow-hidden">
-                        {renderMarkdown(text)}
-                      </div>
-                      <div className="flex justify-end mt-0.5 mr-1">
-                        <CopyButton text={text} />
-                      </div>
+                  <div className="max-w-[90%] relative">
+                    <div className="px-3 py-2 rounded-2xl rounded-bl-sm bg-gray-800 text-gray-200 text-sm select-text">
+                      {renderMarkdown(text)}
                     </div>
-                  )}
-                  {askQ && (
-                    <div className="max-w-[90%] mt-2">
-                      {askQ.questions.map((q, qIdx) => (
-                        <div key={qIdx} className="bg-cyan-900/30 rounded-xl border border-cyan-700/40 p-3 mb-2">
-                          {q.header && (
-                            <div className="text-xs font-medium text-cyan-400 mb-1">{q.header}</div>
-                          )}
-                          <div className="text-sm text-cyan-100 mb-2">{q.question}</div>
-                          <div className="space-y-1.5">
-                            {q.options.map((opt, optIdx) => (
-                              <button
-                                key={optIdx}
-                                onClick={() => { if (!answered && askQ?.id) { setAnsweredQuestions(prev => new Set(prev).add(askQ.id!)); sendQuickResponse(String(optIdx + 1)) } }}
-                                disabled={answered || sending}
-                                className={`flex items-start gap-2 w-full text-left px-3 py-2 rounded-lg transition-all ${
-                                  answered
-                                    ? 'opacity-50 cursor-default bg-gray-800/30'
-                                    : 'bg-cyan-800/20 hover:bg-cyan-700/30 border border-cyan-600/30 active:bg-cyan-600/40'
-                                }`}
-                              >
-                                <span className="text-cyan-400 font-bold w-5 text-center flex-shrink-0 mt-0.5">{optIdx + 1}</span>
-                                <div className="min-w-0 flex-1">
-                                  <span className="text-sm text-cyan-200">{opt.label}</span>
-                                  {opt.description && (
-                                    <p className="text-xs text-cyan-400/60 mt-0.5">{opt.description}</p>
-                                  )}
-                                </div>
-                              </button>
-                            ))}
-                            {!answered && (
-                              <button
-                                onClick={() => textareaRef.current?.focus()}
-                                disabled={sending}
-                                className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg bg-gray-800/30 active:bg-gray-700/40 border border-gray-600/30 transition-all"
-                              >
-                                <span className="text-gray-400 font-bold w-5 text-center flex-shrink-0">{q.options.length + 1}</span>
-                                <span className="text-sm text-gray-300">Other</span>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                    <div className="flex justify-end mt-0.5 mr-1">
+                      <CopyButton text={text} />
                     </div>
-                  )}
+                  </div>
                 </div>
               )
             }
@@ -784,98 +477,34 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
             return null
           }
 
-          // Result messages (tool results) - skip rendering
+          // Result messages (tool results) - skip rendering, context is in assistant messages
           return null
         })}
-
-        {/* Pending messages */}
-        {pendingMessages.map((pending, idx) => (
-          <div key={`pending-${idx}`} className="flex justify-end mx-3 my-1.5">
-            <div className="max-w-[85%]">
-              <div className="px-3 py-2 rounded-2xl rounded-br-sm bg-blue-600/70 text-white text-sm border border-blue-500/50 select-text">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span className="text-xs opacity-70">Sending...</span>
-                </div>
-                <p className="whitespace-pre-wrap">{pending.text}</p>
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {/* Live activity indicator */}
-        {liveActivity && !isPermission && (
-          <div className="mx-3 my-1">
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-800/60 border border-gray-700/50">
-              <div className="flex gap-0.5">
-                <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
-              <span className="text-xs text-gray-300">
-                {liveActivity.label}
-                {liveActivity.detail && (
-                  <span className="text-gray-500 font-mono ml-1">{liveActivity.detail}</span>
-                )}
-              </span>
-            </div>
-          </div>
-        )}
 
         <div ref={messagesEndRef} />
       </div>
 
       {/* Status bar */}
       <div className="flex-shrink-0 border-t border-gray-800">
-        {isPermission && (
+        {isPermission && terminalPrompt && (
           <div className="px-3 py-2 bg-yellow-900/20 border-b border-yellow-800/50">
-            <p className="text-xs text-yellow-300 mb-2">
-              {hookState?.description || hookState?.message || `Allow ${hookState?.toolName || 'action'}?`}
-            </p>
-            {hookState?.toolName === 'Bash' && hookState?.toolInput?.command && (
-              <pre className="text-xs bg-gray-950/50 p-2 rounded font-mono overflow-x-auto max-h-20 overflow-y-auto mb-2 text-gray-300">
-                {hookState.toolInput.command}
-              </pre>
-            )}
-            {hookState?.toolName !== 'Bash' && (hookState?.toolInput?.file_path || hookState?.toolInput?.path) && (
-              <div className="text-xs opacity-80 font-mono bg-gray-950/30 px-2 py-1 rounded mb-2 text-gray-300 truncate">
-                {hookState.toolInput.file_path || hookState.toolInput.path}
-              </div>
-            )}
-            {hookState?.options && hookState.options.length > 0 ? (
-              <div className="space-y-1.5">
-                {hookState.options.map((option, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => sendQuickResponse(option.key)}
-                    disabled={sending}
-                    className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg
-                      bg-amber-800/30 hover:bg-amber-700/40 border border-amber-600/30
-                      hover:border-amber-500/50 transition-all disabled:opacity-50"
-                  >
-                    <span className="text-amber-400 font-bold w-5 text-center">{option.key}</span>
-                    <span className="text-amber-200 text-sm flex-1">{option.label}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <button
-                  onClick={() => sendQuickResponse('y')}
-                  disabled={sending}
-                  className="px-4 py-1.5 text-xs font-medium rounded-md bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-50"
-                >
-                  Yes
-                </button>
-                <button
-                  onClick={() => sendQuickResponse('n')}
-                  disabled={sending}
-                  className="px-4 py-1.5 text-xs font-medium rounded-md bg-red-700 hover:bg-red-600 text-white transition-colors disabled:opacity-50"
-                >
-                  No
-                </button>
-              </div>
-            )}
+            <p className="text-xs text-yellow-300 mb-2 whitespace-pre-wrap">{terminalPrompt}</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => sendQuickResponse('y')}
+                disabled={sending}
+                className="px-4 py-1.5 text-xs font-medium rounded-md bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-50"
+              >
+                Yes
+              </button>
+              <button
+                onClick={() => sendQuickResponse('n')}
+                disabled={sending}
+                className="px-4 py-1.5 text-xs font-medium rounded-md bg-red-700 hover:bg-red-600 text-white transition-colors disabled:opacity-50"
+              >
+                No
+              </button>
+            </div>
           </div>
         )}
 
@@ -883,14 +512,11 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
           <div className="px-3 py-1.5 flex items-center gap-2">
             <div
               className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                isWaiting ? 'bg-green-500' : isWorking ? 'bg-amber-500 animate-pulse' : 'bg-gray-500'
+                isWaiting ? 'bg-green-500' : 'bg-amber-500 animate-pulse'
               }`}
             />
             <span className="text-xs text-gray-400">
-              {isWaiting ? 'Ready for input'
-               : isWorking
-                 ? (liveActivity ? `${liveActivity.label}${liveActivity.detail ? ` · ${liveActivity.detail}` : ''}` : 'Working...')
-                 : 'Idle'}
+              {isWaiting ? 'Ready for input' : isWorking ? 'Working...' : 'Idle'}
             </span>
             {isWorking && <Loader2 className="w-3 h-3 text-amber-500 animate-spin" />}
           </div>
@@ -899,12 +525,6 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
 
       {/* Input area */}
       <div className="flex-shrink-0 border-t border-gray-800 bg-gray-950 px-3 py-2">
-        {!chatWsConnected && (
-          <div className="mb-2 px-2 py-1.5 bg-yellow-900/20 border border-yellow-800/50 rounded-lg text-xs text-yellow-400 flex items-center gap-1.5">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            Reconnecting...
-          </div>
-        )}
         <div className="flex items-end gap-2">
           <textarea
             ref={textareaRef}

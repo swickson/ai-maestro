@@ -17,10 +17,9 @@ variable "agent_name" {
   type        = string
 }
 
-variable "ai_tool" {
-  description = "AI CLI tool to install: claude, gemini, codex, or empty string for none"
+variable "ecr_image_url" {
+  description = "Full ECR image URL (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com/aimaestro-agent:latest)"
   type        = string
-  default     = "claude"
 }
 
 variable "github_token" {
@@ -31,9 +30,9 @@ variable "github_token" {
 
 # EC2 Configuration
 variable "instance_type" {
-  description = "EC2 instance type (ARM64/Graviton)"
+  description = "EC2 instance type"
   type        = string
-  default     = "t4g.small"
+  default     = "t3.small"
 }
 
 variable "key_name" {

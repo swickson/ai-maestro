@@ -119,31 +119,6 @@ function ensureAgentsDir() {
 }
 
 /**
- * Backfill the runtime field for agents that predate it.
- * Infers runtime from deployment type and AMP metadata.
- * Returns true if any agents were updated.
- */
-function backfillRuntime(agents: Agent[]): boolean {
-  let changed = false
-  for (const agent of agents) {
-    if (agent.runtime) continue
-    if (agent.deployment?.type === 'cloud') {
-      agent.runtime = 'docker'
-    } else if (
-      agent.ampRegistered &&
-      (agent.sessions || []).length === 0 &&
-      !agent.metadata?.autoRegistered
-    ) {
-      agent.runtime = 'api'
-    } else {
-      agent.runtime = 'tmux'
-    }
-    changed = true
-  }
-  return changed
-}
-
-/**
  * Load all agents from registry
  */
 // mtime-based cache to avoid redundant disk reads within the same tick
@@ -183,12 +158,6 @@ export function loadAgents(): Agent[] {
     if (needsMigration) {
       saveAgents(agents)
       console.log('[Agent Registry] Migrated claudeArgs → programArgs')
-    }
-
-    // Backfill runtime for agents that predate the runtime field
-    if (backfillRuntime(agents)) {
-      saveAgents(agents)
-      console.log('[Agent Registry] Backfilled runtime field on existing agents')
     }
 
     _cachedAgents = agents
@@ -450,8 +419,6 @@ export function createAgent(request: CreateAgentRequest): Agent {
     model: request.model,
     taskDescription: request.taskDescription,
     programArgs: request.programArgs || '',
-    permissionMode: request.permissionMode || 'supervised',
-    runtime: request.runtime || 'tmux',
     launchCount: 0,
     tags: normalizeTags(request.tags),
     capabilities: [],
@@ -572,6 +539,203 @@ export function updateAgent(id: string, updates: UpdateAgentRequest): Agent | nu
     lastActive: new Date().toISOString()
   }
 
+  saveAgents(agents)
+  invalidateAgentCache()
+  return agents[index]
+}
+
+/**
+ * Update an agent's container runtime config (deployment.sandbox.mounts and/or
+ * deployment.cloud.runtime.extraEnv) atomically.
+ *
+ * Resolves kanban 43753261 (rescoped option b — accept+persist operator mount
+ * mutations). The public UpdateAgentRequest type intentionally omits
+ * `deployment`, so operator-driven mount/env updates must come through this
+ * explicit primitive — callers prove they understand the semantics (a
+ * docker-side rebuild is required to make these stick on a running container;
+ * see services/agents-docker-service.updateContainerMountsAndExtraEnv).
+ *
+ * AMP common mounts (buildAmpCommonMounts) are NOT stored in
+ * `deployment.sandbox.mounts` — they recompute deterministically from the
+ * agent UUID at every docker run — so this helper cannot accidentally
+ * displace them AT THE PERSISTENCE LAYER. AMP common-mount paths and system
+ * env keys are also reserved by validateMounts + validateExtraEnv when
+ * called with `{ operatorSupplied: true }`, which updateContainerMountsAndExtraEnv
+ * (and createDockerAgent) pass through. See OPERATOR_RESERVED_CONTAINER_PATH_ROOTS
+ * + OPERATOR_RESERVED_ENV_KEYS in services/agents-docker-service.ts for the
+ * reserved set.
+ *
+ * Pass `mounts: []` to clear all operator mounts. Pass `mounts: undefined`
+ * (the default) to leave them untouched. Same semantics for `extraEnv`.
+ *
+ * `cpus`, `memory`, and `autoRemove` are similarly field-level optional and
+ * follow the same omit-leaves-untouched / explicit-value-overwrites semantics.
+ * Wired in for the kanban 1ef9eabd backfill flow; pre-existing callers
+ * (createDockerAgent at create time, updateContainerMountsAndExtraEnv mid-life)
+ * still drive those fields through other paths.
+ *
+ * Returns the updated agent, or null if not found.
+ */
+export function updateAgentRuntimeConfig(
+  id: string,
+  config: {
+    mounts?: import('@/types/agent').SandboxMount[]
+    extraEnv?: Record<string, string>
+    // Container sizing fields — historically only written by createDockerAgent
+    // at create time. The kanban 1ef9eabd backfill flow persists these from
+    // docker inspect for legacy agents that predate PR #146's runtime block.
+    // Each is field-level optional; omitted = leave untouched. Same semantics
+    // as mounts/extraEnv.
+    cpus?: number
+    memory?: string
+    autoRemove?: boolean
+    // Toggle sandbox.ziggy on the agent record. Drives --network ziggy_default
+    // attach + Ziggy MCP overlay mounts on the next container redeploy. Omit
+    // to leave untouched; true to set; false to clear.
+    ziggy?: boolean
+  }
+): Agent | null {
+  const agents = loadAgents()
+  const index = agents.findIndex(a => a.id === id)
+  if (index === -1) return null
+
+  const agent = agents[index]
+  const deployment: Agent['deployment'] = {
+    ...agent.deployment,
+    type: agent.deployment?.type ?? 'cloud',
+  }
+
+  if (config.mounts !== undefined) {
+    deployment.sandbox =
+      config.mounts.length === 0
+        ? { ...(deployment.sandbox ?? {}), mounts: undefined }
+        : { ...(deployment.sandbox ?? {}), mounts: config.mounts }
+    // Drop the mounts field entirely when cleared so the persisted shape stays
+    // tidy. We retain the sandbox object itself in case other fields (ziggy)
+    // are also being set — the empty-sandbox cleanup below handles total
+    // removal when no fields remain.
+    if (deployment.sandbox?.mounts === undefined) {
+      const { mounts: _drop, ...rest } = deployment.sandbox ?? {}
+      deployment.sandbox = rest
+    }
+  }
+
+  if (config.ziggy !== undefined) {
+    if (config.ziggy === true) {
+      deployment.sandbox = { ...(deployment.sandbox ?? {}), ziggy: true }
+    } else {
+      // false → remove the field. Strip it explicitly so the persisted shape
+      // doesn't carry an explicit `ziggy: false` (matches mounts semantics).
+      const { ziggy: _drop, ...rest } = deployment.sandbox ?? {}
+      deployment.sandbox = rest
+    }
+  }
+
+  // Sandbox cleanup: if all sub-fields ended up undefined, drop the whole
+  // sandbox block so the agent record's on-disk shape stays identical to
+  // pre-existing no-sandbox agents (e.g. matters for shape-diff tooling +
+  // golden-file tests).
+  if (deployment.sandbox && Object.keys(deployment.sandbox).length === 0) {
+    deployment.sandbox = undefined
+  }
+
+  const writesRuntime =
+    config.extraEnv !== undefined ||
+    config.cpus !== undefined ||
+    config.memory !== undefined ||
+    config.autoRemove !== undefined
+
+  if (writesRuntime) {
+    const existingCloud = deployment.cloud
+    const existingRuntime = existingCloud?.runtime ?? {}
+    const newRuntime: NonNullable<NonNullable<Agent['deployment']['cloud']>['runtime']> = {
+      ...existingRuntime,
+    }
+    if (config.cpus !== undefined) newRuntime.cpus = config.cpus
+    if (config.memory !== undefined) newRuntime.memory = config.memory
+    if (config.autoRemove !== undefined) newRuntime.autoRemove = config.autoRemove
+    if (config.extraEnv !== undefined) {
+      newRuntime.extraEnv = config.extraEnv
+      if (Object.keys(config.extraEnv).length === 0) {
+        delete newRuntime.extraEnv
+      }
+    }
+    // Only persist a `cloud` block if one already existed — this helper isn't
+    // a vehicle for converting a local agent into a cloud one. Caller is
+    // responsible for ensuring this is a cloud agent before invoking.
+    if (existingCloud) {
+      deployment.cloud = { ...existingCloud, runtime: newRuntime }
+    }
+  }
+
+  agents[index] = {
+    ...agent,
+    deployment,
+    lastActive: new Date().toISOString(),
+  }
+  saveAgents(agents)
+  invalidateAgentCache()
+  return agents[index]
+}
+
+/**
+ * Mark a cloud agent's running container as stale relative to the registry
+ * (e.g., after a PATCH mutated an AI_TOOL-composing field). No-op for local
+ * agents and for cloud agents whose `cloud` block was never persisted. Idempotent
+ * — re-marking just overwrites the timestamp.
+ *
+ * See kanban aa2953b0. Cleared by `clearCloudContainerStale` once the container
+ * is rebuilt via /update-runtime.
+ */
+export function markCloudContainerStale(id: string): Agent | null {
+  const agents = loadAgents()
+  const index = agents.findIndex(a => a.id === id)
+  if (index === -1) return null
+
+  const agent = agents[index]
+  const cloud = agent.deployment?.cloud
+  if (!cloud) return agent // no cloud block — nothing to mark stale
+
+  agents[index] = {
+    ...agent,
+    deployment: {
+      ...agent.deployment!,
+      cloud: { ...cloud, containerStaleSince: Date.now() },
+    },
+    lastActive: new Date().toISOString(),
+  }
+  saveAgents(agents)
+  invalidateAgentCache()
+  return agents[index]
+}
+
+/**
+ * Clear the `containerStaleSince` flag on a cloud agent. Called by
+ * /update-runtime (and /recreate) after a successful container rebuild —
+ * the running container is now back in sync with the registry's AI_TOOL
+ * fields, so the stale signal is no longer accurate.
+ *
+ * No-op if no flag is set, no `cloud` block exists, or agent is missing.
+ */
+export function clearCloudContainerStale(id: string): Agent | null {
+  const agents = loadAgents()
+  const index = agents.findIndex(a => a.id === id)
+  if (index === -1) return null
+
+  const agent = agents[index]
+  const cloud = agent.deployment?.cloud
+  if (!cloud || cloud.containerStaleSince === undefined) return agent
+
+  const { containerStaleSince: _drop, ...cloudWithoutFlag } = cloud
+  void _drop
+  agents[index] = {
+    ...agent,
+    deployment: {
+      ...agent.deployment!,
+      cloud: cloudWithoutFlag,
+    },
+    lastActive: new Date().toISOString(),
+  }
   saveAgents(agents)
   invalidateAgentCache()
   return agents[index]
@@ -2523,201 +2687,4 @@ export function getAMPRegisteredAgents(): Agent[] {
 export function getLegacyAgents(): Agent[] {
   const agents = loadAgents()
   return agents.filter(a => !a.deletedAt && a.ampRegistered !== true)
-}
-
-/**
- * Update an agent's container runtime config (deployment.sandbox.mounts and/or
- * deployment.cloud.runtime.extraEnv) atomically.
- *
- * Resolves kanban 43753261 (rescoped option b — accept+persist operator mount
- * mutations). The public UpdateAgentRequest type intentionally omits
- * `deployment`, so operator-driven mount/env updates must come through this
- * explicit primitive — callers prove they understand the semantics (a
- * docker-side rebuild is required to make these stick on a running container;
- * see services/agents-docker-service.updateContainerMountsAndExtraEnv).
- *
- * AMP common mounts (buildAmpCommonMounts) are NOT stored in
- * `deployment.sandbox.mounts` — they recompute deterministically from the
- * agent UUID at every docker run — so this helper cannot accidentally
- * displace them AT THE PERSISTENCE LAYER. AMP common-mount paths and system
- * env keys are also reserved by validateMounts + validateExtraEnv when
- * called with `{ operatorSupplied: true }`, which updateContainerMountsAndExtraEnv
- * (and createDockerAgent) pass through. See OPERATOR_RESERVED_CONTAINER_PATH_ROOTS
- * + OPERATOR_RESERVED_ENV_KEYS in services/agents-docker-service.ts for the
- * reserved set.
- *
- * Pass `mounts: []` to clear all operator mounts. Pass `mounts: undefined`
- * (the default) to leave them untouched. Same semantics for `extraEnv`.
- *
- * `cpus`, `memory`, and `autoRemove` are similarly field-level optional and
- * follow the same omit-leaves-untouched / explicit-value-overwrites semantics.
- * Wired in for the kanban 1ef9eabd backfill flow; pre-existing callers
- * (createDockerAgent at create time, updateContainerMountsAndExtraEnv mid-life)
- * still drive those fields through other paths.
- *
- * Returns the updated agent, or null if not found.
- */
-export function updateAgentRuntimeConfig(
-  id: string,
-  config: {
-    mounts?: import('@/types/agent').SandboxMount[]
-    extraEnv?: Record<string, string>
-    // Container sizing fields — historically only written by createDockerAgent
-    // at create time. The kanban 1ef9eabd backfill flow persists these from
-    // docker inspect for legacy agents that predate PR #146's runtime block.
-    // Each is field-level optional; omitted = leave untouched. Same semantics
-    // as mounts/extraEnv.
-    cpus?: number
-    memory?: string
-    autoRemove?: boolean
-    // Toggle sandbox.ziggy on the agent record. Drives --network ziggy_default
-    // attach + Ziggy MCP overlay mounts on the next container redeploy. Omit
-    // to leave untouched; true to set; false to clear.
-    ziggy?: boolean
-  }
-): Agent | null {
-  const agents = loadAgents()
-  const index = agents.findIndex(a => a.id === id)
-  if (index === -1) return null
-
-  const agent = agents[index]
-  const deployment: Agent['deployment'] = {
-    ...agent.deployment,
-    type: agent.deployment?.type ?? 'cloud',
-  }
-
-  if (config.mounts !== undefined) {
-    deployment.sandbox =
-      config.mounts.length === 0
-        ? { ...(deployment.sandbox ?? {}), mounts: undefined }
-        : { ...(deployment.sandbox ?? {}), mounts: config.mounts }
-    // Drop the mounts field entirely when cleared so the persisted shape stays
-    // tidy. We retain the sandbox object itself in case other fields (ziggy)
-    // are also being set — the empty-sandbox cleanup below handles total
-    // removal when no fields remain.
-    if (deployment.sandbox?.mounts === undefined) {
-      const { mounts: _drop, ...rest } = deployment.sandbox ?? {}
-      deployment.sandbox = rest
-    }
-  }
-
-  if (config.ziggy !== undefined) {
-    if (config.ziggy === true) {
-      deployment.sandbox = { ...(deployment.sandbox ?? {}), ziggy: true }
-    } else {
-      // false → remove the field. Strip it explicitly so the persisted shape
-      // doesn't carry an explicit `ziggy: false` (matches mounts semantics).
-      const { ziggy: _drop, ...rest } = deployment.sandbox ?? {}
-      deployment.sandbox = rest
-    }
-  }
-
-  // Sandbox cleanup: if all sub-fields ended up undefined, drop the whole
-  // sandbox block so the agent record's on-disk shape stays identical to
-  // pre-existing no-sandbox agents (e.g. matters for shape-diff tooling +
-  // golden-file tests).
-  if (deployment.sandbox && Object.keys(deployment.sandbox).length === 0) {
-    deployment.sandbox = undefined
-  }
-
-  const writesRuntime =
-    config.extraEnv !== undefined ||
-    config.cpus !== undefined ||
-    config.memory !== undefined ||
-    config.autoRemove !== undefined
-
-  if (writesRuntime) {
-    const existingCloud = deployment.cloud
-    const existingRuntime = existingCloud?.runtime ?? {}
-    const newRuntime: NonNullable<NonNullable<Agent['deployment']['cloud']>['runtime']> = {
-      ...existingRuntime,
-    }
-    if (config.cpus !== undefined) newRuntime.cpus = config.cpus
-    if (config.memory !== undefined) newRuntime.memory = config.memory
-    if (config.autoRemove !== undefined) newRuntime.autoRemove = config.autoRemove
-    if (config.extraEnv !== undefined) {
-      newRuntime.extraEnv = config.extraEnv
-      if (Object.keys(config.extraEnv).length === 0) {
-        delete newRuntime.extraEnv
-      }
-    }
-    // Only persist a `cloud` block if one already existed — this helper isn't
-    // a vehicle for converting a local agent into a cloud one. Caller is
-    // responsible for ensuring this is a cloud agent before invoking.
-    if (existingCloud) {
-      deployment.cloud = { ...existingCloud, runtime: newRuntime }
-    }
-  }
-
-  agents[index] = {
-    ...agent,
-    deployment,
-    lastActive: new Date().toISOString(),
-  }
-  saveAgents(agents)
-  invalidateAgentCache()
-  return agents[index]
-}
-
-/**
- * Mark a cloud agent's running container as stale relative to the registry
- * (e.g., after a PATCH mutated an AI_TOOL-composing field). No-op for local
- * agents and for cloud agents whose `cloud` block was never persisted. Idempotent
- * — re-marking just overwrites the timestamp.
- *
- * See kanban aa2953b0. Cleared by `clearCloudContainerStale` once the container
- * is rebuilt via /update-runtime.
- */
-export function markCloudContainerStale(id: string): Agent | null {
-  const agents = loadAgents()
-  const index = agents.findIndex(a => a.id === id)
-  if (index === -1) return null
-
-  const agent = agents[index]
-  const cloud = agent.deployment?.cloud
-  if (!cloud) return agent // no cloud block — nothing to mark stale
-
-  agents[index] = {
-    ...agent,
-    deployment: {
-      ...agent.deployment!,
-      cloud: { ...cloud, containerStaleSince: Date.now() },
-    },
-    lastActive: new Date().toISOString(),
-  }
-  saveAgents(agents)
-  invalidateAgentCache()
-  return agents[index]
-}
-
-/**
- * Clear the `containerStaleSince` flag on a cloud agent. Called by
- * /update-runtime (and /recreate) after a successful container rebuild —
- * the running container is now back in sync with the registry's AI_TOOL
- * fields, so the stale signal is no longer accurate.
- *
- * No-op if no flag is set, no `cloud` block exists, or agent is missing.
- */
-export function clearCloudContainerStale(id: string): Agent | null {
-  const agents = loadAgents()
-  const index = agents.findIndex(a => a.id === id)
-  if (index === -1) return null
-
-  const agent = agents[index]
-  const cloud = agent.deployment?.cloud
-  if (!cloud || cloud.containerStaleSince === undefined) return agent
-
-  const { containerStaleSince: _drop, ...cloudWithoutFlag } = cloud
-  void _drop
-  agents[index] = {
-    ...agent,
-    deployment: {
-      ...agent.deployment!,
-      cloud: cloudWithoutFlag,
-    },
-    lastActive: new Date().toISOString(),
-  }
-  saveAgents(agents)
-  invalidateAgentCache()
-  return agents[index]
 }

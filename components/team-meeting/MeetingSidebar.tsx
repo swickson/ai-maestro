@@ -76,21 +76,17 @@ export default function MeetingSidebar({
     setWakeDialogAgent(agent)
   }
 
-  const handleWakeConfirm = async (program: string, options?: { permissionMode?: string }) => {
+  const handleWakeConfirm = async (program: string) => {
     if (!wakeDialogAgent) return
 
     const agent = wakeDialogAgent
     setWakingAgents(prev => new Set(prev).add(agent.id))
 
     try {
-      const body: Record<string, unknown> = { program, hostUrl: agent.hostUrl }
-      if (options?.permissionMode && options.permissionMode !== 'supervised') {
-        body.permissionMode = options.permissionMode
-      }
       const response = await fetch(`/api/agents/${agent.id}/wake`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ program, hostUrl: agent.hostUrl }),
       })
 
       if (!response.ok) {
@@ -102,12 +98,13 @@ export default function MeetingSidebar({
     } catch (error) {
       console.error('Failed to wake agent:', error)
       const errMsg = error instanceof Error ? error.message : 'Unknown error'
+      const isNetworkError = errMsg.includes('unreachable') || errMsg.includes('fetch') || errMsg.includes('network') || errMsg.includes('abort')
       addToast({
         type: 'error',
         title: 'Failed to wake agent',
-        message: agent.hostUrl
+        message: isNetworkError && agent.hostUrl
           ? `Host ${agent.hostUrl} may be unreachable: ${errMsg}`
-          : `${errMsg}. Check your network connection and try again.`,
+          : errMsg,
       })
       setWakeDialogAgent(null)
     } finally {
@@ -397,7 +394,6 @@ export default function MeetingSidebar({
         onConfirm={handleWakeConfirm}
         agentName={wakeDialogAgent?.name || wakeDialogAgent?.id || ''}
         agentAlias={wakeDialogAgent?.label || wakeDialogAgent?.alias}
-        defaultPermissionMode={(wakeDialogAgent as any)?.permissionMode}
       />
     </div>
   )

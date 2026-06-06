@@ -159,12 +159,15 @@ function meetingReducer(state: TeamMeetingState, action: TeamMeetingAction): Tea
       return { ...state, rightPanelOpen: true, rightPanelTab: action.tab }
 
     case 'OPEN_KANBAN':
-      return { ...state, kanbanOpen: true }
+      // Mutual-exclude: opening kanban closes chat overlay (only one occupies the middle slot)
+      return { ...state, kanbanOpen: true, chatOpen: false }
 
     case 'CLOSE_KANBAN':
       return { ...state, kanbanOpen: false }
 
     case 'OPEN_CHAT':
+      // Mutual-exclude with kanban; auto-switch right panel to tasks so the
+      // bonus tasks-AND-chat-visible state is the default behavior.
       return {
         ...state,
         chatOpen: true,
@@ -218,6 +221,24 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
   const [notFound, setNotFound] = useState(false)
   const persistedMeetingIdRef = useRef<string | null>(null)
   const creatingMeetingRef = useRef(false)
+  const [operatorId, setOperatorId] = useState<string | undefined>(undefined)
+  const [operatorName, setOperatorName] = useState<string | undefined>(undefined)
+
+  // Restore preferred chat-mode from localStorage on mount.
+  // Per design lock 2026-05-04: focus-mode preference survives reload so the
+  // long-running-meeting use case does not have to re-pop the overlay each load.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (window.localStorage.getItem('meeting.chatOpen') === '1') {
+      dispatch({ type: 'OPEN_CHAT' })
+    }
+  }, [])
+
+  // Persist chat-mode changes back to localStorage.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('meeting.chatOpen', state.chatOpen ? '1' : '0')
+  }, [state.chatOpen])
 
   // Restore meeting from disk on mount (skip for new meetings)
   useEffect(() => {
@@ -241,6 +262,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
 
         persistedMeetingIdRef.current = meeting.id
         setTeamId(meeting.teamId)
+        setOperatorId(meeting.operatorId)
+        setOperatorName(meeting.operatorName)
         dispatch({ type: 'RESTORE_MEETING', meeting, teamId: meeting.teamId })
       } catch {
         if (!cancelled) setNotFound(true)
@@ -323,6 +346,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
         const data = await res.json()
         if (data.meeting) {
           persistedMeetingIdRef.current = data.meeting.id
+          setOperatorId(data.meeting.operatorId)
+          setOperatorName(data.meeting.operatorName)
           // Update URL without full navigation
           window.history.replaceState(null, '', `/team-meeting?meeting=${data.meeting.id}`)
         }
@@ -413,7 +438,9 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
   }, [state.rightPanelOpen])
 
   // Build a value-based signature so the memo stays reference-stable across
-  // useAgents polls. Prevents terminal unmount/remount on every 10-30s refresh.
+  // useAgents polls. Agents array gets a new ref every 10-30s, but as long as
+  // the meaningful fields (id, session, host, status) are unchanged, the
+  // returned array reference stays the same — keeps TerminalView mounted.
   const selectedAgentsSignature = state.selectedAgentIds.map(id => {
     const a = agents.find(x => x.id === id)
     if (!a) return `${id}:missing`
@@ -435,6 +462,8 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
     participantIds: state.selectedAgentIds,
     teamName: state.teamName || 'Meeting',
     isActive: state.phase === 'active',
+    operatorId,
+    operatorName,
   })
 
   // Poll unread message counts per agent (every 10s)
@@ -538,9 +567,10 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
     dispatch({ type: 'ALL_JOINED' })
   }, [])
 
-  // Loading states — only on initial load. On subsequent useAgents polls,
-  // agentsLoading briefly flips true; returning the loader would unmount the
-  // entire meeting subtree (including terminals) at the poll cadence.
+  // Loading states — only on the initial load (agents not yet populated).
+  // On subsequent useHosts/useAgents polls, `agentsLoading` briefly flips true
+  // every refresh; if we returned the loader on every poll we'd unmount the
+  // entire meeting subtree (including the terminal) at the poll cadence.
   if (restoring || (agentsLoading && agents.length === 0)) {
     return (
       <div className="fixed inset-0 bg-gray-950 flex items-center justify-center">
@@ -630,8 +660,10 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
                   mode="overlay"
                   agents={selectedAgents}
                   messages={chatHook.messages}
+                  meetingId={state.meetingId || undefined}
                   onSendToAgent={chatHook.sendToAgent}
                   onBroadcastToAll={chatHook.broadcastToAll}
+                  onContinue={chatHook.continueMeeting}
                   onClose={() => dispatch({ type: 'CLOSE_CHAT' })}
                 />
               ) : (

@@ -147,19 +147,24 @@ export class TmuxRuntime implements AgentRuntime {
       const inCopyMode = await this.isInCopyMode(name)
       if (!inCopyMode) return
 
-      // Stage 1: Escape dismisses any command-prompt overlay + exits plain copy-mode
+      // Stage 1: Escape dismisses any command-prompt overlay sitting on top
+      // of copy-mode (e.g. (jump backward) from F, (search forward) from /,
+      // (paste buffer) from =). A bare `q` won't clear those — it gets
+      // consumed as the prompt's argument character, leaving the pane in
+      // copy-mode and silently dropping the next sendKeys. Escape also exits
+      // plain copy-mode via the default vi/emacs key bindings.
       await execAsync(`tmux send-keys -t "${name}" Escape`)
       await new Promise(resolve => setTimeout(resolve, 30))
 
-      // Stage 2: belt-and-suspenders. If Stage 1 only dismissed the overlay,
-      // force-exit with q.
+      // Stage 2: belt-and-suspenders. If Stage 1 only dismissed the overlay
+      // and the pane is still in copy-mode, force-exit with q.
       const stillInCopyMode = await this.isInCopyMode(name)
       if (stillInCopyMode) {
         await execAsync(`tmux send-keys -t "${name}" q`)
         await new Promise(resolve => setTimeout(resolve, 50))
       }
     } catch {
-      // Non-fatal: caller's send-keys will surface the underlying tmux error
+      // Non-fatal: caller's send-keys will surface the underlying tmux error.
     }
   }
 
@@ -195,10 +200,8 @@ export class TmuxRuntime implements AgentRuntime {
       const escaped = keys.replace(/'/g, "'\\''")
       await execAsync(`tmux send-keys -t "${name}" -l '${escaped}'`)
       if (enter) {
-        // Send Enter separately with a delay so TUIs (Claude Code, Codex)
-        // process the literal text before receiving the submit. Without this,
-        // Enter can arrive in the same tmux tick and be processed before the
-        // input field updates, causing the submit to be silently lost.
+        // Small delay so programs like Codex can process the literal text
+        // before receiving Enter — without this, some terminals swallow the C-m
         await new Promise(r => setTimeout(r, 100))
         await execAsync(`tmux send-keys -t "${name}" Enter`)
       }

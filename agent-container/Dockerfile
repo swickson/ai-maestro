@@ -117,11 +117,20 @@ RUN npm install -g \
 
 # Copy agent server code
 COPY agent-server.js ./
+COPY claude-home-merge.cjs ./
+COPY restoration-gate.cjs ./
 RUN chmod +x agent-server.js
 
 # Create workspace directory
 RUN mkdir -p /workspace && \
     chown -R claude:claude /workspace
+
+# Bind-mount target for the host-written restoration-ready sentinel (kanban
+# fcabb870). agent-server.js polls /restoration-ready/complete pre-tmux-init
+# to close the Han EACCES race. Pre-create here so docker doesn't materialize
+# the bind target as root when the host's restoration/ dir lands on it.
+RUN mkdir -p /restoration-ready && \
+    chown -R claude:claude /restoration-ready
 
 # Pre-create the dirs that bind mounts will land in, owned by claude. Without
 # these, Docker auto-creates each parent of a per-UUID bind mount as root, and

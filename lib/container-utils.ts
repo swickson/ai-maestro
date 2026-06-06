@@ -1,8 +1,9 @@
 /**
  * Container utilities — thin wrappers around the `docker` CLI for the
- * cloud-agent wake path. Kept minimal and shell-out-based so the container
- * operations stay small and testable. A richer ContainerRuntime implementing
- * AgentRuntime can grow on top of this when sandbox.mounts work lands.
+ * cloud-agent wake path. Kept minimal and shell-out-based for now so the
+ * fix to swickson/ai-maestro#6 stays small. A richer ContainerRuntime
+ * implementing AgentRuntime can grow on top of this when CelestIA's
+ * sandbox.mounts work lands.
  */
 
 import { exec } from 'child_process'
@@ -26,6 +27,7 @@ export const CONTAINER_CWD_ENCODED = '-workspace'
 // per-project chats dir is `<HOME>/.gemini/tmp/workspace/chats/`. Sibling
 // const so the cloud-branch path lookup for cloud-Gemini agents has a
 // single source of truth that does not drift from CONTAINER_CWD.
+// Empirically pinned on Holmes Mason/Optic 2026-05-11 (kanban d937c33d).
 export const CONTAINER_CWD_GEMINI_PROJECT = 'workspace'
 
 export type ContainerStatus =
@@ -80,10 +82,11 @@ export async function stopContainer(name: string, timeoutSec: number = 10): Prom
  * Remove a container by name. Used by the hard-delete cloud-agent branch — without
  * it, the `aim-<name>` slot stays occupied even after the registry record is gone,
  * and recreating an agent with the same name fails at `docker run` with "container
- * name already in use".
+ * name already in use" (issue #84).
  *
  * Caller is responsible for stopping a running container first; `docker rm` on a
- * running container without `--force` is rejected by the daemon.
+ * running container without `--force` is rejected by the daemon. The delete path
+ * inspects + stops before calling this helper.
  */
 export async function removeContainer(name: string): Promise<void> {
   await execAsync(`docker rm ${shellQuote(name)}`, { timeout: 10000 })
@@ -92,13 +95,18 @@ export async function removeContainer(name: string): Promise<void> {
 /**
  * Send keys to a tmux session running INSIDE a container, via `docker exec`.
  *
- * Mirrors the host-side `runtime.sendKeys` interface. Cloud agents have no host
- * tmux session — their tmux runs inside `containerName` — so the host send-keys
- * path returns "session not found". This helper closes that gap by doing the
- * equivalent send inside the container.
+ * Mirrors the host-side `runtime.sendKeys` interface used by the notify route
+ * and notification-service. Cloud agents have no host tmux session — their
+ * tmux runs inside `containerName` — so the host send-keys path returns
+ * "session not found" and short-circuits any wake-prompt or notification.
+ * This helper closes that gap by doing the equivalent send inside the
+ * container.
  *
- * `opts.enter` appends a trailing Enter as a separate send-keys call (matches the
- * two-step pattern used elsewhere — text first, then Enter — to defeat TUI batching).
+ * `keys` is the literal text to send. `opts.literal` controls whether tmux
+ * interprets the input literally (-l flag, default true here) or as named keys
+ * (e.g. `Enter`). `opts.enter` appends a trailing Enter as a separate
+ * send-keys call (matches the two-step pattern used elsewhere — text first,
+ * then Enter — to defeat TUI batching).
  */
 export async function sendKeysToContainer(
   containerName: string,
@@ -110,6 +118,8 @@ export async function sendKeysToContainer(
   const target = `${sessionName}:0.0`
   if (keys.length > 0) {
     const flag = literal ? '-l ' : ''
+    // shellQuote handles the keys (may contain quotes/backticks); container
+    // name and session name are operator-controlled, so shellQuote them too.
     await execAsync(
       `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} ${flag}${shellQuote(keys)}`,
       { timeout: 5000 }
@@ -127,7 +137,9 @@ export async function sendKeysToContainer(
  * Check whether a tmux session exists INSIDE a container.
  *
  * Used by the cloud-wake path to gate sendKeysToContainer on the in-container
- * tmux server actually being up. Returns false on any error (missing session,
+ * tmux server actually being up — agent-server.js boots fresh on `docker start`
+ * and creates the session within ~1s, but pushing keys before that races and
+ * silently drops the input. Returns false on any error (missing session,
  * docker exec failure, container not running).
  */
 export async function tmuxHasSessionInContainer(
@@ -147,12 +159,28 @@ export async function tmuxHasSessionInContainer(
 
 /**
  * Exit copy-mode on a tmux pane running INSIDE a container, if it's currently
- * in copy-mode. Mirror of the host-side `runtime.cancelCopyMode`.
+ * in copy-mode. Mirror of the host-side `runtime.cancelCopyMode` at
+ * `lib/agent-runtime.ts:145` for cloud agents.
+ *
+ * Why this exists: when a pane is in copy-mode, `tmux send-keys -l` against
+ * it hangs the calling process indefinitely AND drops the payload on copy-
+ * mode exit (verified empirically 2026-04-28 on Holmes/Rollie controlled
+ * repro per kanban `96d317df`). Every cloud-agent send-keys callsite that
+ * doesn't first ensure the pane is out of copy-mode risks tying up the
+ * maestro request handler.
  *
  * Two-stage exit: probe `pane_in_mode`, then Escape to dismiss any active
- * command-prompt overlay, re-probe, and fall back to `q` for plain copy-mode.
+ * command-prompt overlay (e.g. (jump backward) from F, (search forward) from
+ * /, (paste buffer) from =), re-probe, and only then fall back to `q` for
+ * plain copy-mode without an overlay. A bare `q` against a copy-mode pane
+ * with an active command-prompt is consumed as the prompt's argument
+ * character, leaving the pane in copy-mode and silently dropping the next
+ * sendKeys (verified 2026-04-29 on Holmes/Rollie — Shane's "I have to hit
+ * Escape a bunch and Enter" recovery confirms the overlay state).
  *
- * Non-fatal on any error — let the caller's send-keys surface the real error.
+ * Non-fatal on any error — if the probe fails (container down, session
+ * missing, daemon unreachable), let the caller's send-keys hit the same
+ * condition and surface a clearer error there.
  */
 export async function cancelCopyModeInContainer(
   containerName: string,
@@ -166,14 +194,16 @@ export async function cancelCopyModeInContainer(
     )
     if (stdout.trim() !== '1') return
 
-    // Stage 1: Escape clears any command-prompt overlay AND exits plain copy-mode
+    // Stage 1: Escape clears any command-prompt overlay AND exits plain
+    // copy-mode via the default vi/emacs key bindings.
     await execAsync(
       `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} Escape`,
       { timeout: 5000 }
     )
     await new Promise(resolve => setTimeout(resolve, 30))
 
-    // Stage 2: if still in copy-mode, force-exit with q
+    // Stage 2: belt-and-suspenders. If only the overlay closed and the pane
+    // is still in copy-mode, force-exit with q.
     const { stdout: stillInMode } = await execAsync(
       `docker exec ${shellQuote(containerName)} tmux display-message -t ${shellQuote(target)} -p '#{pane_in_mode}'`,
       { timeout: 5000 }
@@ -192,10 +222,12 @@ export async function cancelCopyModeInContainer(
 
 /**
  * Capture the visible pane content from a tmux session running INSIDE a
- * container. Mirrors the host-side `runtime.capturePane` interface.
+ * container, via `docker exec`. Mirrors the host-side `runtime.capturePane`
+ * interface used by the wake-prompt readiness poll.
  *
- * Returns the empty string on any error so the caller can keep polling
- * rather than crashing the wake flow.
+ * `lines` controls how many lines of scrollback to include (the host runtime
+ * accepts the same parameter). Returns the empty string on any error so the
+ * caller can keep polling rather than crashing the wake flow.
  */
 export async function capturePaneFromContainer(
   containerName: string,
