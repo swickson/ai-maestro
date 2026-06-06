@@ -14,6 +14,7 @@ import {
   Star,
 } from 'lucide-react'
 import { computeHash, getAvatarUrl } from '@/lib/hash-utils'
+import { agentIsOnline } from '@/lib/agent-utils'
 import { Agent, AgentSession } from '@/types/agent'
 import InfraIcon from './InfraIcon'
 import { SessionActivityStatus } from '@/hooks/useSessionActivity'
@@ -113,7 +114,7 @@ export default function AgentBadge({
 
   // Get the primary session — check runtime session status (covers standalone agents)
   const session = agent.sessions?.[0]
-  const isOnline = session?.status === 'online' || agent.session?.status === 'online'
+  const isOnline = agentIsOnline(agent)
   const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
 
   const statusInfo = getStatusInfo(session, isHibernated, activityStatus, agent.session?.status === 'online')

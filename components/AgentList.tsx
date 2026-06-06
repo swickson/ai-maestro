@@ -48,7 +48,7 @@ import SidebarViewSwitcher, { type SidebarView } from './sidebar/SidebarViewSwit
 import TeamListView from './sidebar/TeamListView'
 import MeetingListView from './sidebar/MeetingListView'
 import { useToast } from '@/contexts/ToastContext'
-import { getAgentBaseUrl } from '@/lib/agent-utils'
+import { getAgentBaseUrl, agentIsOnline } from '@/lib/agent-utils'
 import { computeHash, getAvatarUrl } from '@/lib/hash-utils'
 
 interface AgentListProps {
@@ -799,8 +799,7 @@ export default function AgentList({
               <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
                 {favoriteAgents.map(agent => {
                   const isActive = activeAgentId === agent.id
-                  const session = agent.sessions?.[0]
-                  const isOnline = session?.status === 'online' || agent.session?.status === 'online'
+                  const isOnline = agentIsOnline(agent)
                   const avatarUrl = agent.avatar && (agent.avatar.startsWith('http') || agent.avatar.startsWith('/'))
                     ? agent.avatar
                     : getAvatarUrl(agent.id)
@@ -1084,16 +1083,13 @@ export default function AgentList({
                                     {[...agentsList]
                                       .sort((a, b) => {
                                         // Sort by status first (online > hibernated > offline), then by alias
-                                        const aSession = a.sessions?.[0]
-                                        const bSession = b.sessions?.[0]
-                                        const aOnline = (aSession?.status === 'online' || a.session?.status === 'online') ? 2 : (a.sessions?.length ? 1 : 0)
-                                        const bOnline = (bSession?.status === 'online' || b.session?.status === 'online') ? 2 : (b.sessions?.length ? 1 : 0)
+                                        const aOnline = agentIsOnline(a) ? 2 : (a.sessions?.length ? 1 : 0)
+                                        const bOnline = agentIsOnline(b) ? 2 : (b.sessions?.length ? 1 : 0)
                                         if (aOnline !== bOnline) return bOnline - aOnline
                                         return (a.label || a.name || a.alias || '').toLowerCase().localeCompare((b.label || b.name || b.alias || '').toLowerCase())
                                       })
                                       .map((agent) => {
-                                        const session = agent.sessions?.[0]
-                                        const isOnline = session?.status === 'online' || agent.session?.status === 'online'
+                                        const isOnline = agentIsOnline(agent)
                                         const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
                                         const sessionName = agent.name
                                         const activityInfo = sessionName ? getSessionActivity(sessionName) : null
@@ -1253,17 +1249,14 @@ export default function AgentList({
                                 {[...agentsList]
                                   .sort((a, b) => {
                                     // Sort by status first (online > hibernated > offline), then by alias
-                                    const aSession = a.sessions?.[0]
-                                    const bSession = b.sessions?.[0]
-                                    const aOnline = aSession?.status === 'online' ? 2 : (a.sessions?.length ? 1 : 0)
-                                    const bOnline = bSession?.status === 'online' ? 2 : (b.sessions?.length ? 1 : 0)
+                                    const aOnline = agentIsOnline(a) ? 2 : (a.sessions?.length ? 1 : 0)
+                                    const bOnline = agentIsOnline(b) ? 2 : (b.sessions?.length ? 1 : 0)
                                     if (aOnline !== bOnline) return bOnline - aOnline
                                     return (a.label || a.name || a.alias || '').toLowerCase().localeCompare((b.label || b.name || b.alias || '').toLowerCase())
                                   })
                                   .map((agent) => {
                                   const isActive = activeAgentId === agent.id
-                                  const session = agent.sessions?.[0]
-                                  const isOnline = session?.status === 'online'
+                                  const isOnline = agentIsOnline(agent)
                                   const isHibernated = !isOnline && agent.sessions && agent.sessions.length > 0
                                   const indentClass = level2 === 'default' ? 'pl-10' : 'pl-14'
 

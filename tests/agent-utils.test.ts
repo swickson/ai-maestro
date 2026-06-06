@@ -1,8 +1,41 @@
 import { describe, it, expect } from 'vitest'
-import { agentToSession } from '@/lib/agent-utils'
+import { agentToSession, agentIsOnline } from '@/lib/agent-utils'
 import type { Agent } from '@/types/agent'
 import { parseSessionName, computeSessionName, computeCallSessionName, isCallSession, parseNameForDisplay, PERMISSION_MODE_TO_CLI } from '@/types/agent'
 import type { AgentPermissionMode } from '@/types/agent'
+
+// ============================================================================
+// agentIsOnline — single source of truth for sidebar/badge online state
+// ============================================================================
+
+describe('agentIsOnline', () => {
+  const online = { status: 'online' } as any
+  const offline = { status: 'offline' } as any
+
+  it('online when the derived session (agent.session) is online — covers cloud/standalone agents', () => {
+    // The exact reported bug: a live cloud container whose registry tmux array is
+    // offline but whose derived (heartbeat) session is online must read as online.
+    expect(agentIsOnline({ session: online, sessions: [offline] } as any)).toBe(true)
+  })
+
+  it('online when the registry session array (sessions[0]) is online — covers host tmux agents', () => {
+    expect(agentIsOnline({ session: undefined, sessions: [online] } as any)).toBe(true)
+  })
+
+  it('online when both signals are online', () => {
+    expect(agentIsOnline({ session: online, sessions: [online] } as any)).toBe(true)
+  })
+
+  it('offline when neither signal is online', () => {
+    expect(agentIsOnline({ session: offline, sessions: [offline] } as any)).toBe(false)
+    expect(agentIsOnline({ session: undefined, sessions: [] } as any)).toBe(false)
+  })
+
+  it('offline (not a crash) for null/undefined agent', () => {
+    expect(agentIsOnline(null)).toBe(false)
+    expect(agentIsOnline(undefined)).toBe(false)
+  })
+})
 
 // ============================================================================
 // agentToSession
