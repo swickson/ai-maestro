@@ -113,6 +113,13 @@ import {
 } from '@/services/agents-docs-service'
 
 import {
+  listCanvasFiles,
+  getCanvasFile,
+  submitInteraction,
+  listInteractions,
+} from '@/services/agents-canvas-service'
+
+import {
   getSkillsConfig,
   updateSkills,
   addSkill,
@@ -137,7 +144,20 @@ import {
   controlPlayback,
 } from '@/services/agents-playback-service'
 
-import { createDockerAgent } from '@/services/agents-docker-service'
+import { createDockerAgent, recreateDockerAgent, getDockerStats } from '@/services/agents-docker-service'
+import { createCloudAgent, destroyCloudAgent, getCloudAgentStatus } from '@/services/agents-cloud-service'
+
+import {
+  getAllSchedules,
+  getAgentSchedules,
+  getScheduleById,
+  createAgentSchedule,
+  updateAgentSchedule,
+  deleteAgentSchedule,
+  triggerSchedule,
+  getScheduleExecutions,
+  getAllExecutions,
+} from '@/services/agents-schedule-service'
 
 import {
   listSessions,
@@ -166,6 +186,7 @@ import {
   getMeshStatus,
   registerPeer,
   exchangePeers,
+  reactivateHost,
 } from '@/services/hosts-service'
 
 import {
@@ -431,6 +452,9 @@ const routes: Route[] = [
   { method: 'GET', pattern: /^\/api\/docker\/info$/, paramNames: [], handler: async (_req, res) => {
     sendServiceResult(res, await getDockerInfo())
   }},
+  { method: 'GET', pattern: /^\/api\/docker\/stats$/, paramNames: [], handler: async (_req, res) => {
+    sendServiceResult(res, await getDockerStats())
+  }},
   { method: 'POST', pattern: /^\/api\/conversations\/parse$/, paramNames: [], handler: async (req, res) => {
     const body = await readJsonBody(req)
     sendServiceResult(res, parseConversationFile(body.filePath))
@@ -502,7 +526,7 @@ const routes: Route[] = [
   }},
   { method: 'POST', pattern: /^\/api\/sessions\/activity\/update$/, paramNames: [], handler: async (req, res) => {
     const body = await readJsonBody(req)
-    const result = broadcastActivityUpdate(body.sessionName, body.status, body.hookStatus, body.notificationType, body.agentId)
+    const result = broadcastActivityUpdate(body.sessionName, body.status, body.hookStatus, body.notificationType, body.agentId, body.hookState)
     sendServiceResult(res, result)
   }},
 
@@ -544,6 +568,21 @@ const routes: Route[] = [
   { method: 'POST', pattern: /^\/api\/agents\/docker\/create$/, paramNames: [], handler: async (req, res) => {
     const body = await readJsonBody(req)
     sendServiceResult(res, await createDockerAgent(body))
+  }},
+  // Cloud agent endpoints (EC2 / ECS Fargate)
+  { method: 'POST', pattern: /^\/api\/agents\/cloud\/create$/, paramNames: [], handler: async (req, res) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, await createCloudAgent(body))
+  }},
+  { method: 'POST', pattern: /^\/api\/agents\/cloud\/([^/]+)\/destroy$/, paramNames: ['id'], handler: async (_req, res, params) => {
+    sendServiceResult(res, await destroyCloudAgent(params.id))
+  }},
+  { method: 'GET', pattern: /^\/api\/agents\/cloud\/([^/]+)\/status$/, paramNames: ['id'], handler: async (_req, res, params) => {
+    sendServiceResult(res, await getCloudAgentStatus(params.id))
+  }},
+  // Docker agent recreate (atomic re-provision)
+  { method: 'POST', pattern: /^\/api\/agents\/([^/]+)\/recreate$/, paramNames: ['id'], handler: async (_req, res, params) => {
+    sendServiceResult(res, await recreateDockerAgent(params.id))
   }},
   // Agent import (multipart form-data)
   { method: 'POST', pattern: /^\/api\/agents\/import$/, paramNames: [], handler: async (req, res) => {
@@ -769,6 +808,35 @@ const routes: Route[] = [
     sendServiceResult(res, await clearDocs(params.id, query.project))
   }},
 
+  // Canvas interactions (must come before /canvas catch-all)
+  { method: 'POST', pattern: /^\/api\/agents\/([^/]+)\/canvas\/interactions$/, paramNames: ['id'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, await submitInteraction(params.id, body))
+  }},
+  { method: 'GET', pattern: /^\/api\/agents\/([^/]+)\/canvas\/interactions$/, paramNames: ['id'], handler: async (_req, res, params, query) => {
+    sendServiceResult(res, listInteractions(params.id, parseInt(query.limit || '50', 10)))
+  }},
+
+  // Canvas
+  { method: 'GET', pattern: /^\/api\/agents\/([^/]+)\/canvas$/, paramNames: ['id'], handler: async (_req, res, params, query) => {
+    if (query.file) {
+      const result = getCanvasFile(params.id, query.file)
+      if (result.status !== 200 || !result.data || ('error' in result.data && 'message' in result.data)) {
+        sendServiceResult(res, result)
+        return
+      }
+      const { content, fileName } = result.data as { content: string; fileName: string; size: number }
+      const buf = Buffer.from(content, 'utf-8')
+      sendBinary(res, 200, buf, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': String(buf.length),
+        'X-Canvas-File': fileName,
+      })
+    } else {
+      sendServiceResult(res, listCanvasFiles(params.id))
+    }
+  }},
+
   // Skills
   { method: 'GET', pattern: /^\/api\/agents\/([^/]+)\/skills\/settings$/, paramNames: ['id'], handler: async (_req, res, params) => {
     sendServiceResult(res, await getSkillSettings(params.id))
@@ -790,6 +858,48 @@ const routes: Route[] = [
   }},
   { method: 'DELETE', pattern: /^\/api\/agents\/([^/]+)\/skills$/, paramNames: ['id'], handler: async (_req, res, params, query) => {
     sendServiceResult(res, removeSkill(params.id, query.skill || ''))
+  }},
+
+  // Schedules (per-agent)
+  { method: 'GET', pattern: /^\/api\/agents\/([^/]+)\/schedules\/([^/]+)$/, paramNames: ['id', 'scheduleId'], handler: async (_req, res, params, query) => {
+    if (query.executions === 'true') {
+      const limit = parseInt(query.limit || '20', 10)
+      sendServiceResult(res, getScheduleExecutions(params.scheduleId, limit))
+    } else {
+      sendServiceResult(res, getScheduleById(params.scheduleId))
+    }
+  }},
+  { method: 'PATCH', pattern: /^\/api\/agents\/([^/]+)\/schedules\/([^/]+)$/, paramNames: ['id', 'scheduleId'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, updateAgentSchedule(params.scheduleId, body))
+  }},
+  { method: 'DELETE', pattern: /^\/api\/agents\/([^/]+)\/schedules\/([^/]+)$/, paramNames: ['id', 'scheduleId'], handler: async (_req, res, params) => {
+    sendServiceResult(res, deleteAgentSchedule(params.scheduleId))
+  }},
+  { method: 'GET', pattern: /^\/api\/agents\/([^/]+)\/schedules$/, paramNames: ['id'], handler: async (_req, res, params) => {
+    sendServiceResult(res, getAgentSchedules(params.id))
+  }},
+  { method: 'POST', pattern: /^\/api\/agents\/([^/]+)\/schedules$/, paramNames: ['id'], handler: async (req, res, params) => {
+    const body = await readJsonBody(req)
+    sendServiceResult(res, createAgentSchedule(params.id, body))
+  }},
+
+  // Schedules (global)
+  { method: 'GET', pattern: /^\/api\/schedules$/, paramNames: [], handler: async (_req, res, _params, query) => {
+    if (query.executions === 'true') {
+      const limit = parseInt(query.limit || '50', 10)
+      sendServiceResult(res, getAllExecutions(limit))
+    } else {
+      sendServiceResult(res, getAllSchedules())
+    }
+  }},
+  { method: 'POST', pattern: /^\/api\/schedules\/([^/]+)\/trigger$/, paramNames: ['scheduleId'], handler: async (req, res, params) => {
+    let triggeredBy: 'manual' | 'webhook' = 'manual'
+    try {
+      const body = await readJsonBody(req)
+      if (body.triggeredBy === 'webhook') triggeredBy = 'webhook'
+    } catch {}
+    sendServiceResult(res, await triggerSchedule(params.scheduleId, triggeredBy))
   }},
 
   // Subconscious
@@ -963,7 +1073,7 @@ const routes: Route[] = [
     sendServiceResult(res, updateAgentById(params.id, body))
   }},
   { method: 'DELETE', pattern: /^\/api\/agents\/([^/]+)$/, paramNames: ['id'], handler: async (_req, res, params, query) => {
-    sendServiceResult(res, deleteAgentById(params.id, query.hard === 'true'))
+    sendServiceResult(res, await deleteAgentById(params.id, query.hard === 'true'))
   }},
 
   // =========================================================================
@@ -999,6 +1109,9 @@ const routes: Route[] = [
   { method: 'PUT', pattern: /^\/api\/hosts\/([^/]+)$/, paramNames: ['id'], handler: async (req, res, params) => {
     const body = await readJsonBody(req)
     sendServiceResult(res, await updateExistingHost(params.id, body))
+  }},
+  { method: 'POST', pattern: /^\/api\/hosts\/([^/]+)\/reactivate$/, paramNames: ['id'], handler: async (_req, res, params) => {
+    sendServiceResult(res, await reactivateHost(params.id))
   }},
   { method: 'DELETE', pattern: /^\/api\/hosts\/([^/]+)$/, paramNames: ['id'], handler: async (_req, res, params) => {
     sendServiceResult(res, await deleteExistingHost(params.id))
@@ -1131,6 +1244,13 @@ const routes: Route[] = [
   // =========================================================================
   // Meetings
   // =========================================================================
+  { method: 'GET', pattern: /^\/api\/meetings\/inject-queue$/, paramNames: [], handler: async (_req, res, _params, query) => {
+    const { drainForSession } = await import('@/lib/meeting-inject-queue')
+    const session = query.session
+    if (!session) { res.writeHead(400); res.end(JSON.stringify({ error: 'Missing session parameter' })); return }
+    const messages = drainForSession(session)
+    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ messages, count: messages.length }))
+  }},
   { method: 'GET', pattern: /^\/api\/meetings\/([^/]+)$/, paramNames: ['id'], handler: async (_req, res, params) => {
     sendServiceResult(res, getMeetingById(params.id))
   }},

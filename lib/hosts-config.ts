@@ -159,6 +159,7 @@ export function getLocalIPs(): { ip: string; family: string; internal: boolean; 
         // Skip Docker/container bridge IPs (172.16-31.x.x) — these are identical
         // on every Docker host and cause false positives in isSelf() and isSameHost()
         if (/^172\.(1[6-9]|2\d|3[01])\./.test(addr.address)) continue
+
         ips.push({
           ip: addr.address,
           family: addr.family,
@@ -483,7 +484,6 @@ function validateHosts(hosts: Host[]): Host[] {
         aliases: mergedAliases,
       }
       // Persist the migration so it doesn't repeat every load
-      // (Use setImmediate to avoid blocking the load path)
       setImmediate(() => {
         saveHosts(validHosts)
         console.log('[Hosts] Persisted hostname migration to hosts.json')
@@ -622,6 +622,13 @@ export function getRemoteHosts(): Host[] {
 export function clearHostsCache(): void {
   cachedHosts = null
   loadStoredSelfAliases()
+
+  // Also clear the .mjs twin's cache. Both modules cache hosts.json independently
+  // (different module systems), so when the .ts side writes hosts.json (circuit
+  // breaker, sync, manual edit), the .mjs side must also invalidate.
+  if (typeof (globalThis as any)._clearMjsHostsCache === 'function') {
+    ;(globalThis as any)._clearMjsHostsCache()
+  }
 }
 
 /**
@@ -853,6 +860,65 @@ export function updateHost(
     return { success: true, host: updatedHost }
   } catch (error) {
     console.error('[Hosts] Failed to update host:', error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to update host',
+    }
+  }
+}
+
+/**
+ * Load ALL hosts from hosts.json without filtering by enabled status.
+ * Used by circuit breaker reactivation flow where we need to find disabled hosts.
+ */
+export function loadAllHostsRaw(): Host[] {
+  try {
+    if (!fs.existsSync(HOSTS_CONFIG_PATH)) {
+      return [getDefaultSelfHost()]
+    }
+    const fileContent = fs.readFileSync(HOSTS_CONFIG_PATH, 'utf-8')
+    const config = JSON.parse(fileContent) as HostsConfig
+    return config.hosts.map(migrateHost)
+  } catch (error) {
+    console.error('[Hosts] Failed to load raw hosts:', error)
+    return []
+  }
+}
+
+/**
+ * Update a host in the raw (unfiltered) host list.
+ * Unlike updateHost(), this can find and update disabled hosts.
+ * Refuses to disable the self host.
+ */
+export function updateHostRaw(
+  hostId: string,
+  updates: Partial<Host>
+): { success: boolean; host?: Host; error?: string } {
+  try {
+    const allHosts = loadAllHostsRaw()
+    const hostIndex = allHosts.findIndex(
+      h => h.id.toLowerCase() === hostId.toLowerCase()
+    )
+    if (hostIndex === -1) {
+      return { success: false, error: `Host '${hostId}' not found` }
+    }
+
+    // Prevent disabling self host
+    if (isSelf(allHosts[hostIndex].id) && updates.enabled === false) {
+      return { success: false, error: 'Cannot disable self host' }
+    }
+
+    const updatedHost = { ...allHosts[hostIndex], ...updates, id: allHosts[hostIndex].id }
+    allHosts[hostIndex] = updatedHost
+
+    const result = saveHosts(allHosts)
+    if (!result.success) {
+      return result
+    }
+
+    return { success: true, host: updatedHost }
+  } catch (error) {
+    console.error('[Hosts] Failed to update host (raw):', error)
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Failed to update host',

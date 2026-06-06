@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { stripAvatarPaths } from '@/lib/meeting-inject-utils'
 
 describe('stripAvatarPaths', () => {
-  it('strips relative-path avatar references with spaces in the filename (the exact shape reported in #23)', () => {
+  it('strips relative-path avatar references with spaces in filename', () => {
     const msg = 'see ../../../../mnt/agents/rollie/vault/.assets/Small Avatar.png here'
     expect(stripAvatarPaths(msg)).toBe('see [avatar] here')
   })
@@ -12,7 +12,7 @@ describe('stripAvatarPaths', () => {
     expect(stripAvatarPaths(msg)).toBe('my avatar is [avatar] thanks')
   })
 
-  it('replaces with the literal string [avatar] so the message stays coherent', () => {
+  it('replaces with literal [avatar]', () => {
     const msg = 'look at ../avatars/small.png cool right'
     expect(stripAvatarPaths(msg)).toContain('[avatar]')
     expect(stripAvatarPaths(msg)).not.toContain('.png')
@@ -32,12 +32,12 @@ describe('stripAvatarPaths', () => {
     }
   })
 
-  it('leaves non-image file references intact (code paths, docs, etc.)', () => {
+  it('leaves non-image file references intact', () => {
     const msg = 'bug in ../src/server.ts and docs at /mnt/agents/notes.md'
     expect(stripAvatarPaths(msg)).toBe(msg)
   })
 
-  it('leaves URLs to images alone — we only target local file paths', () => {
+  it('leaves URLs to images alone', () => {
     const msg = 'avatar: https://example.com/small.png cool'
     expect(stripAvatarPaths(msg)).toBe(msg)
   })

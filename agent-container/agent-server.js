@@ -18,8 +18,6 @@ const pty = require('node-pty')
 const { spawn } = require('child_process')
 const { promisify } = require('util')
 const exec = promisify(require('child_process').exec)
-const { ensureClaudeHomeTheme } = require('./claude-home-merge.cjs')
-const { waitForRestorationReady } = require('./restoration-gate.cjs')
 
 // Configuration from environment variables
 const PORT = process.env.AGENT_PORT || 23000
@@ -201,25 +199,16 @@ wss.on('connection', (ws, req) => {
     console.log(`  → Total clients connected: ${sessionData.clients.size}`)
 
     // Send current screen content to new client
-    exec(`tmux capture-pane -t "${sessionKey}" -p -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
+    exec(`tmux capture-pane -t "${sessionKey}" -p -e -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
       .then(({ stdout }) => {
-        if (ws.readyState === 1) {
-          if (stdout) {
-            ws.send(stdout.replace(/\n/g, '\r\n'))
-            console.log(`  ✓ Sent ${stdout.length} bytes of history to new client`)
-          }
-          // Host/cloud parity: emit history-complete so the client runs the
-          // canonical post-history fit + PTY resize path (TerminalView's
-          // history-complete handler). Without this, cloud agents skip the
-          // post-history fit/resize that resyncs xterm grid to PTY/tmux dims.
-          ws.send(JSON.stringify({ type: 'history-complete' }))
+        if (stdout && ws.readyState === 1) {
+          // Send captured content
+          ws.send(stdout)
+          console.log(`  ✓ Sent ${stdout.length} bytes of history to new client`)
         }
       })
       .catch((err) => {
         console.error(`  ✗ Failed to capture pane:`, err.message)
-        if (ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'history-complete' }))
-        }
       })
   } else {
     console.log(`  → New session: ${sessionKey} (PTY spawn deferred until first resize)`)
@@ -259,22 +248,15 @@ wss.on('connection', (ws, req) => {
 
       // Capture and send initial screen content to first client
       setTimeout(() => {
-        exec(`tmux capture-pane -t "${sessionKey}" -p -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
+        exec(`tmux capture-pane -t "${sessionKey}" -p -e -S -50000 2>/dev/null || tmux capture-pane -t "${sessionKey}" -p 2>/dev/null || echo ""`)
           .then(({ stdout }) => {
-            if (ws.readyState === 1) {
-              if (stdout) {
-                ws.send(stdout.replace(/\n/g, '\r\n'))
-                console.log(`  ✓ Sent ${stdout.length} bytes of initial content to first client`)
-              }
-              // Host/cloud parity — see reuse-PTY branch above.
-              ws.send(JSON.stringify({ type: 'history-complete' }))
+            if (stdout && ws.readyState === 1) {
+              ws.send(stdout)
+              console.log(`  ✓ Sent ${stdout.length} bytes of initial content to first client`)
             }
           })
           .catch((err) => {
             console.error(`  ✗ Failed to capture initial pane:`, err.message)
-            if (ws.readyState === 1) {
-              ws.send(JSON.stringify({ type: 'history-complete' }))
-            }
           })
       }, 150) // Wait for tmux attach to complete
 
@@ -435,31 +417,6 @@ Waiting for browser connections...
 
   // Configure git with credentials
   await configureGit()
-
-  // Defense-in-depth: re-inject theme=dark into ~/.claude.json if claude-code
-  // dropped it on its last shutdown. Host-side provisionCloudClaudeConfig
-  // (services/agents-docker-service.ts:413-438, PR #120 / kanban 406ff85d)
-  // seeds the field on create + on /recreate-via-migrateAgentPersistence so
-  // the first-launch theme picker doesn't fire. But empirical 2026-05-22
-  // mesh survey: 4-of-4 cloud claude agents post-launch (numStartups ≥ 22)
-  // have theme MISSING, while 4-of-4 non-claude agents (claude never ran)
-  // have theme intact — claude-code rewrites ~/.claude.json on launch and
-  // doesn't preserve our seed. Running the same shape-aware merge here pre-
-  // tmux means claude's next read always sees a complete shape, defending
-  // against any future claude behavior that re-triggers the picker on the
-  // missing-field signal. Idempotent + safe on non-claude programs (file
-  // is bind-mounted unconditionally; no-op if theme already a string).
-  ensureClaudeHomeTheme('/home/claude/.claude.json')
-
-  // Gate AI_TOOL autostart behind the host-written restoration-ready sentinel.
-  // Closes the Han EACCES race (kanban fcabb870) where docker-run-then-tmux-
-  // send-keys fires before host-side mount prep + registry writes finish, so
-  // the AI tool's first reads land on a workspace dir that's momentarily
-  // root-owned or on bind targets that haven't been populated yet. Host writes
-  // the sentinel at the end of createDockerAgent / updateContainerMountsAndExtraEnv;
-  // this poll loop times out and proceeds anyway (fail-loud) if the writer
-  // doesn't run for any reason — startup never blocks indefinitely.
-  await waitForRestorationReady()
 
   // Initialize tmux session
   await initializeTmuxSession()

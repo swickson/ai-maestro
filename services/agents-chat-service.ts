@@ -14,13 +14,17 @@ import {
   wrapAsBracketedPaste,
 } from '@/lib/meeting-inject-queue'
 import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
-import { resolveConversationDir, resolveChatStateFile, cloudProgram } from '@/lib/agent-paths'
-import { capturePaneFromContainer } from '@/lib/container-utils'
-import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
-import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as crypto from 'crypto'
+import os from 'os'
 import { type ServiceResult, notFound, invalidRequest, invalidField, missingField } from '@/services/service-errors'
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function hashCwd(cwd: string): string {
+  return crypto.createHash('md5').update(cwd || '').digest('hex').substring(0, 16)
+}
 
 // ── Public Functions ────────────────────────────────────────────────────────
 
@@ -42,20 +46,16 @@ export async function getConversationMessages(
                      agent.sessions?.[0]?.workingDirectory ||
                      agent.preferences?.defaultWorkingDirectory
 
-  // Host agents need a workingDirectory to derive the JSONL path; cloud agents
-  // resolve via the bind-mounted per-agent dir without needing it.
-  if (!workingDir && agent.deployment?.type !== 'cloud') {
+  if (!workingDir) {
     return invalidRequest('Agent has no working directory configured')
   }
 
-  // Find the Claude conversation directory for this project. For cloud agents
-  // this resolves to the per-agent bind-mounted host path (Claude Code writes
-  // to /home/claude/.claude/projects/-workspace/ inside the container; that
-  // dir is bind-mounted from ~/.aimaestro/agents/<uuid>/claude-projects/ on
-  // the host). For host agents it resolves to ~/.claude/projects/<host-cwd>/.
-  const conversationDir = resolveConversationDir(agent)
+  // Find the Claude conversation directory for this project
+  const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects')
+  const projectDirName = workingDir.replace(/[/_]/g, '-')
+  const conversationDir = path.join(claudeProjectsDir, projectDirName)
 
-  if (!conversationDir || !fs.existsSync(conversationDir)) {
+  if (!fs.existsSync(conversationDir)) {
     return {
       data: {
         success: true,
@@ -97,52 +97,49 @@ export async function getConversationMessages(
 
   const sinceTime = since ? new Date(since).getTime() : 0
   const messages: any[] = []
-  const program = cloudProgram(agent)
-  const isGemini = program === 'gemini'
-  const isAntigravity = program === 'antigravity'
 
   for (const line of lines) {
     try {
-      const raw = JSON.parse(line)
+      const message = JSON.parse(line)
 
-      if (since && raw.timestamp) {
-        const msgTime = new Date(raw.timestamp).getTime()
+      if (since && message.timestamp) {
+        const msgTime = new Date(message.timestamp).getTime()
         if (msgTime <= sinceTime) continue
       }
 
-      if (isGemini) {
-        const normalized = normalizeGeminiLine(raw)
-        if (normalized) messages.push(normalized)
+      // Skip tool-result user messages (invisible in chat, waste message budget)
+      if (message.type === 'user' && message.toolUseResult) continue
+
+      // Convert compact_boundary system messages to summary type
+      if (message.type === 'system' &&
+          (message.subtype === 'compact_boundary' || message.subtype === 'microcompact_boundary')) {
+        messages.push({
+          type: 'summary',
+          summary: message.content || 'Conversation compacted',
+          timestamp: message.timestamp,
+          uuid: message.uuid,
+        })
         continue
       }
 
-      if (isAntigravity) {
-        // Stub normalizer in v0.30.87 — returns null for every line until a
-        // logged-in cloud agent generates real conversation files we can spec.
-        // Follow-up PR slots a real implementation in once a sample lands.
-        const normalized = normalizeAntigravityLine(raw)
-        if (normalized) messages.push(normalized)
-        continue
-      }
-
-      // Claude shape — preserve thinking-block extraction + raw message push
-      if (raw.type === 'assistant' && raw.message?.content) {
-        const content = raw.message.content
+      // Extract thinking blocks from assistant messages
+      if (message.type === 'assistant' && message.message?.content) {
+        const content = message.message.content
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'thinking' && block.thinking) {
               messages.push({
                 type: 'thinking',
                 thinking: block.thinking,
-                timestamp: raw.timestamp,
-                uuid: raw.uuid
+                timestamp: message.timestamp,
+                uuid: message.uuid
               })
             }
           }
         }
       }
 
-      messages.push(raw)
+      messages.push(message)
     } catch {
       // Skip malformed lines
     }
@@ -150,13 +147,13 @@ export async function getConversationMessages(
 
   const limitedMessages = messages.slice(-limit)
 
-  // Read hook state file. For cloud agents the hook writes inside the
-  // container with cwd=/workspace, so the hash is over /workspace and the
-  // file lives in the per-agent bind-mounted ~/.aimaestro/agents/<uuid>/chat-state/
-  // host path. resolveChatStateFile encapsulates that branching.
+  // Read hook state file
   let hookState: any = null
-  const stateFile = resolveChatStateFile(agent)
-  if (stateFile) {
+  if (workingDir) {
+    const stateDir = path.join(os.homedir(), '.aimaestro', 'chat-state')
+    const cwdHash = hashCwd(workingDir)
+    const stateFile = path.join(stateDir, `${cwdHash}.json`)
+
     try {
       if (fs.existsSync(stateFile)) {
         const stateContent = fs.readFileSync(stateFile, 'utf-8')
@@ -175,25 +172,16 @@ export async function getConversationMessages(
     }
   }
 
-  // Capture tmux to detect prompts waiting for input. Gate uses the
-  // cloud-aware agentSessionReady primitive (agent.sessions[] is
-  // tmux-host-enumerated and wrongly reports offline for cloud agents).
-  // For cloud agents the tmux session itself runs inside the container,
-  // so capture routes through docker exec via capturePaneFromContainer;
-  // host agents use the local TmuxRuntime.capturePane.
+  // Capture tmux to detect prompts waiting for input
   let terminalPrompt: string | null = null
   let promptType: 'permission' | 'input' | null = null
-  const hasOnlineSession = await agentSessionReady(agent)
+  const hasOnlineSession = agent.sessions?.some((s: any) => s.status === 'online')
   if (hasOnlineSession) {
     const sessionName = agent.name || agent.alias
     if (sessionName) {
       try {
-        const containerName = agent.deployment?.type === 'cloud'
-          ? agent.deployment?.cloud?.containerName
-          : null
-        const stdout = containerName
-          ? await capturePaneFromContainer(containerName, sessionName, 40)
-          : await getRuntime().capturePane(sessionName, 40)
+        const runtime = getRuntime()
+        const stdout = await runtime.capturePane(sessionName, 40)
         const tmuxLines = stdout.trim().split('\n')
         const recentLines = tmuxLines.slice(-10)
         const recentText = recentLines.join('\n').toLowerCase()

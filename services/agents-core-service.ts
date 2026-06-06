@@ -41,6 +41,8 @@ import {
   parseSessionName,
   parseNameForDisplay,
   computeSessionName,
+  isCallSession,
+  PERMISSION_MODE_TO_CLI,
 } from '@/types/agent'
 import {
   loadAgents,
@@ -57,7 +59,7 @@ import {
   markCloudContainerStale,
 } from '@/lib/agent-registry'
 import { resolveAgentIdentifier } from '@/lib/messageQueue'
-import { getHosts, getSelfHost, getSelfHostId, isSelf } from '@/lib/hosts-config'
+import { getHosts, getSelfHost, getSelfHostId, isSelf, updateHostRaw } from '@/lib/hosts-config'
 import { persistSession, unpersistSession } from '@/lib/session-persistence'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { initializeAllAgents, getStartupStatus } from '@/lib/agent-startup'
@@ -74,6 +76,70 @@ import {
 } from '@/lib/container-utils'
 import type { Host } from '@/types/host'
 import { type ServiceResult, missingField, notFound, invalidField, invalidRequest, operationFailed, gone, timeout } from '@/services/service-errors'
+
+// ---------------------------------------------------------------------------
+// Circuit breaker — half-open pattern with exponential backoff
+// ---------------------------------------------------------------------------
+
+interface CircuitBreakerState {
+  failureCount: number
+  openUntil: number    // timestamp (ms) when to allow next probe; 0 = closed
+  backoffMs: number    // current backoff duration
+}
+
+const circuitStates = new Map<string, CircuitBreakerState>()
+const CIRCUIT_BREAKER_THRESHOLD = parseInt(process.env.CIRCUIT_BREAKER_THRESHOLD || '3', 10)
+const INITIAL_BACKOFF_MS = 30_000   // 30 seconds
+const MAX_BACKOFF_MS = 300_000      // 5 minutes
+
+export function isCircuitOpen(hostId: string): boolean {
+  const state = circuitStates.get(hostId)
+  if (!state || state.openUntil === 0) return false
+  // If cooldown expired → half-open, allow one probe
+  if (Date.now() >= state.openUntil) return false
+  return true
+}
+
+function recordHostSuccess(hostId: string): void {
+  const had = circuitStates.has(hostId)
+  circuitStates.delete(hostId)
+  if (had) {
+    // Clear error metadata when recovering from circuit-broken state
+    updateHostRaw(hostId, {
+      offlineReason: undefined,
+      offlineSince: undefined,
+      lastSyncError: undefined,
+    })
+    console.log(`[Circuit Breaker] Host '${hostId}' recovered — circuit closed`)
+  }
+}
+
+function recordHostFailure(host: Host): void {
+  if (isSelf(host.id)) return
+
+  const prev = circuitStates.get(host.id) || { failureCount: 0, openUntil: 0, backoffMs: INITIAL_BACKOFF_MS }
+  const failureCount = prev.failureCount + 1
+
+  if (failureCount >= CIRCUIT_BREAKER_THRESHOLD) {
+    const backoffMs = Math.min(prev.backoffMs * (prev.openUntil > 0 ? 2 : 1), MAX_BACKOFF_MS)
+    const openUntil = Date.now() + backoffMs
+    circuitStates.set(host.id, { failureCount, openUntil, backoffMs })
+
+    const retryInSec = Math.round(backoffMs / 1000)
+    console.warn(`[Circuit Breaker] Host '${host.id}' hit ${failureCount} consecutive failures — open for ${retryInSec}s`)
+    updateHostRaw(host.id, {
+      offlineReason: `circuit-breaker: ${failureCount} consecutive failures (retry in ${retryInSec}s)`,
+      offlineSince: prev.openUntil > 0 ? undefined : new Date().toISOString(),
+      lastSyncError: `${failureCount} consecutive failures — auto-retry in ${retryInSec}s`,
+    })
+  } else {
+    circuitStates.set(host.id, { ...prev, failureCount })
+  }
+}
+
+export function resetCircuitBreaker(hostId: string): void {
+  circuitStates.delete(hostId)
+}
 
 interface DiscoveredSession {
   name: string
@@ -131,6 +197,7 @@ export interface WakeAgentParams {
   sessionIndex?: number
   program?: string
   projectDirectory?: string  // Runtime: where the agent works (Lane 2)
+  permissionMode?: import('@/types/agent').AgentPermissionMode  // Override trust level for this session
   /**
    * Opt-in: for cloud (containerized) agents, allow falling back to a host-native
    * tmux wake when the container is unavailable (missing / docker daemon down).
@@ -188,13 +255,23 @@ function sanitizeArgs(args: string): string {
   return args.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
 }
 
-/** Resolve program name to CLI command. Imported + re-exported from
- * lib/agent-paths.ts — lives there now so services/agents-docker-service.ts
- * can import the resolver without dragging the cozo-node / runtime chain
- * that agents-core-service pulls in. PR-3 hotfix kept the export so test
- * call sites in tests/services/agents-core-service.test.ts don't churn. */
-import { resolveStartCommand } from '@/lib/agent-paths'
-export { resolveStartCommand }
+/** Resolve program name to CLI command */
+function resolveStartCommand(program: string): string {
+  if (program.includes('claude') || program.includes('claude code')) {
+    return 'claude'
+  } else if (program.includes('codex')) {
+    return 'codex'
+  } else if (program.includes('aider')) {
+    return 'aider'
+  } else if (program.includes('cursor')) {
+    return 'cursor'
+  } else if (program.includes('gemini')) {
+    return 'gemini'
+  } else if (program.includes('opencode')) {
+    return 'opencode'
+  }
+  return 'claude' // Default
+}
 
 /**
  * Wait until the CLI program in a tmux session is ready to accept input.
@@ -450,7 +527,9 @@ async function discoverLocalSessions(): Promise<DiscoveredSession[]> {
     const runtime = getRuntime()
     const discovered = await runtime.listSessions()
 
-    return discovered.map(disc => {
+    // Filter out temporary call session forks (e.g. "foo__call") —
+    // these are disposable YOLO sessions for companion voice calls
+    return discovered.filter(d => !isCallSession(d.name)).map(disc => {
       const activityTimestamp = sessionActivity.get(disc.name)
 
       let lastActivity: string
@@ -522,6 +601,7 @@ function createOrphanAgent(
         platform: os.platform(),
       }
     },
+    runtime: 'tmux',
     tools: {},
     status: 'active',
     createdAt: session.createdAt,
@@ -1160,6 +1240,19 @@ export async function getUnifiedAgents(params: UnifiedAgentsParams): Promise<Ser
 
   // Fetch agents from all hosts in parallel
   const fetchPromises: Promise<HostFetchResult>[] = hosts.map(async (host) => {
+    // Skip hosts with open circuit breaker (cooldown not yet expired)
+    if (!isSelf(host.id) && isCircuitOpen(host.id)) {
+      const state = circuitStates.get(host.id)
+      const retryInSec = state ? Math.max(0, Math.round((state.openUntil - Date.now()) / 1000)) : 0
+      return {
+        host,
+        success: false,
+        agents: [],
+        stats: null,
+        error: `Circuit breaker open — retry in ${retryInSec}s`,
+      }
+    }
+
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), timeout)
@@ -1177,6 +1270,7 @@ export async function getUnifiedAgents(params: UnifiedAgentsParams): Promise<Ser
       clearTimeout(timeoutId)
 
       if (!response.ok) {
+        recordHostFailure(host)
         return {
           host,
           success: false,
@@ -1187,6 +1281,10 @@ export async function getUnifiedAgents(params: UnifiedAgentsParams): Promise<Ser
       }
 
       const data: HostAgentResponse = await response.json()
+      recordHostSuccess(host.id)
+      if (!isSelf(host.id)) {
+        updateHostRaw(host.id, { lastSyncSuccess: new Date().toISOString() })
+      }
       return {
         host,
         success: true,
@@ -1197,6 +1295,10 @@ export async function getUnifiedAgents(params: UnifiedAgentsParams): Promise<Ser
       const errorMessage = error instanceof Error
         ? error.name === 'AbortError' ? 'Request timeout' : error.message
         : 'Unknown error'
+      recordHostFailure(host)
+      if (!isSelf(host.id)) {
+        updateHostRaw(host.id, { lastSyncError: errorMessage })
+      }
       return {
         host,
         success: false,
@@ -1751,6 +1853,15 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
         }
         if (agent.model) {
           fullCommand = `${fullCommand} --model ${agent.model}`
+        }
+
+        // Inject --permission-mode for claude-based programs
+        if (startCommand === 'claude') {
+          const effectiveMode = params.permissionMode || agent.permissionMode || 'supervised'
+          if (effectiveMode !== 'supervised') {
+            const cliMode = PERMISSION_MODE_TO_CLI[effectiveMode]
+            fullCommand = `${fullCommand} --permission-mode ${cliMode}`
+          }
         }
 
         // Small delay to let the session initialize
