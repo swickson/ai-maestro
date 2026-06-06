@@ -14,6 +14,7 @@ vi.mock('@/lib/hosts-config', () => ({
   getSelfHost: () => ({ id: 'test-host', name: 'Test Host', url: 'http://test-host:23000' }),
   getSelfHostId: () => 'test-host',
   isSelf: (hostId: string) => hostId?.toLowerCase() === 'test-host',
+  isSelfHost: (host: { id: string }) => host.id?.toLowerCase() === 'test-host',
 }))
 
 vi.mock('@/lib/amp-inbox-writer', () => ({
@@ -390,6 +391,19 @@ describe('createAgent', () => {
     } as CreateAgentRequest)
     expect(agent.name).toBe('legacy-alias')
   })
+
+  it('stores permissionMode when provided', () => {
+    const agent = createAgent(makeCreateRequest({
+      name: 'perm-mode-agent',
+      permissionMode: 'smartAuto',
+    }))
+    expect(agent.permissionMode).toBe('smartAuto')
+  })
+
+  it('defaults permissionMode to supervised when not provided', () => {
+    const agent = createAgent(makeCreateRequest({ name: 'default-perm-agent' }))
+    expect(agent.permissionMode).toBe('supervised')
+  })
 })
 
 // ============================================================================
@@ -454,6 +468,15 @@ describe('updateAgent', () => {
     const updated = updateAgent(agent.id, { preferences: { notificationLevel: 'urgent' } })
     expect(updated!.preferences?.autoStart).toBe(true)
     expect(updated!.preferences?.notificationLevel).toBe('urgent')
+  })
+
+  it('updates permissionMode', () => {
+    const agent = createAgent(makeCreateRequest({ name: 'perm-update-agent' }))
+    expect(agent.permissionMode).toBe('supervised')
+
+    const updated = updateAgent(agent.id, { permissionMode: 'fullAutonomy' })
+    expect(updated).not.toBeNull()
+    expect(updated!.permissionMode).toBe('fullAutonomy')
   })
 })
 
@@ -1008,10 +1031,6 @@ describe('incrementAgentMetric', () => {
     expect(result).toBe(false)
   })
 })
-
-// ============================================================================
-// deployment.sandbox round-trip
-// ============================================================================
 
 describe('deployment.sandbox.mounts', () => {
   it('persists sandbox.mounts on the agent record across save/load', () => {

@@ -64,7 +64,7 @@ export function loadUsers(): UserRecord[] {
       // First load — seed with operator record
       const operator = createUserRecord(getOperatorSeed())
       saveUsers([operator])
-      console.log('[UserDirectory] Seeded operator record for Shane Wickson')
+      console.log(`[UserDirectory] Seeded operator record for ${operator.displayName}`)
       return [operator]
     }
 
@@ -194,7 +194,7 @@ export function getUserByPlatform(platformType: string, platformUserId: string):
 
 /**
  * Look up user by display name (case-insensitive).
- * Used for natural language references like "notify Shane Wickson".
+ * Used for natural language references like "notify <operator name>".
  */
 export function getUserByDisplayName(displayName: string): UserRecord | null {
   const normalized = displayName.toLowerCase()

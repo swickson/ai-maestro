@@ -17,6 +17,8 @@ import { generateKeyPair, saveKeyPair } from '@/lib/amp-keys'
 import { registerAgent } from '@/services/amp-service'
 import { type ServiceResult, missingField, operationFailed, invalidRequest, invalidState, notFound, gone, serviceError } from '@/services/service-errors'
 import type { Agent, SandboxMount } from '@/types/agent'
+import { PERMISSION_MODE_TO_CLI } from '@/types/agent'
+import type { AgentPermissionMode } from '@/types/agent'
 import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
 import { resolveStartCommand } from '@/lib/agent-paths'
 
@@ -27,7 +29,9 @@ export interface DockerCreateRequest {
   workingDirectory?: string
   hostId?: string
   program?: string
+  /** @deprecated Use permissionMode: 'fullAutonomy' instead */
   yolo?: boolean
+  permissionMode?: AgentPermissionMode
   model?: string
   programArgs?: string
   prompt?: string
@@ -73,6 +77,45 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // Used to compute container-side paths for AMP common mounts. If the image's
 // USER ever changes, update this and the Dockerfile together.
 const CONTAINER_HOME = '/home/claude'
+
+/**
+ * Build the AI_TOOL command string for a Docker agent (permission-mode aware).
+ * Extracted for testability (ported from upstream 23blocks).
+ *
+ * Resolution order for permission mode:
+ *   1. body.permissionMode (explicit new field)
+ *   2. body.yolo (legacy backward compat, maps to fullAutonomy)
+ *   3. 'supervised' (default, no flag injected)
+ *
+ * NOTE: this helper uses `body.program` verbatim to preserve the exact
+ * upstream contract (e.g. `claude-code` stays `claude-code`). The two live
+ * AI_TOOL composition sites in this file (createDockerAgent +
+ * updateContainerMountsAndExtraEnv) deliberately continue to route the
+ * program through resolveStartCommand() so the antigravity→`agy` binary
+ * remap (PR-3 hotfix) is not lost. Migrating those sites to permissionMode
+ * is a separate, behavior-changing decision (see KAI flag in the
+ * reconciliation report) — do NOT silently rewire them here.
+ */
+export function buildAiToolCommand(body: Pick<DockerCreateRequest, 'program' | 'permissionMode' | 'yolo' | 'programArgs' | 'model' | 'prompt'>): string {
+  const program = body.program || 'claude'
+  let aiTool = program
+  const effectivePermMode: AgentPermissionMode = body.permissionMode || (body.yolo ? 'fullAutonomy' : 'supervised')
+  if (effectivePermMode !== 'supervised' && (program === 'claude' || program === 'claude-code')) {
+    aiTool += ` --permission-mode ${PERMISSION_MODE_TO_CLI[effectivePermMode]}`
+  }
+  if (body.programArgs) {
+    const sanitizedArgs = body.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+    if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
+  }
+  if (body.model) {
+    aiTool += ` --model ${body.model}`
+  }
+  if (body.prompt) {
+    const escapedPrompt = body.prompt.replace(/'/g, "'\\''")
+    aiTool += ` -p '${escapedPrompt}'`
+  }
+  return aiTool
+}
 
 // Container paths reserved unconditionally — operator AND internal callers are
 // both forbidden from declaring mounts here. /workspace is the operator's
@@ -134,13 +177,15 @@ function findReservedRoot(p: string, roots: readonly string[]): string | null {
 // controlled (an agent mutating its own mounts, unprivileged operators), add
 // realpath + prefix-check against an allow-list of host roots before shelling.
 //
-// `options.operatorSupplied` enables the reservation check against
-// OPERATOR_RESERVED_CONTAINER_PATH_ROOTS — call sites that hand internal
-// system-mount builders' output through this validator (tests, internal
-// merges) MUST omit the flag to avoid self-rejection.
+// `source` is a required discriminated value: 'operator' enables the
+// OPERATOR_RESERVED_CONTAINER_PATH_ROOTS reservation check; 'system' skips
+// it so internal system-mount builders' output can route through this
+// validator for format/always-reserved checks without self-rejection. The
+// required arg makes the safety contract structural — a missing or
+// forgotten flag is a TypeScript error rather than a silent fail-open.
 export function validateMounts(
   mounts: SandboxMount[] | undefined,
-  options: { operatorSupplied?: boolean } = {}
+  source: 'operator' | 'system'
 ): string | null {
   if (!mounts) return null
   for (const [i, m] of mounts.entries()) {
@@ -157,7 +202,7 @@ export function validateMounts(
     if (alwaysReserved) {
       return `mounts[${i}]: containerPath "${m.containerPath}" is reserved (${alwaysReserved} is the agent working directory)`
     }
-    if (options.operatorSupplied) {
+    if (source === 'operator') {
       const operatorReserved = findReservedRoot(m.containerPath, OPERATOR_RESERVED_CONTAINER_PATH_ROOTS)
       if (operatorReserved) {
         return `mounts[${i}]: containerPath "${m.containerPath}" is reserved by AI Maestro (matches "${operatorReserved}") — operator-declared mounts cannot shadow AMP common mounts or claude/gemini/codex state, these are managed automatically per-agent`
@@ -167,12 +212,14 @@ export function validateMounts(
   return null
 }
 
-// `options.operatorSupplied` enables the reservation check against
-// OPERATOR_RESERVED_ENV_KEYS — call sites that hand internal env (baseEnv,
-// buildAmpCommonEnv output) through this validator MUST omit the flag.
+// `source` is a required discriminated value: 'operator' enables the
+// OPERATOR_RESERVED_ENV_KEYS reservation check; 'system' skips it so internal
+// env builders (baseEnv, buildAmpCommonEnv output) can route through this
+// validator for format checks without self-rejection. Required arg = a
+// missing flag is a TypeScript error, not a silent fail-open.
 export function validateExtraEnv(
   env: Record<string, string> | undefined,
-  options: { operatorSupplied?: boolean } = {}
+  source: 'operator' | 'system'
 ): string | null {
   if (!env) return null
   for (const [key, value] of Object.entries(env)) {
@@ -185,7 +232,7 @@ export function validateExtraEnv(
     if (UNSAFE_ENV_VALUE_CHARS.test(value)) {
       return `extraEnv["${key}"]: value must not contain quotes, backticks, $, backslashes, or newlines`
     }
-    if (options.operatorSupplied && OPERATOR_RESERVED_ENV_KEYS.includes(key)) {
+    if (source === 'operator' && OPERATOR_RESERVED_ENV_KEYS.includes(key)) {
       return `extraEnv["${key}"]: key is reserved by AI Maestro — operator-declared extraEnv cannot shadow agent identity (AGENT_ID, TMUX_SESSION_NAME, AI_TOOL, AIMAESTRO_HOST_URL) or AMP routing (AMP_*, CLAUDE_AGENT_*, PATH, GEMINI_CLI_TRUST_WORKSPACE)`
     }
   }
@@ -1385,7 +1432,7 @@ export function mergeEnv(common: Record<string, string>, operator: Record<string
 // Failures are logged loudly but non-fatal — the container is already
 // running by the time we get here, the agent can use its program normally,
 // only AMP signing is unavailable until an operator amp-init runs manually.
-async function bootstrapAmpIdentity(
+export async function bootstrapAmpIdentity(
   agentId: string,
   agentName: string,
   hostHome: string = os.homedir()
@@ -1514,12 +1561,12 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return missingField('name')
   }
 
-  const mountError = validateMounts(body.mounts, { operatorSupplied: true })
+  const mountError = validateMounts(body.mounts, 'operator')
   if (mountError) {
     return invalidRequest(mountError)
   }
 
-  const envError = validateExtraEnv(body.extraEnv, { operatorSupplied: true })
+  const envError = validateExtraEnv(body.extraEnv, 'operator')
   if (envError) {
     return invalidRequest(envError)
   }
@@ -1756,6 +1803,25 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     'docker run -d',
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
+    // Container hardening (ported from upstream 23blocks): drop all Linux
+    // capabilities, then add back only the minimal set an agent container
+    // needs (bind <1024, setuid/setgid for the entrypoint user-drop, chown/
+    // fowner/dac_override for per-UUID home merges); forbid privilege
+    // escalation; and pin a small noexec/nosuid tmpfs over the container's
+    // /tmp. NOTE: --tmpfs /tmp is FLAGGED for empirical container-image
+    // verification before the live 3-host deploy (noexec + 100m cap could
+    // break tooling that execs/spills into /tmp). See KAI reconciliation flag.
+    '--cap-drop=ALL',
+    '--cap-add=NET_BIND_SERVICE --cap-add=SETGID --cap-add=SETUID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER',
+    '--security-opt no-new-privileges',
+    // noexec dropped: it breaks TMPDIR-exec tooling (pip-from-source, cmake/ninja,
+    // test harnesses spawning helper scripts) — reproduced on Oliver burn-in 2026-06-04.
+    // cap-drop=ALL + no-new-privileges + nosuid + size cap retained (still strictly
+    // harder than pre-merge baseline; cap-drop=ALL is the biggest privilege win).
+    // explicit `exec` REQUIRED: Docker tmpfs defaults to noexec unless overridden,
+    // so dropping noexec from the string alone silently leaves it applied (verified
+    // on Oliver: mount-inside still showed noexec). `exec` forces it off.
+    '--tmpfs /tmp:exec,nosuid,size=100m',
     body.autoRemove ? '' : '--restart unless-stopped',
     // Single-network attach when useZiggy=true: container joins ziggy_default
     // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
@@ -2133,11 +2199,11 @@ export async function updateContainerMountsAndExtraEnv(
   // docker work. Empty arrays/objects are valid (= "clear"), so only validate
   // when the caller actually supplied a value.
   if (config.mounts !== undefined) {
-    const mountError = validateMounts(config.mounts, { operatorSupplied: true })
+    const mountError = validateMounts(config.mounts, 'operator')
     if (mountError) return invalidRequest(mountError)
   }
   if (config.extraEnv !== undefined) {
-    const envError = validateExtraEnv(config.extraEnv, { operatorSupplied: true })
+    const envError = validateExtraEnv(config.extraEnv, 'operator')
     if (envError) return invalidRequest(envError)
   }
 
@@ -2299,6 +2365,21 @@ export async function updateContainerMountsAndExtraEnv(
     'docker run -d',
     `--name "${containerName}"`,
     '--add-host=host.docker.internal:host-gateway',
+    // Container hardening — MUST mirror createDockerAgent's flags so a
+    // mount/env update (which destroys+recreates the container) does not
+    // silently drop the security posture. See createDockerAgent for the
+    // cap rationale and the --tmpfs verification flag.
+    '--cap-drop=ALL',
+    '--cap-add=NET_BIND_SERVICE --cap-add=SETGID --cap-add=SETUID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER',
+    '--security-opt no-new-privileges',
+    // noexec dropped: it breaks TMPDIR-exec tooling (pip-from-source, cmake/ninja,
+    // test harnesses spawning helper scripts) — reproduced on Oliver burn-in 2026-06-04.
+    // cap-drop=ALL + no-new-privileges + nosuid + size cap retained (still strictly
+    // harder than pre-merge baseline; cap-drop=ALL is the biggest privilege win).
+    // explicit `exec` REQUIRED: Docker tmpfs defaults to noexec unless overridden,
+    // so dropping noexec from the string alone silently leaves it applied (verified
+    // on Oliver: mount-inside still showed noexec). `exec` forces it off.
+    '--tmpfs /tmp:exec,nosuid,size=100m',
     autoRemove ? '' : '--restart unless-stopped',
     // Single-network attach when useZiggy=true: container joins ziggy_default
     // ONLY, not the default bridge. ai-maestro inter-agent comms are AMP over
@@ -2507,5 +2588,84 @@ export async function backfillAgentRuntime(
       runtime: { cpus, memory, autoRemove },
     },
     status: 200,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/docker/stats — resource usage for all running agent containers
+// ---------------------------------------------------------------------------
+
+export interface ContainerStats {
+  containerName: string
+  agentId?: string
+  cpu: number         // percentage (0-100+)
+  memoryUsageMb: number
+  memoryLimitMb: number
+  memoryPercent: number
+  netInputMb: number
+  netOutputMb: number
+  pids: number
+}
+
+export async function getDockerStats(): Promise<ServiceResult<{ containers: ContainerStats[] }>> {
+  try {
+    const { stdout } = await execAsync(
+      'docker stats --no-stream --format \'{"name":"{{.Name}}","cpu":"{{.CPUPerc}}","memUsage":"{{.MemUsage}}","memPerc":"{{.MemPerc}}","netIO":"{{.NetIO}}","pids":"{{.PIDs}}"}\'',
+      { timeout: 10000 }
+    )
+
+    if (!stdout.trim()) {
+      return { data: { containers: [] }, status: 200 }
+    }
+
+    const agents = loadAgents()
+    const agentByContainer = new Map<string, string>()
+    for (const a of agents) {
+      const cn = a.deployment?.cloud?.containerName
+      if (cn) agentByContainer.set(cn, a.id)
+    }
+
+    const containers: ContainerStats[] = []
+
+    for (const line of stdout.trim().split('\n')) {
+      try {
+        const raw = JSON.parse(line)
+        if (!raw.name?.startsWith('aim-')) continue
+
+        const parseMb = (s: string): number => {
+          const m = s.match(/([\d.]+)\s*(GiB|MiB|KiB|GB|MB|KB|B)/i)
+          if (!m) return 0
+          const val = parseFloat(m[1])
+          const unit = m[2].toLowerCase()
+          if (unit === 'gib' || unit === 'gb') return val * 1024
+          if (unit === 'mib' || unit === 'mb') return val
+          if (unit === 'kib' || unit === 'kb') return val / 1024
+          return val / (1024 * 1024)
+        }
+
+        const memParts = raw.memUsage.split('/')
+        containers.push({
+          containerName: raw.name,
+          agentId: agentByContainer.get(raw.name),
+          cpu: parseFloat(raw.cpu) || 0,
+          memoryUsageMb: parseMb(memParts[0] || ''),
+          memoryLimitMb: parseMb(memParts[1] || ''),
+          memoryPercent: parseFloat(raw.memPerc) || 0,
+          netInputMb: parseMb((raw.netIO.split('/')[0]) || ''),
+          netOutputMb: parseMb((raw.netIO.split('/')[1]) || ''),
+          pids: parseInt(raw.pids, 10) || 0,
+        })
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    return { data: { containers }, status: 200 }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error'
+    if (msg.includes('not found') || msg.includes('Cannot connect')) {
+      return { data: { containers: [] }, status: 200 }
+    }
+    return operationFailed('get docker stats', msg)
   }
 }

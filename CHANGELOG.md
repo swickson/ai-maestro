@@ -3,6 +3,198 @@
 All notable changes to AI Maestro are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.35.44] - 2026-05-29
+
+### Added
+- **Chat: AskUserQuestion interactive rendering** — Claude Code's multiple-choice questions (AskUserQuestion tool_use) now render as interactive numbered buttons in the chat UI, matching the terminal experience. Users can click options directly instead of typing numbers. Includes "Other" option that focuses the chat input. Buttons disable immediately after selection. Works in both assisted and power modes, desktop and mobile.
+- **Chat: live activity indicator from PTY** — Parses real-time PTY output to show what the agent is doing while working. Detects spinner status ("Thinking…", "Reading...", "Searching..."), thinking step progress ([1/418], [2/418]), and tool execution patterns (Running, Writing, Editing). Shows in the chat header (replaces generic "Agent is working...") and as an animated inline bubble at the bottom of the message list. Throttled to 500ms, clears when assistant messages arrive. Works for local agents; remote agents get this with deployment of the same version.
+
+### Fixed
+- **Chat: AskUserQuestion messages hidden in assisted mode** — Messages containing only an AskUserQuestion tool_use were incorrectly filtered as "tool-only" messages. Now excluded from tool burst grouping and always visible since they require user interaction.
+
+## [0.35.31] - 2026-05-27
+
+### Fixed
+- **Chat view empty for agents with underscores in working directory** — Claude Code converts both `/` and `_` to `-` when naming project directories (e.g., `rag_ingestion` → `rag-ingestion`), but our JSONL path resolution only replaced `/`. Any agent with underscores in its path couldn't find its conversation files. Fixed in `server.mjs`, `agents-chat-service.ts`, and `voice-subsystem.ts`.
+
+## [0.35.30] - 2026-05-27
+
+### Fixed
+- **Terminal resize storm causing content to jump/rewrite** — Multiple independent systems (onOpen, history-complete, ResizeObserver, notes toggle) all triggered `fit()` → resize message → PTY resize → tmux full-screen redraw simultaneously. Now: no resize on connect (PTY spawns at correct size via URL params), no resize on history-complete, resize messages gated until history is loaded, deduplicated by tracking last sent cols/rows. Only real user actions (browser window resize, notes panel toggle) trigger a resize.
+- **Tab switching causing terminal re-render** — Switching between Terminal and Chat tabs disconnected/reconnected the WebSocket, causing a full history reload + resize storm on return. WebSocket now stays connected across tab switches.
+- **ResizeObserver debounce too short** — Increased from 150ms to 300ms so CSS transitions fully settle before refitting, preventing redundant fit→resize cascades.
+
+### Added
+- **Agent scheduling system** — Cron-based task scheduling for agents. Schedules stored in `~/.aimaestro/schedules.json`, checked every 60s by a timer in server.mjs. Supports creating tmux sessions for offline agents and sending prompts via send-keys. API: `GET/POST /api/agents/{id}/schedules`, `PATCH/DELETE /api/agents/{id}/schedules/{scheduleId}`, `GET /api/schedules` (global), `POST /api/schedules/{id}/trigger` (manual/webhook). Execution history tracked per schedule.
+
+## [0.35.28] - 2026-05-27
+
+### Fixed
+- **Circuit breaker permanently disabling remote hosts** — When a remote host became temporarily unreachable, the circuit breaker tripped after 3 failures and set `enabled: false` in `hosts.json`, permanently disabling the host until manual config editing + server restart. Replaced with a proper half-open circuit breaker pattern: state is now in-memory with exponential backoff (30s → 60s → 120s → 240s → 5min cap). When cooldown expires, the next UI poll probes the host automatically. Success resets everything. `hosts.json` is never modified by the circuit breaker.
+- **Reactivate endpoint rejecting circuit-broken hosts** — `/api/hosts/[id]/reactivate` only handled `enabled: false` hosts. Now also handles in-memory circuit-broken hosts (enabled but with open circuit).
+
+### Added
+- **Container hardening flags** — Agent Docker containers now launch with `--cap-drop=ALL` (selective `--cap-add` for 6 required capabilities), `--security-opt no-new-privileges`, and `--tmpfs /tmp:noexec,nosuid,size=100m`. Existing containers get these on next `/recreate`.
+- **`GET /api/docker/stats`** — New endpoint returning real-time CPU %, memory usage/limit/%, network I/O, and PID count for all running agent containers, mapped to agent IDs.
+
+## [0.35.26] - 2026-05-20
+
+### Fixed
+- **Chat: hookState/permission prompts not appearing** — The hook's agent resolution used `find()` on `/api/agents` by working directory, which returned the wrong agent when multiple agents share the same cwd. Now uses a 3-tier resolution: (1) `AIM_AGENT_ID`/`AIM_AGENT_NAME` env vars, (2) `/api/sessions` for active tmux sessions, (3) fallback cwd match. Server-side `broadcastActivityUpdate` also tries agentId-based session lookup when the primary sessionName has no chat clients.
+- **Chat: messages overflowing viewport** — Long messages broke out of chat bubbles. Added `min-w-0 overflow-hidden` on bubble containers, `max-w-full` on code blocks, and `overflow-wrap: anywhere` on paragraphs.
+- **Chat: duplicate pending messages** — Sent message appeared twice (pending + real) because the `hadNew` flag was set inside React's deferred `setMessages` callback and was always false when checked synchronously. Fixed by clearing pending unconditionally on new JSONL data.
+
+## [0.35.24] - 2026-05-20
+
+### Fixed
+- **Chat: production-grade WebSocket reliability** — Replaced 3s polling hack with proper WebSocket architecture based on production best practices: server-side dead connection sweeping (RFC 6455 protocol ping + `_isAlive` flag), client-side pong verification with 45s timeout and forced reconnect, 15s heartbeat on both desktop and mobile.
+- **Chat: permission button clicks not working** — Button actions ("y", "1", etc.) were never clearing from pending because permission responses don't appear as `user` messages in the JSONL. Now clears pending on any genuinely new messages from the JSONL watcher.
+- **Chat: partial JSONL line race condition** — `broadcastJsonlUpdates` now handles incomplete lines when Claude is mid-write, preventing silently dropped messages.
+- **Chat: auto-scroll tracking** — UUID-based tracking instead of message count (always 200 after server cap).
+- **MobileChatView: no heartbeat** — Mobile was missing all keepalive/reconnect logic. Now has 15s heartbeat, pong verification, and same pending/scroll fixes as desktop.
+
+## [0.35.21] - 2026-05-19
+
+### Fixed
+- **Mesh host cache desync causing lost agents** — The `.mjs` host config module cached hosts forever and filtered disabled hosts at the cache level. When the circuit breaker disabled a host or a host was re-enabled, `server.mjs` never learned about it, causing persistent "Host not found" errors and broken terminal connections for remote agents (e.g., mini-lola).
+- **Cross-module cache invalidation** — When the circuit breaker writes to `hosts.json`, both the TypeScript and ESM host config caches are now cleared via a `globalThis` bridge. Previously only the `.ts` cache was invalidated, leaving `server.mjs` with stale data until restart.
+- **AMP messages silently routing to disabled hosts** — `message-send.ts` now rejects routing to disabled hosts with a clear error instead of silently timing out.
+- **AMP mesh auth trusting disabled hosts** — Disabled forwarding hosts no longer receive automatic authentication trust in `amp-service.ts`.
+- **Dead code in websocket-proxy.mjs** — Replaced `host.type === 'local'` (never triggers, property not set in ESM module) with `isSelf(host.id)`.
+- **Frontend AbortError cascade** — `useAgents.ts` now skips disabled hosts entirely, preventing timeout-triggered React re-render storms.
+
+### Added
+- **TTL cache for host config (30s)** — `hosts-config-server.mjs` re-reads `hosts.json` every 30 seconds instead of caching forever. Hosts re-enabled by sync or manual edit are picked up automatically without server restart.
+- **Disabled host visibility in getHostById** — `getHostById()` now finds disabled hosts so callers can give proper error messages ("host is disabled") instead of generic "host not found". `getHosts()` still returns only enabled hosts for backward compatibility.
+
+## [Unreleased]
+
+### Added
+- **Call mode session fork** — When a companion voice call starts, the server auto-spawns a temporary `{agentName}__call` tmux session with `--permission-mode bypassPermissions` (full autonomy). Voice transcripts route to this YOLO fork instead of the primary supervised session, so tool-call permission prompts don't block conversational flow. Same agent identity, workdir, and skills — just a disposable autonomous session.
+- **Multi-client call session sharing** — Multiple companion clients connecting to the same agent share a single `__call` session. The session is only killed when the last client disconnects.
+- **`user_message` routing to call session** — Typed text from the companion UI now also routes to the `__call` session when active, matching `voice:transcript` behavior.
+- **Stale call session cleanup** — Orphaned `__call` tmux sessions from server crashes are automatically killed on startup.
+- **`computeCallSessionName()` / `isCallSession()` helpers** — Centralized naming convention (`__call` suffix) in `types/agent.ts`, used across all files.
+- **Call session integration test** — `scripts/test-call-session.sh` validates the full lifecycle: spawn, sidebar hiding, orphan prevention, transcript routing, disconnect cleanup, multi-client.
+- **12 unit tests for call session** — Covers helpers, `parseSessionName` non-collision, `__call` filtering in both `/api/sessions` and `/api/agents` discovery paths.
+
+### Fixed (v0.35.14)
+- **Remote terminal blank screen** — Fixed WebSocket proxy not forwarding `cols`, `rows`, and `socket` query parameters to remote hosts. The remote PTY was spawning at default 80x24 instead of the client's actual terminal dimensions, causing blank or broken terminal rendering. Same fix applied to cloud agent container connections.
+
+### Improved
+- **Trust level descriptions** — Each permission mode now shows a clear explanation of what it does (e.g., "Asks before every file edit and shell command") plus a detail blurb when selected explaining when to use it.
+- **Permission mode only for Claude Code** — The trust level selector in the Wake Agent dialog is now hidden when waking non-Claude programs (Aider, Codex, Cursor, Terminal), since `--permission-mode` is a Claude Code-only flag.
+- **Reordered permission modes** — Plan Only now appears second (after Supervised) instead of last, so the list flows from most restrictive to least restrictive.
+
+### Fixed
+- **Command injection risk in companion-ws** — Replaced all `execSync` shell-string tmux commands with `execFileSync`/`execFile` (array args, no shell). Agent names validated against `[a-zA-Z0-9_-]+` before use.
+- **Event loop blocking on transcript delivery** — Transcript routing now uses async `execFile` instead of blocking `execSync`, preventing WebSocket/HTTP stalls during rapid speech.
+- **Voice buffer timing race** — Changed `getBuffer()` to `getOrCreateBuffer()` for voice subsystem attachment, ensuring the buffer exists regardless of PTY observer timing.
+- **`__call` sessions leaking into agent discovery** — Added `isCallSession()` filter to both `fetchLocalSessions()` (sessions-service) and `discoverLocalSessions()` (agents-core-service). Without this, `__call` sessions would auto-register as orphan agents in the registry.
+
+## [0.35.11] - 2026-05-17
+
+### Added
+- **voice:transcript upstream handler** — Mobile companion can now send spoken text to agents via `/companion-ws`. Transcripts route through the same `sendChatMessage()` pipeline as typed /chat messages, so session resolution, copy-mode cancellation, and tmux key sending all work identically.
+- **voice:interrupt upstream handler** — Mobile companion can send barge-in interrupts to cancel in-progress speech generation. The voice subsystem aborts LLM summarization, clears the terminal buffer, and broadcasts a stop signal to all companion clients.
+- **Server-initiated interrupt on web companion** — `useCompanionWebSocket` now handles `{type: 'interrupt'}` messages from the server and calls `tts.stop()`, so the web FaceTime UI stops TTS playback when another client (e.g. mobile) triggers a barge-in.
+- **`cancelCurrentSpeech()` on VoiceSubsystem** — New method for barge-in support: aborts summarization, clears buffer, emits `voice:interrupt` downstream.
+
+## [0.35.9] - 2026-05-16
+
+### Added
+- **Favorites / Speed Dial** — Pin frequently-used agents to a horizontal strip at the top of the sidebar for one-click access. Toggle via context menu ("Add to Favorites" / "Remove from Favorites") or star button on hover in list view. Persisted in localStorage.
+- **Chat permission prompts** — When an agent requests permission (e.g., to run a Bash command), the full prompt now appears in the chat with the command preview and clickable option buttons (Yes, Yes and don't ask again, No). Previously only visible in the terminal view.
+- **Real-time activity indicators in meeting chat** — Meeting chat now shows "Agent is working..." (spinner) and "Agent is waiting for input" (pulse) using WebSocket-backed session activity instead of naive heuristics.
+
+### Changed
+- **X-Ray mode** — Renamed Power/Assisted chat mode to "X-Ray". Single `ScanEye` icon toggles on (amber glow) / off (gray) instead of swapping between two different icons.
+- **Permission buttons always visible** — Chat permission action buttons now render in both X-Ray on and off modes. Previously gated to assisted-only, leaving no way to respond in power mode.
+
+### Fixed
+- **Hook not sending full hookState** — The `ai-maestro-hook.cjs` was writing permission details (toolName, toolInput, options) to a file but only sending `status` via the WebSocket broadcast. Now includes the full `hookState` object in the payload.
+- **Headless router missing hookState** — The headless router's activity update endpoint was not forwarding `body.hookState` to `broadcastActivityUpdate`.
+- **Bash commands overflow in chat** — Long commands rendered as a single line overflowing off-screen. Now uses `whitespace-pre-wrap` + `break-all` to wrap within the chat bubble.
+- **Meeting chat messages behind textarea** — Added `min-h-0` to the messages container for proper flex overflow constraint.
+- **No auto-scroll on permission prompt** — Added scroll trigger when `hookState` changes to `permission_request`.
+
+## [0.35.7] - 2026-05-15
+
+### Added
+- **Tool-specific previews in chat** — Collapsed tool headers now show contextual one-line previews: Bash shows the command, Read/Write/Edit show the file path, Grep shows the pattern, Task shows the description. Expanding a tool shows styled content (green mono for Bash, red/green diff for Edit) instead of raw JSON dumps.
+- **Collapsible thinking blocks (desktop)** — Thinking blocks render as collapsible purple-tinted cards with 120-char preview. Click to expand/collapse with max-h-64 scroll.
+- **Summary dividers** — `compact_boundary` and `microcompact_boundary` system messages now render as centered horizontal-rule dividers instead of being invisible.
+- **Power mode / Assisted mode** — The zap/shield toggle now controls chat verbosity. Assisted mode (default) shows only the clean user-agent conversation. Power mode shows the full train of thought: thinking blocks, tool calls, summary dividers.
+- **Save to Memory button** — Brain icon on assistant messages opens a popup form to save responses to agent memory with optional instructions (UI only, backend TBD).
+- **Tool-result filtering** — JSONL parser now skips invisible `toolUseResult` user messages, effectively doubling the useful message history within the 200-message budget.
+
+### Changed
+- **MobileChatView tool badges** — Tool badges now show tool-specific preview text (`Bash ls -la`) instead of generic `Used Bash on ls -la`.
+
+## [0.35.6] - 2026-05-15
+
+### Fixed
+- **Chat messages not reaching agents** — WebSocket chat handlers in `server.mjs` used `ptyProcess.write()` which bypassed tmux input handling and failed silently when no terminal tab was open (`ptyProcess: null`). Replaced both handlers (chat-only and full-terminal) with `tmux send-keys -l` using proper single-quote escaping and a 100ms delay before Enter, matching the proven `agent-runtime.ts` pattern.
+
+### Added
+- **Host circuit breaker** — Automatically disables unreachable remote hosts after 3 consecutive failures in `getUnifiedAgents()`, eliminating 3s timeout delays per dead host on every poll cycle. Configurable via `CIRCUIT_BREAKER_THRESHOLD` env var.
+- **`POST /api/hosts/:id/reactivate`** — New endpoint to manually re-enable a circuit-broken host. Also registered in headless router.
+- **Mesh self-healing** — `registerPeer()` auto-re-enables circuit-broken hosts when they come back online and re-register.
+- **Disabled hosts in `GET /api/hosts`** — `listHosts()` now appends disabled hosts with `status: 'disabled'` so the settings UI can show them with a "Reactivate" button.
+- `offlineReason` and `offlineSince` fields on the `Host` type for tracking circuit breaker metadata.
+- `loadAllHostsRaw()` and `updateHostRaw()` in `hosts-config.ts` to operate on the unfiltered host list (bypasses `enabled` filtering).
+- `lastSyncSuccess` now populated on every successful remote host fetch.
+
+## [0.35.5] - 2026-05-14
+
+### Fixed
+- **Duplicate agent creation from UUID-based session naming** — When `agentId` was passed to `createSession()`, the tmux session was named `uuid@host` instead of the agent's friendly name, causing session discovery to fail matching and triggering phantom agent creation via AMP. Now always uses the normalized agent name for tmux sessions.
+- **Orphan session fallback matching** — Session discovery had no fallback when `getAgentBySession()` failed for legacy UUID-named sessions. Added fallback that extracts UUIDs from `uuid@host` session names and looks up the agent by ID directly.
+
+## [0.35.1] - 2026-05-14
+
+### Added
+- **Infrastructure type icons** — New `InfraIcon` component displays infrastructure type (Docker, EC2, ECS, Cloud, Standalone) as a small icon next to agent names across all views (sidebar, tablet, mobile). Local agents show no icon to reduce clutter.
+- **WebSocket heartbeat** — Client-side ping/pong mechanism (30s interval, 10s timeout) detects dead connections that mobile browsers kill silently without firing close events. Server responds to pings in both terminal and chat-only WebSocket handlers.
+
+### Fixed
+- **Mobile WebSocket disconnection** — Mobile browsers (iOS Safari, Android Chrome) silently kill WebSocket connections after a few minutes without triggering close events. The new heartbeat mechanism detects dead connections within 40s and triggers reconnection.
+- **Chat messages hidden behind input** — Messages went behind the textarea and send button when sending because auto-scroll only triggered on received messages, not pending messages. Fixed in both desktop and mobile chat views.
+- **Non-AWS cloud agents mislabeled** — GCP, Azure, and DigitalOcean agents were incorrectly shown with AWS EC2 icon. Added generic "Cloud" infra type for non-AWS providers.
+- **Unsafe type cast in deployment detection** — Replaced `(cloud as Record<string, unknown>).runtime` with proper `runtime?: string` field on `AgentDeployment.cloud` interface.
+
+## [0.35.0] - 2026-05-14
+
+### Added
+- **WebSocket-driven chat** — Replaced 5-second file-polling chat with real-time WebSocket architecture. Chat now shows agent activity (tool use, permissions, thinking) instantly instead of lagging behind the terminal. New `chat:*` protocol multiplexed on the existing `/term` WebSocket via lightweight chat-only connections (`/term?name=X&chatOnly=1`). Server-side JSONL file watcher with incremental reads eliminates client polling. Permission prompts appear within 500ms (was 5s+).
+- **Mobile and tablet WebSocket chat** — MobileChatView and TabletDashboard now use the same WebSocket chat architecture. Includes visibility API reconnection on tab switch, pending message bubbles with optimistic UI, hookState options display, and queue-operation message rendering.
+- **Cloud deployment (AWS)** — Full AWS cloud deployment support for running agents on EC2 and ECS. EC2 native install with automated user_data bootstrap, ECS auto-build with Dockerfile and Terraform configs, Agent Creation Wizard with cloud deployment options, container image with agent-server.js for remote agent management.
+- **Meeting inject queue** — Hybrid dispatch with bracketed paste support for reliable message injection during team meetings.
+- **Meeting task CLI** — New `scripts/meeting-task.sh` for managing meeting tasks from the command line.
+- **Container utilities** — `lib/container-utils.ts` with comprehensive test suite for Docker and cloud container management.
+- **AMP canonical JSON** — `lib/amp-canonical-json.ts` for deterministic JSON serialization in message signing.
+- **Cloud API routes** — `agents/cloud/create`, `agents/cloud/[id]/status`, `agents/cloud/[id]/destroy` for cloud agent lifecycle.
+- **MarkdownRenderer component** — Dedicated `components/chat/MarkdownRenderer.tsx` for chat message rendering.
+
+### Fixed
+- **sendKeys split** — Literal sendKeys + Enter now split into separate calls with 100ms delay, preventing race conditions in tmux input handling.
+- **Meeting stability** — Discovery reorder, hook reliability improvements, and meeting chat panel fixes.
+- **Hosts logging** — Improved logging for host discovery and connection issues.
+- **Avatar strip rendering** — Fixed avatar display in compact views.
+- **Hibernate heartbeat** — Fixed heartbeat handling for hibernated agents.
+- **Hostname resilience** — Cloud environments with dynamic hostnames now handled gracefully.
+
+### Tests
+- 755 tests passing (up from 281). New test suites: container-utils (209 tests), agents-docker-service (1589 tests), meeting-inject-queue (179 tests), meeting-inject-utils (54 tests), amp-canonical-json (103 tests).
+
+## [0.29.9] - 2026-04-23
+
+### Fixed
+- **WebSocket connection leak causing exponential reconnects** — `connect()` in `useWebSocket.ts` only bailed on `readyState === OPEN`, not `CONNECTING`. On high-latency connections (remote hosts over Tailscale), calling `connect()` while a socket was still connecting created orphaned WebSockets that leaked server-side. Each orphan's `onclose` handler spawned its own reconnect chain, multiplying exponentially. Observed as 177 simultaneous clients from a single browser tab. Fixed in `useWebSocket`, `useCompanionWebSocket`, and `useSessionActivity` — close non-CLOSED sockets before creating new ones, and guard `onclose` against stale closures.
+- **Standalone agents now show online in sidebar** — `AgentBadge` and `AgentList` were only checking `agent.sessions[0].status` (persisted session config), ignoring `agent.session.status` (runtime heartbeat status). Standalone agents with no tmux session always appeared offline despite having a valid heartbeat.
+- **Duplicate hibernate + standalone overlay on offline agents** — The standalone/offline early-exit blocks in `page.tsx` rendered as normal flow elements alongside the main renderer's `absolute inset-0` overlay, causing both to be visible simultaneously. Now guarded by `!selectableAgents.some()` so they only render when the main renderer won't handle the agent.
+- **Heartbeat TTL increased from 2 to 10 minutes** — Standalone agents send heartbeats on Claude Code hook events (`Stop`, `SessionStart`, etc.), but during long tool executions no events fire. The 2-minute TTL caused agents to flicker offline mid-task.
+
 ## [0.29.8] - 2026-04-17
 
 ### Fixed

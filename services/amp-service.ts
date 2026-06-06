@@ -405,7 +405,7 @@ async function deliverLocally(opts: LocalDeliveryOptions): Promise<void> {
 
   // ── Memory Retrieval ──────────────────────────────────────────────
   // Inject relevant long-term memories into the payload before delivery.
-  // Fire-and-forget on failure — memory enrichment is best-effort.
+  // Best-effort: failures are non-fatal and fall through to plain delivery.
   let enrichedPayload = payload
   try {
     const agent = await agentRegistry.getAgent(opts.localAgent.id)
@@ -699,6 +699,7 @@ export async function registerAgent(
           model: 'Claude',
           taskDescription: body.metadata?.description as string || `AMP-registered agent: ${normalizedName}`,
           workingDirectory: body.metadata?.working_directory as string || undefined,
+          runtime: 'api',
           createSession: false,
           metadata: {
             amp: {
@@ -847,7 +848,7 @@ export async function routeMessage(
           console.log(`[AMP Route] Matched forwarding host by URL ${forwardedUrl} → ${forwardingHost.id}`)
         }
       }
-      if (forwardingHost) {
+      if (forwardingHost && forwardingHost.enabled !== false) {
         auth = {
           authenticated: true,
           agentId: `mesh-${forwardedFrom}`,
@@ -1109,8 +1110,8 @@ export async function routeMessage(
       // Use self host ID for forwarding identity. Prefer the configured host ID
       // from hosts.json (which may differ from os.hostname() due to dock/WiFi switching)
       // so that the remote host can recognize us via its hosts.json entries.
-      const selfHost = getSelfHost()
-      const forwardingId = selfHost?.id || selfHostIdValue
+      const selfHostForFwd = getSelfHost()
+      const forwardingId = selfHostForFwd?.id || selfHostIdValue
       console.log(`[AMP Route] Forwarding to ${recipientName}@${resolvedHostId} via ${remoteHost.url} (as ${forwardingId})`)
       const fwd = await forwardToHost(remoteHost, recipientName, envelope, body, forwardingId)
 

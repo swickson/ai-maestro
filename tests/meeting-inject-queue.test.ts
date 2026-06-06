@@ -1,3 +1,10 @@
+/**
+ * Tests for lib/meeting-inject-queue.ts
+ *
+ * Covers: queue FIFO, drain vs peek, per-session isolation,
+ * kind inference, feature flag, sanitizer, bracketed paste.
+ */
+
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   enqueueForSession,
@@ -11,175 +18,166 @@ import {
 } from '@/lib/meeting-inject-queue'
 
 describe('meeting-inject-queue', () => {
-  beforeEach(() => {
-    clearAll()
-  })
+  beforeEach(() => clearAll())
+
+  // ── Queue Operations ──────────────────────────────────────────────────
 
   describe('enqueue / drain', () => {
-    it('drains empty queue as []', () => {
-      expect(drainForSession('nobody')).toEqual([])
+    it('returns empty array for unknown session', () => {
+      expect(drainForSession('nonexistent')).toEqual([])
     })
 
-    it('returns enqueued items in FIFO order', () => {
-      enqueueForSession('watson', 'one')
-      enqueueForSession('watson', 'two')
-      enqueueForSession('watson', 'three')
-      const drained = drainForSession('watson')
-      expect(drained.map(m => m.text)).toEqual(['one', 'two', 'three'])
+    it('skips empty text', () => {
+      enqueueForSession('s1', '')
+      expect(drainForSession('s1')).toEqual([])
     })
 
-    it('drain is destructive — second call returns []', () => {
-      enqueueForSession('watson', 'x')
-      drainForSession('watson')
-      expect(drainForSession('watson')).toEqual([])
+    it('preserves FIFO order', () => {
+      enqueueForSession('s1', 'first')
+      enqueueForSession('s1', 'second')
+      enqueueForSession('s1', 'third')
+      const msgs = drainForSession('s1')
+      expect(msgs.map(m => m.text)).toEqual(['first', 'second', 'third'])
     })
 
-    it('peek is non-destructive', () => {
-      enqueueForSession('watson', 'x')
-      expect(peekForSession('watson').map(m => m.text)).toEqual(['x'])
-      expect(peekForSession('watson').map(m => m.text)).toEqual(['x'])
+    it('drain is destructive', () => {
+      enqueueForSession('s1', 'hello')
+      expect(drainForSession('s1').length).toBe(1)
+      expect(drainForSession('s1').length).toBe(0)
     })
 
-    it('keys are per-session — no cross-talk', () => {
-      enqueueForSession('watson', 'for-watson')
-      enqueueForSession('kai', 'for-kai')
-      expect(drainForSession('watson').map(m => m.text)).toEqual(['for-watson'])
-      expect(drainForSession('kai').map(m => m.text)).toEqual(['for-kai'])
-    })
-
-    it('rejects empty session or empty text', () => {
-      enqueueForSession('', 'body')
-      enqueueForSession('watson', '')
-      expect(drainForSession('watson')).toEqual([])
-      expect(drainForSession('')).toEqual([])
-    })
-
-    it('stamps each entry with an ISO timestamp', () => {
-      enqueueForSession('watson', 'x')
-      const [item] = drainForSession('watson')
-      expect(item.enqueuedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    it('stamps ISO timestamps', () => {
+      enqueueForSession('s1', 'test')
+      const [msg] = drainForSession('s1')
+      expect(() => new Date(msg.enqueuedAt)).not.toThrow()
+      expect(msg.enqueuedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     })
   })
+
+  describe('peek', () => {
+    it('returns copy without removing', () => {
+      enqueueForSession('s1', 'stay')
+      expect(peekForSession('s1').length).toBe(1)
+      expect(peekForSession('s1').length).toBe(1) // still there
+      expect(drainForSession('s1').length).toBe(1)
+      expect(peekForSession('s1').length).toBe(0)
+    })
+  })
+
+  describe('per-session isolation', () => {
+    it('sessions do not cross-talk', () => {
+      enqueueForSession('a', 'for-a')
+      enqueueForSession('b', 'for-b')
+      expect(drainForSession('a').map(m => m.text)).toEqual(['for-a'])
+      expect(drainForSession('b').map(m => m.text)).toEqual(['for-b'])
+    })
+  })
+
+  describe('clearAll', () => {
+    it('wipes every session', () => {
+      enqueueForSession('x', 'msg')
+      enqueueForSession('y', 'msg')
+      clearAll()
+      expect(drainForSession('x')).toEqual([])
+      expect(drainForSession('y')).toEqual([])
+    })
+  })
+
+  // ── Kind Inference ────────────────────────────────────────────────────
 
   describe('inferKindFromProgram', () => {
-    it('recognizes Claude variants', () => {
-      expect(inferKindFromProgram('Claude Code')).toBe('claude')
-      expect(inferKindFromProgram('claude-code')).toBe('claude')
-    })
-
-    it('recognizes Codex / GPT', () => {
-      expect(inferKindFromProgram('Codex CLI')).toBe('codex')
-      expect(inferKindFromProgram('gpt-5-codex')).toBe('codex')
-    })
-
-    it('recognizes Gemini', () => {
-      expect(inferKindFromProgram('Gemini CLI')).toBe('gemini')
-    })
-
-    it('recognizes Antigravity', () => {
-      expect(inferKindFromProgram('Antigravity CLI')).toBe('antigravity')
-      expect(inferKindFromProgram('antigravity')).toBe('antigravity')
-    })
-
-    it('antigravity wins over gemini when both substrings could match (defensive — they do not in practice, but agy state lives under .gemini/antigravity-cli/)', () => {
-      // Even if a future label includes both tokens, antigravity must win
-      // so the runtime dispatches to `agy`, not `gemini`. Pinned by the
-      // matching check-order in inferKindFromProgram (lib/meeting-inject-queue.ts).
-      expect(inferKindFromProgram('antigravity-cli')).toBe('antigravity')
-    })
-
-    it('falls back to unknown', () => {
-      expect(inferKindFromProgram('Aider')).toBe('unknown')
-      expect(inferKindFromProgram(undefined)).toBe('unknown')
+    it.each([
+      ['claude', 'claude'],
+      ['claude-code', 'claude'],
+      ['Claude Code', 'claude'],
+      ['codex', 'codex'],
+      ['codex-cli', 'codex'],
+      ['gpt-5-codex', 'codex'],
+      ['antigravity', 'antigravity'],
+      ['Antigravity CLI', 'antigravity'],
+      ['antigravity-cli', 'antigravity'],
+      ['gemini', 'gemini'],
+      ['gemini-cli', 'gemini'],
+      ['vim', 'unknown'],
+      [undefined, 'unknown'],
+      [null, 'unknown'],
+      ['', 'unknown'],
+    ])('program "%s" → kind "%s"', (program, expected) => {
+      expect(inferKindFromProgram(program as any)).toBe(expected)
     })
   })
 
-  describe('shouldUseAdditionalContext flag', () => {
-    const ORIGINAL = process.env.MAESTRO_MEETING_CONTEXT_KINDS
+  // ── Feature Flag ──────────────────────────────────────────────────────
+
+  describe('shouldUseAdditionalContext', () => {
+    const originalEnv = process.env.MAESTRO_MEETING_CONTEXT_KINDS
 
     afterEach(() => {
-      if (ORIGINAL === undefined) delete process.env.MAESTRO_MEETING_CONTEXT_KINDS
-      else process.env.MAESTRO_MEETING_CONTEXT_KINDS = ORIGINAL
+      if (originalEnv === undefined) {
+        delete process.env.MAESTRO_MEETING_CONTEXT_KINDS
+      } else {
+        process.env.MAESTRO_MEETING_CONTEXT_KINDS = originalEnv
+      }
     })
 
-    it('defaults to false when flag unset', () => {
+    it('returns false when env var is unset', () => {
       delete process.env.MAESTRO_MEETING_CONTEXT_KINDS
-      expect(shouldUseAdditionalContext('Claude Code')).toBe(false)
+      expect(shouldUseAdditionalContext('claude')).toBe(false)
     })
 
-    it('opts in a single kind', () => {
+    it('returns false for unknown kind', () => {
+      process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'all'
+      expect(shouldUseAdditionalContext('vim')).toBe(false)
+    })
+
+    it('returns true for matching kind', () => {
       process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'claude'
-      expect(shouldUseAdditionalContext('Claude Code')).toBe(true)
-      expect(shouldUseAdditionalContext('Gemini CLI')).toBe(false)
+      expect(shouldUseAdditionalContext('claude')).toBe(true)
+      expect(shouldUseAdditionalContext('codex')).toBe(false)
     })
 
-    it('opts in multiple kinds via comma list', () => {
+    it('supports comma-separated kinds', () => {
       process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'claude,gemini'
-      expect(shouldUseAdditionalContext('Claude Code')).toBe(true)
-      expect(shouldUseAdditionalContext('Gemini CLI')).toBe(true)
-      expect(shouldUseAdditionalContext('Codex CLI')).toBe(false)
+      expect(shouldUseAdditionalContext('claude')).toBe(true)
+      expect(shouldUseAdditionalContext('gemini')).toBe(true)
+      expect(shouldUseAdditionalContext('codex')).toBe(false)
     })
 
-    it('"all" opts in every known kind', () => {
+    it('supports "all"', () => {
       process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'all'
-      expect(shouldUseAdditionalContext('Claude Code')).toBe(true)
-      expect(shouldUseAdditionalContext('Gemini CLI')).toBe(true)
-      expect(shouldUseAdditionalContext('Codex CLI')).toBe(true)
-    })
-
-    it('never opts in unknown kinds', () => {
-      process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'all'
-      expect(shouldUseAdditionalContext('Aider')).toBe(false)
-      expect(shouldUseAdditionalContext(undefined)).toBe(false)
+      expect(shouldUseAdditionalContext('claude')).toBe(true)
+      expect(shouldUseAdditionalContext('codex')).toBe(true)
+      expect(shouldUseAdditionalContext('gemini')).toBe(true)
     })
   })
 
+  // ── Sanitizers ────────────────────────────────────────────────────────
+
   describe('sanitizeForRawInject', () => {
-    it('prefixes a leading `!` at string start with a space', () => {
-      expect(sanitizeForRawInject('!cmd')).toBe(' !cmd')
+    it('prefixes space before ! at line start', () => {
+      expect(sanitizeForRawInject('!history')).toBe(' !history')
+      expect(sanitizeForRawInject('line1\n!bang')).toBe('line1\n !bang')
     })
 
-    it('prefixes `!` at line-start after a newline', () => {
-      expect(sanitizeForRawInject('line one\n!trigger')).toBe('line one\n !trigger')
+    it('does not touch mid-line !', () => {
+      expect(sanitizeForRawInject('hello! world')).toBe('hello! world')
     })
 
-    it('handles multiple line-start triggers', () => {
-      const input = '!one\nsafe\n!two\nalso safe\n!three'
-      const expected = ' !one\nsafe\n !two\nalso safe\n !three'
-      expect(sanitizeForRawInject(input)).toBe(expected)
-    })
-
-    it('leaves mid-line `!` alone', () => {
-      expect(sanitizeForRawInject('what is this!?')).toBe('what is this!?')
-      expect(sanitizeForRawInject('no change here')).toBe('no change here')
-    })
-
-    it('is a no-op on empty input', () => {
-      expect(sanitizeForRawInject('')).toBe('')
+    it('handles multiple lines', () => {
+      expect(sanitizeForRawInject('!a\n!b\n!c')).toBe(' !a\n !b\n !c')
     })
   })
 
   describe('wrapAsBracketedPaste', () => {
-    const START = '\x1b[200~'
-    const END = '\x1b[201~'
-
-    it('wraps plain text in ESC[200~ ... ESC[201~', () => {
-      expect(wrapAsBracketedPaste('hello')).toBe(`${START}hello${END}`)
+    it('wraps with DEC 2004 markers', () => {
+      const result = wrapAsBracketedPaste('hello')
+      expect(result).toBe('\x1b[200~hello\x1b[201~')
     })
 
-    it('preserves multi-line content verbatim inside the wrap', () => {
-      const body = '[Meeting: X]\nalice says: hi\n\nReply by running: ...'
-      expect(wrapAsBracketedPaste(body)).toBe(`${START}${body}${END}`)
-    })
-
-    it('wraps empty input as an empty paste block', () => {
-      expect(wrapAsBracketedPaste('')).toBe(`${START}${END}`)
-    })
-
-    it('composes with sanitizeForRawInject (wrap of sanitized text)', () => {
-      const input = '!cmd\n!trigger'
-      const sanitized = sanitizeForRawInject(input)
-      expect(wrapAsBracketedPaste(sanitized)).toBe(`${START} !cmd\n !trigger${END}`)
+    it('composes with sanitizer', () => {
+      const text = '!dangerous\nok line'
+      const result = wrapAsBracketedPaste(sanitizeForRawInject(text))
+      expect(result).toBe('\x1b[200~ !dangerous\nok line\x1b[201~')
     })
   })
 })

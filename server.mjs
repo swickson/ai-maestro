@@ -1,20 +1,24 @@
 import { createServer } from 'http'
 import { parse } from 'url'
+import { execSync, execFileSync, execFile } from 'child_process'
 import { WebSocketServer } from 'ws'
 import WebSocket from 'ws'
 import pty from 'node-pty'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
+import crypto from 'crypto'
 import { getHostById, isSelf } from './lib/hosts-config-server.mjs'
 import { hostHints } from './lib/host-hints-server.mjs'
-import { getOrCreateBuffer } from './lib/cerebellum/session-bridge.mjs'
+import { getOrCreateBuffer, removeBuffer } from './lib/cerebellum/session-bridge.mjs'
 import {
   sessionActivity,
   terminalSessions,
   statusSubscribers,
   companionClients,
-  broadcastStatusUpdate
+  callSessions,
+  broadcastStatusUpdate,
+  broadcastChatEvent
 } from './services/shared-state-bridge.mjs'
 
 // =============================================================================
@@ -158,6 +162,328 @@ function killPtyProcess(ptyProcess, sessionName, alreadyExited = false) {
   return true
 }
 
+// =============================================================================
+// CHAT PROTOCOL HELPERS — getChatHistory, JSONL watcher, broadcast updates
+// =============================================================================
+
+/**
+ * Resolve the JSONL conversation file path for an agent.
+ * Returns null if not found.
+ */
+function resolveJsonlPath(agent) {
+  const workingDir = agent?.workingDirectory ||
+                     agent?.sessions?.[0]?.workingDirectory ||
+                     agent?.preferences?.defaultWorkingDirectory
+  if (!workingDir) return null
+
+  const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects')
+  const projectDirName = workingDir.replace(/[/_]/g, '-')
+  const conversationDir = path.join(claudeProjectsDir, projectDirName)
+
+  if (!fs.existsSync(conversationDir)) return null
+
+  const files = fs.readdirSync(conversationDir)
+    .filter(f => f.endsWith('.jsonl'))
+    .map(f => ({
+      name: f,
+      path: path.join(conversationDir, f),
+      mtime: fs.statSync(path.join(conversationDir, f)).mtime
+    }))
+    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+
+  return files.length > 0 ? files[0] : null
+}
+
+/**
+ * Read hook state file for an agent's working directory.
+ */
+function readHookState(workingDir) {
+  if (!workingDir) return null
+  const stateDir = path.join(os.homedir(), '.aimaestro', 'chat-state')
+  const cwdHash = crypto.createHash('md5').update(workingDir || '').digest('hex').substring(0, 16)
+  const stateFile = path.join(stateDir, `${cwdHash}.json`)
+  try {
+    if (fs.existsSync(stateFile)) {
+      const content = fs.readFileSync(stateFile, 'utf-8')
+      const state = JSON.parse(content)
+      const isWaitingState = state.status === 'waiting_for_input' || state.status === 'permission_request'
+      if (!isWaitingState) {
+        const stateAge = Date.now() - new Date(state.updatedAt).getTime()
+        if (stateAge > 60000) return null
+      }
+      return state
+    }
+  } catch { /* ignore */ }
+  return null
+}
+
+/**
+ * Parse JSONL lines into message objects (same logic as agents-chat-service).
+ */
+function parseJsonlLines(lines, limit = 100) {
+  const messages = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    try {
+      const message = JSON.parse(line)
+
+      // Skip tool-result user messages (invisible in chat, waste message budget)
+      if (message.type === 'user' && message.toolUseResult) continue
+
+      // Convert compact_boundary system messages to summary type
+      if (message.type === 'system' &&
+          (message.subtype === 'compact_boundary' || message.subtype === 'microcompact_boundary')) {
+        messages.push({
+          type: 'summary',
+          summary: message.content || 'Conversation compacted',
+          timestamp: message.timestamp,
+          uuid: message.uuid,
+        })
+        continue
+      }
+
+      // Extract thinking blocks from assistant messages
+      if (message.type === 'assistant' && message.message?.content) {
+        const content = message.message.content
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'thinking' && block.thinking) {
+              messages.push({
+                type: 'thinking',
+                thinking: block.thinking,
+                timestamp: message.timestamp,
+                uuid: message.uuid
+              })
+            }
+          }
+        }
+      }
+      messages.push(message)
+    } catch { /* skip malformed */ }
+  }
+  return messages.slice(-limit)
+}
+
+/**
+ * Get chat history for a session (messages + hookState).
+ * Called on chat:requestHistory.
+ */
+async function getChatHistory(sessionName, agentId) {
+  const { getAgent, getAgentByName } = await import('./lib/agent-registry.ts')
+  // Try agentId first, fall back to sessionName (remote hosts won't have the local agentId)
+  const agent = (agentId && getAgent(agentId)) || getAgentByName(sessionName)
+  if (!agent) {
+    return { messages: [], hookState: null }
+  }
+
+  const file = resolveJsonlPath(agent)
+  if (!file) {
+    return { messages: [], hookState: null }
+  }
+
+  const fileContent = fs.readFileSync(file.path, 'utf-8')
+  const lines = fileContent.split('\n')
+  const messages = parseJsonlLines(lines, 200)
+
+  const workingDir = agent.workingDirectory ||
+                     agent.sessions?.[0]?.workingDirectory ||
+                     agent.preferences?.defaultWorkingDirectory
+  let hookState = readHookState(workingDir)
+
+  // If the file no longer has permission_request but the server remembers one
+  // from this session (agent is still waiting for approval), use the stored state.
+  // This handles tab-switching: component unmounts/remounts while permission is pending.
+  if (hookState?.status !== 'permission_request') {
+    const sessionState = terminalSessions.get(sessionName)
+    if (sessionState?._lastPermission) {
+      hookState = sessionState._lastPermission
+    }
+  }
+
+  return {
+    messages,
+    hookState,
+    conversationFile: file.path,
+    lastModified: file.mtime.toISOString()
+  }
+}
+
+/**
+ * Start watching the JSONL file for a session.
+ * Uses fs.watchFile (polling-based, reliable on macOS) to detect changes.
+ */
+function startJsonlWatcher(sessionName, sessionState, agentId) {
+  // Already watching
+  if (sessionState.jsonlWatcher) return
+
+  import('./lib/agent-registry.ts').then(({ getAgent, getAgentByName }) => {
+    // Try agentId first, fall back to sessionName (remote hosts won't have the local agentId)
+    const agent = (agentId && getAgent(agentId)) || getAgentByName(sessionName)
+    if (!agent) return
+
+    const file = resolveJsonlPath(agent)
+    if (!file) return
+
+    sessionState.jsonlFilePath = file.path
+    try {
+      const stat = fs.statSync(file.path)
+      sessionState.jsonlFileSize = stat.size
+    } catch {
+      sessionState.jsonlFileSize = 0
+    }
+
+    // Poll every 1s — low overhead, reliable on macOS where fs.watch is flaky
+    fs.watchFile(file.path, { interval: 1000 }, (curr, prev) => {
+      if (curr.size > sessionState.jsonlFileSize) {
+        console.log(`[Chat] JSONL change detected for ${sessionName}: ${sessionState.jsonlFileSize} → ${curr.size} (${sessionState.chatClients?.size || 0} clients)`)
+        broadcastJsonlUpdates(sessionName, sessionState)
+      }
+      // Handle file truncation (new conversation started)
+      if (curr.size < sessionState.jsonlFileSize) {
+        sessionState.jsonlFileSize = 0
+        broadcastJsonlUpdates(sessionName, sessionState)
+      }
+    })
+    sessionState.jsonlWatcher = true
+    console.log(`[Chat] Started JSONL watcher for ${sessionName}: ${file.path}`)
+
+    // Watch hook state file for real-time permission/status updates
+    const workingDir = agent.workingDirectory ||
+                       agent.sessions?.[0]?.workingDirectory ||
+                       agent.preferences?.defaultWorkingDirectory
+    if (workingDir) {
+      sessionState._hookStateWorkingDir = workingDir
+      const cwdHash = crypto.createHash('md5').update(workingDir).digest('hex').substring(0, 16)
+      const hookStateFile = path.join(os.homedir(), '.aimaestro', 'chat-state', `${cwdHash}.json`)
+      sessionState._hookStateFile = hookStateFile
+
+      // Use fs.watchFile (1s poll) instead of setInterval — same reliability as JSONL watcher
+      fs.watchFile(hookStateFile, { interval: 1000 }, () => {
+        broadcastHookState(sessionName, sessionState)
+      })
+      sessionState._hookStateWatcher = true
+      console.log(`[Chat] Started hookState watcher for ${sessionName}: ${hookStateFile}`)
+    }
+  }).catch(err => {
+    console.error(`[Chat] Failed to start JSONL watcher for ${sessionName}:`, err.message)
+  })
+}
+
+/**
+ * Read hookState and broadcast to chat clients if changed.
+ * Extracted so it can be called from the file watcher AND from broadcastJsonlUpdates
+ * (on tool_use messages that precede permission prompts).
+ */
+function broadcastHookState(sessionName, sessionState) {
+  if (!sessionState.chatClients || sessionState.chatClients.size === 0) return
+  const workingDir = sessionState._hookStateWorkingDir
+  if (!workingDir) return
+  const state = readHookState(workingDir)
+  // Remember permission_request states so we can serve them on history re-requests
+  if (state?.status === 'permission_request') {
+    sessionState._lastPermission = state
+  }
+  const stateJson = JSON.stringify(state)
+  if (stateJson !== sessionState._lastHookState) {
+    sessionState._lastHookState = stateJson
+    const msg = JSON.stringify({ type: 'chat:hookState', data: state })
+    sessionState.chatClients.forEach(ws => {
+      if (ws.readyState === 1) ws.send(msg)
+    })
+    if (state?.status) {
+      console.log(`[Chat] hookState broadcast for ${sessionName}: ${state.status}`)
+    }
+  }
+}
+
+/**
+ * Read new JSONL lines since last read and broadcast to chat clients.
+ */
+function broadcastJsonlUpdates(sessionName, sessionState) {
+  if (!sessionState.chatClients || sessionState.chatClients.size === 0) {
+    return
+  }
+  if (!sessionState.jsonlFilePath) {
+    console.log(`[Chat] No JSONL path for ${sessionName}, skipping broadcast`)
+    return
+  }
+
+  try {
+    const stat = fs.statSync(sessionState.jsonlFilePath)
+    const currentSize = stat.size
+    const prevSize = sessionState.jsonlFileSize || 0
+
+    if (currentSize <= prevSize && prevSize > 0) return
+
+    // Read only new bytes (or full file if truncated)
+    const readStart = currentSize < prevSize ? 0 : prevSize
+    const fd = fs.openSync(sessionState.jsonlFilePath, 'r')
+    const buffer = Buffer.alloc(currentSize - readStart)
+    fs.readSync(fd, buffer, 0, buffer.length, readStart)
+    fs.closeSync(fd)
+
+    const newContent = buffer.toString('utf-8')
+
+    // Handle partial lines: if content doesn't end with \n, the last line
+    // is incomplete (Claude is still writing). Save it for the next read.
+    const allLines = newContent.split('\n')
+    let partial = ''
+    if (!newContent.endsWith('\n') && allLines.length > 0) {
+      partial = allLines.pop()
+    }
+
+    // Prepend any partial line saved from the previous read
+    if (sessionState.jsonlPartialLine && allLines.length > 0) {
+      allLines[0] = sessionState.jsonlPartialLine + allLines[0]
+    }
+    sessionState.jsonlPartialLine = partial
+
+    // Advance file position, but don't count the partial bytes we deferred
+    sessionState.jsonlFileSize = currentSize - Buffer.byteLength(partial, 'utf-8')
+
+    const lines = allLines.filter(l => l.trim())
+    if (lines.length === 0) return
+
+    const messages = parseJsonlLines(lines, 50)
+    if (messages.length === 0) return
+
+    // Clear stored permission when assistant responds (permission cycle is over)
+    if (messages.some(m => m.type === 'assistant') && sessionState._lastPermission) {
+      sessionState._lastPermission = null
+    }
+
+    // Clear activity indicator when new messages arrive (tool completed, response started)
+    if (messages.length > 0 && sessionState._lastActivityLabel) {
+      sessionState._lastActivityLabel = null
+      const clearMsg = JSON.stringify({ type: 'chat:activity', data: null })
+      sessionState.chatClients.forEach(ws => {
+        if (ws.readyState === 1) try { ws.send(clearMsg) } catch {}
+      })
+    }
+
+    const msg = JSON.stringify({ type: 'chat:messages', data: messages })
+    let sentCount = 0
+    sessionState.chatClients.forEach(ws => {
+      if (ws.readyState === 1) {
+        ws.send(msg)
+        sentCount++
+      }
+    })
+    console.log(`[Chat] Broadcast ${messages.length} messages to ${sentCount}/${sessionState.chatClients.size} clients for ${sessionName}`)
+
+    // When tool_use messages appear, permission prompts follow shortly after.
+    // Schedule rapid hookState reads to catch them before the file watcher's next poll.
+    const hasToolUse = lines.some(l => l.includes('"tool_use"'))
+    if (hasToolUse && sessionState._hookStateWorkingDir) {
+      for (const delay of [200, 600, 1200, 2000, 3500]) {
+        setTimeout(() => broadcastHookState(sessionName, sessionState), delay)
+      }
+    }
+  } catch (err) {
+    console.error(`[Chat] Error reading JSONL updates for ${sessionName}:`, err.message)
+  }
+}
+
 /**
  * Clean up a session's PTY and resources
  * Called when last client disconnects, on error, or when PTY exits
@@ -204,6 +530,22 @@ function cleanupSession(sessionName, sessionState, reason = 'unknown', ptyAlread
     killPtyProcess(sessionState.ptyProcess, sessionName, ptyAlreadyExited)
   }
 
+  // Stop JSONL file watcher
+  if (sessionState.jsonlWatcher) {
+    try {
+      fs.unwatchFile(sessionState.jsonlFilePath)
+    } catch { /* ignore */ }
+    sessionState.jsonlWatcher = null
+  }
+
+  // Stop hook state file watcher
+  if (sessionState._hookStateWatcher && sessionState._hookStateFile) {
+    try {
+      fs.unwatchFile(sessionState._hookStateFile)
+    } catch { /* ignore */ }
+    sessionState._hookStateWatcher = null
+  }
+
   // Close all remaining client connections
   if (sessionState.clients) {
     sessionState.clients.forEach((client) => {
@@ -216,6 +558,11 @@ function cleanupSession(sessionName, sessionState, reason = 'unknown', ptyAlread
       }
     })
     sessionState.clients.clear()
+  }
+
+  // Clear chat clients
+  if (sessionState.chatClients) {
+    sessionState.chatClients.clear()
   }
 
   // Remove from terminal sessions map
@@ -239,8 +586,9 @@ function cleanupSession(sessionName, sessionState, reason = 'unknown', ptyAlread
 function handleClientDisconnect(ws, sessionName, sessionState, reason = 'close') {
   if (!sessionState) return
 
-  // Remove this client
+  // Remove this client from both regular and chat client sets
   sessionState.clients.delete(ws)
+  sessionState.chatClients?.delete(ws)
 
   console.log(`[PTY] Client disconnected from ${sessionName} (${reason}). Remaining clients: ${sessionState.clients.size}`)
 
@@ -318,6 +666,43 @@ function getAgentIdForSession(sessionName) {
   } catch {
     // Agent directory doesn't exist or error accessing it
   }
+  return null
+}
+
+/**
+ * Extract structured activity signals from raw PTY output.
+ * Returns { label, detail? } or null if no recognizable signal.
+ */
+function extractPtyActivity(cleanedData) {
+  const trimmed = cleanedData.replace(/[\r\n]/g, ' ').trim()
+  if (!trimmed || trimmed.length < 2) return null
+
+  // Thinking step progress: [1/418], [2/418], etc.
+  const stepMatch = trimmed.match(/\[(\d+)\/(\d+)\]/)
+  if (stepMatch) {
+    return { label: 'Thinking', detail: `step ${stepMatch[1]}/${stepMatch[2]}` }
+  }
+
+  // Spinner status: "✳ Forming...", "· Thinking…", "· Reading..."
+  const spinnerMatch = trimmed.match(/[✳·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(\w+ing)[\.\…]*/i)
+  if (spinnerMatch) {
+    return { label: spinnerMatch[1] }
+  }
+
+  // Tool execution patterns from Claude Code TUI
+  const toolPatterns = [
+    { re: /(?:Running|Executing)\s+`([^`]{1,60})`/i, label: 'Running', detail: (m) => m[1] },
+    { re: /(?:Reading|Read)\s+([^\s]{1,80})/i, label: 'Reading', detail: (m) => m[1] },
+    { re: /(?:Writing|Wrote)\s+([^\s]{1,80})/i, label: 'Writing', detail: (m) => m[1] },
+    { re: /(?:Editing|Edited)\s+([^\s]{1,80})/i, label: 'Editing', detail: (m) => m[1] },
+    { re: /(?:Searching|Searched|Grep)\s+(.{1,60})/i, label: 'Searching', detail: (m) => m[1] },
+    { re: /Compacting conversation/i, label: 'Compacting' },
+  ]
+  for (const { re, label, detail } of toolPatterns) {
+    const m = trimmed.match(re)
+    if (m) return { label, detail: detail ? detail(m) : undefined }
+  }
+
   return null
 }
 
@@ -412,15 +797,16 @@ async function startServer(handleRequest) {
 
   // Handle remote worker connections (proxy WebSocket to remote host)
   // With retry logic for flaky networks
-  function handleRemoteWorker(clientWs, sessionName, workerUrl) {
+  function handleRemoteWorker(clientWs, sessionName, workerUrl, extraParams = '') {
     const MAX_RETRIES = 5
     const RETRY_DELAYS = [500, 1000, 2000, 3000, 5000] // Exponential backoff
     let retryCount = 0
     let workerWs = null
     let clientClosed = false
+    const messageQueue = [] // Buffer client messages until remote connects
 
     // Build WebSocket URL for remote worker
-    const workerWsUrl = `${workerUrl}/term?name=${encodeURIComponent(sessionName)}`
+    const workerWsUrl = `${workerUrl}/term?name=${encodeURIComponent(sessionName)}${extraParams}`
       .replace(/^http:/, 'ws:')
       .replace(/^https:/, 'wss:')
 
@@ -434,6 +820,33 @@ async function startServer(handleRequest) {
         }
       }
     }
+
+    // Register client message handler IMMEDIATELY so early messages
+    // (e.g. chat:requestHistory sent on connect) are not lost
+    clientWs.on('message', (data) => {
+      if (workerWs && workerWs.readyState === WebSocket.OPEN) {
+        workerWs.send(data)
+      } else {
+        // Remote not connected yet — queue for later
+        messageQueue.push(data)
+      }
+    })
+
+    clientWs.on('close', () => {
+      clientClosed = true
+      console.log(`🌐 [REMOTE] Client disconnected from ${sessionName}`)
+      if (workerWs && workerWs.readyState === WebSocket.OPEN) {
+        workerWs.close()
+      }
+    })
+
+    clientWs.on('error', (error) => {
+      clientClosed = true
+      console.error(`🌐 [REMOTE] Client error for ${sessionName}:`, error.message)
+      if (workerWs && workerWs.readyState === WebSocket.OPEN) {
+        workerWs.close()
+      }
+    })
 
     // Attempt connection with retry
     function attemptConnection() {
@@ -471,12 +884,13 @@ async function startServer(handleRequest) {
         // Track activity for remote sessions
         sessionActivity.set(sessionName, Date.now())
 
-        // Proxy messages: browser → remote worker
-        clientWs.on('message', (data) => {
+        // Flush queued messages (e.g. chat:requestHistory sent before remote connected)
+        while (messageQueue.length > 0) {
+          const queued = messageQueue.shift()
           if (workerWs.readyState === WebSocket.OPEN) {
-            workerWs.send(data)
+            workerWs.send(queued)
           }
-        })
+        }
 
         // Proxy messages: remote worker → browser
         workerWs.on('message', (data) => {
@@ -506,23 +920,6 @@ async function startServer(handleRequest) {
           console.error(`🌐 [REMOTE] Error from ${sessionName}:`, error.message)
           if (clientWs.readyState === 1) {
             clientWs.close(1011, 'Remote worker error')
-          }
-        })
-
-        // Handle client disconnection
-        clientWs.on('close', () => {
-          clientClosed = true
-          console.log(`🌐 [REMOTE] Client disconnected from ${sessionName}`)
-          if (workerWs.readyState === WebSocket.OPEN) {
-            workerWs.close()
-          }
-        })
-
-        clientWs.on('error', (error) => {
-          clientClosed = true
-          console.error(`🌐 [REMOTE] Client error for ${sessionName}:`, error.message)
-          if (workerWs.readyState === WebSocket.OPEN) {
-            workerWs.close()
           }
         })
       })
@@ -681,7 +1078,6 @@ async function startServer(handleRequest) {
 
   /**
    * Broadcast a meeting chat message to all subscribed WebSocket clients.
-   * Called by the chat API when a new message is posted.
    */
   function broadcastMeetingChatMessage(meetingId, message) {
     const subs = meetingChatSubscribers.get(meetingId)
@@ -743,6 +1139,78 @@ async function startServer(handleRequest) {
     }
     clients.add(ws)
 
+    // --- Call Session Fork: spawn a temporary YOLO tmux session for voice ---
+    try {
+      const existingCall = callSessions.get(agentId)
+      if (existingCall) {
+        // Another companion client already created the call session — no-op
+        console.log(`[CALL-SESSION] Reusing call session ${existingCall.callSessionName} (companions: ${clients.size})`)
+      } else {
+        const { getAgent: getRegistryAgent } = await import('./lib/agent-registry.ts')
+        const registryAgent = getRegistryAgent(agentId)
+        if (registryAgent) {
+          const agentName = registryAgent.name || registryAgent.alias
+          // Validate agent name is safe for shell/tmux (should always pass, but defense-in-depth)
+          if (!agentName || !/^[a-zA-Z0-9_-]+$/.test(agentName)) {
+            console.error(`[CALL-SESSION] Refusing to create call session: invalid agent name "${agentName}"`)
+          } else {
+            const { computeCallSessionName } = await import('./types/agent.ts')
+            const callSessionName = computeCallSessionName(agentName)
+            const workdir = registryAgent.workingDirectory || registryAgent.sessions?.[0]?.workingDirectory || os.homedir()
+
+            // Kill stale call session if it exists (safe: callSessionName is validated)
+            try { execFileSync('tmux', ['has-session', '-t', callSessionName], { stdio: 'ignore', timeout: 5000 }) } catch { /* not found — expected */ }
+            try { execFileSync('tmux', ['kill-session', '-t', callSessionName], { stdio: 'ignore', timeout: 5000 }) } catch { /* not found — expected */ }
+
+            // Create new detached tmux session
+            execFileSync('tmux', ['new-session', '-d', '-s', callSessionName, '-c', workdir], { timeout: 5000 })
+
+            // Build launch command with bypassPermissions
+            // Uses single string sent via send-keys -l (literal) to avoid shell interpretation
+            const envParts = [`export AIM_AGENT_NAME='${agentName}' AIM_AGENT_ID='${agentId}'`, 'unset CLAUDECODE']
+            const cmdParts = ['claude', '--permission-mode', 'bypassPermissions']
+            if (registryAgent.model) {
+              const safeModel = registryAgent.model.replace(/[^a-zA-Z0-9._-]/g, '')
+              if (safeModel) cmdParts.push('--model', safeModel)
+            }
+            if (registryAgent.programArgs) {
+              const sanitized = registryAgent.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
+              if (sanitized) cmdParts.push(...sanitized.split(/\s+/))
+            }
+            const fullCmd = `${envParts.join('; ')} && ${cmdParts.join(' ')}`
+            execFileSync('tmux', ['send-keys', '-t', callSessionName, '-l', fullCmd], { timeout: 5000 })
+            execFileSync('tmux', ['send-keys', '-t', callSessionName, 'Enter'], { timeout: 5000 })
+
+            // Spawn read-only PTY observer to feed cerebellum voice buffer
+            let ptyObserver = null
+            try {
+              ptyObserver = pty.spawn('tmux', ['attach-session', '-t', callSessionName, '-r'], {
+                name: 'xterm-256color',
+                cols: 120,
+                rows: 40,
+              })
+              const callBuffer = getOrCreateBuffer(callSessionName)
+              ptyObserver.onData((data) => { callBuffer.write(data) })
+            } catch (ptyErr) {
+              console.warn(`[CALL-SESSION] Could not spawn PTY observer for ${callSessionName}:`, ptyErr.message)
+            }
+
+            callSessions.set(agentId, {
+              agentId,
+              agentName,
+              callSessionName,
+              workingDirectory: workdir,
+              createdAt: Date.now(),
+              ptyObserver,
+            })
+            console.log(`[CALL-SESSION] Created call session ${callSessionName} for agent ${agentName}`)
+          }
+        }
+      }
+    } catch (callErr) {
+      console.error('[CALL-SESSION] Error creating call session:', callErr)
+    }
+
     // Notify cerebellum that companion connected
     try {
       const { agentRegistry } = await import('./lib/agent.ts')
@@ -769,24 +1237,39 @@ async function startServer(handleRequest) {
                   }
                 }
               }
+            } else if (event.type === 'voice:interrupt' && event.agentId === agentId) {
+              const message = JSON.stringify({
+                type: 'interrupt',
+                timestamp: Date.now(),
+              })
+              const agentClients = companionClients.get(agentId)
+              if (agentClients) {
+                for (const client of agentClients) {
+                  if (client.readyState === 1) {
+                    try { client.send(message) } catch { /* ignore */ }
+                  }
+                }
+              }
             }
           }
           cerebellum.on('voice:speak', listener)
+          cerebellum.on('voice:interrupt', listener)
 
-          // Also attach the voice subsystem to the terminal buffer if available
+          // Attach voice subsystem to terminal buffer.
+          // Prefer call session buffer (YOLO fork) over primary session buffer.
+          // Uses getOrCreateBuffer to eliminate timing race — the call session
+          // PTY observer may not have written yet, but the buffer must exist.
           const voiceSub = cerebellum.getSubsystem('voice')
           if (voiceSub && voiceSub.attachBuffer) {
-            const { getBuffer } = await import('./lib/cerebellum/session-bridge.mjs')
-            // Find the session name for this agent
+            const activeCallState = callSessions.get(agentId)
             const { getAgent: getRegistryAgent } = await import('./lib/agent-registry.ts')
             const registryAgent = getRegistryAgent(agentId)
-            const sessionName = registryAgent?.name || registryAgent?.alias
-            if (sessionName) {
-              const buffer = getBuffer(sessionName)
-              if (buffer) {
-                voiceSub.attachBuffer(buffer)
-                console.log(`[COMPANION-WS] Attached voice buffer for session ${sessionName}`)
-              }
+            const primarySessionName = registryAgent?.name || registryAgent?.alias
+            const voiceSessionName = activeCallState ? activeCallState.callSessionName : primarySessionName
+            if (voiceSessionName) {
+              const buffer = getOrCreateBuffer(voiceSessionName)
+              voiceSub.attachBuffer(buffer)
+              console.log(`[COMPANION-WS] Attached voice buffer for session ${voiceSessionName}${activeCallState ? ' (call fork)' : ''}`)
             }
           }
 
@@ -798,19 +1281,97 @@ async function startServer(handleRequest) {
       console.error('[COMPANION-WS] Error setting up cerebellum connection:', err)
     }
 
+    // Helper: route text to call session via tmux send-keys (non-blocking)
+    function sendToCallSession(callSessionName, text) {
+      // execFile (async, no shell) — does NOT block the event loop
+      execFile('tmux', ['send-keys', '-t', callSessionName, '-l', text], { timeout: 5000 }, (err) => {
+        if (err) {
+          console.warn(`[CALL-SESSION] send-keys -l failed for ${callSessionName}:`, err.message)
+          // Fall back to primary session
+          import('./services/agents-chat-service.ts').then(({ sendChatMessage }) => {
+            sendChatMessage(agentId, text)
+          }).catch(() => {})
+          return
+        }
+        execFile('tmux', ['send-keys', '-t', callSessionName, 'Enter'], { timeout: 5000 }, (enterErr) => {
+          if (enterErr) {
+            console.warn(`[CALL-SESSION] send-keys Enter failed for ${callSessionName}:`, enterErr.message)
+          } else {
+            console.log(`[CALL-SESSION] Routed text to ${callSessionName}`)
+          }
+        })
+      })
+    }
+
     // Handle user messages forwarded from the companion UI
     ws.on('message', (raw) => {
       try {
         const data = JSON.parse(raw.toString())
         if (data.type === 'user_message' && typeof data.text === 'string') {
-          // Forward to voice subsystem's user message buffer
+          const text = data.text.trim()
+          if (!text) return
+
+          // Route typed text to call session if active, otherwise feed voice subsystem only
+          const activeCall = callSessions.get(agentId)
+          if (activeCall) {
+            sendToCallSession(activeCall.callSessionName, text)
+          }
+
+          // Also feed the voice subsystem's user message buffer for context
           import('./lib/agent.ts').then(({ agentRegistry }) => {
             const agent = agentRegistry.getExistingAgent(agentId)
             const cerebellum = agent?.getCerebellum()
             if (cerebellum) {
               const voiceSub = cerebellum.getSubsystem('voice')
               if (voiceSub?.addUserMessage) {
-                voiceSub.addUserMessage(data.text)
+                voiceSub.addUserMessage(text)
+              }
+            }
+          }).catch(() => { /* ignore */ })
+        } else if (data.type === 'voice:transcript' && typeof data.text === 'string') {
+          const text = data.text.trim()
+          if (!text) return // Drop empty transcripts
+
+          console.log(`[COMPANION-WS] voice:transcript from ${agentId.substring(0, 8)}: "${text.substring(0, 60)}"`)
+
+          // Route to call session (YOLO fork) if active, otherwise fall back to primary
+          const activeCall = callSessions.get(agentId)
+          if (activeCall) {
+            sendToCallSession(activeCall.callSessionName, text)
+          } else {
+            // No call session — route through the same pipeline as /chat typed messages
+            import('./services/agents-chat-service.ts').then(({ sendChatMessage }) => {
+              sendChatMessage(agentId, text).then((result) => {
+                if (result.error) {
+                  console.error(`[COMPANION-WS] voice:transcript delivery failed:`, result.error)
+                }
+              })
+            }).catch((err) => {
+              console.error('[COMPANION-WS] voice:transcript error:', err)
+            })
+          }
+
+          // Also feed the voice subsystem's user message buffer for context
+          import('./lib/agent.ts').then(({ agentRegistry }) => {
+            const agent = agentRegistry.getExistingAgent(agentId)
+            const cerebellum = agent?.getCerebellum()
+            if (cerebellum) {
+              const voiceSub = cerebellum.getSubsystem('voice')
+              if (voiceSub?.addUserMessage) {
+                voiceSub.addUserMessage(text)
+              }
+            }
+          }).catch(() => { /* ignore */ })
+        } else if (data.type === 'voice:interrupt') {
+          console.log(`[COMPANION-WS] voice:interrupt from ${agentId.substring(0, 8)}`)
+
+          import('./lib/agent.ts').then(({ agentRegistry }) => {
+            const agent = agentRegistry.getExistingAgent(agentId)
+            const cerebellum = agent?.getCerebellum()
+            if (cerebellum) {
+              const voiceSub = cerebellum.getSubsystem('voice')
+              if (voiceSub?.cancelCurrentSpeech) {
+                voiceSub.cancelCurrentSpeech()
               }
             }
           }).catch(() => { /* ignore */ })
@@ -839,15 +1400,33 @@ async function startServer(handleRequest) {
         agentClients.delete(ws)
         if (agentClients.size === 0) {
           companionClients.delete(agentId)
+
+          // --- Kill call session fork when last companion disconnects ---
+          const callState = callSessions.get(agentId)
+          if (callState) {
+            console.log(`[CALL-SESSION] Last companion disconnected, killing ${callState.callSessionName}`)
+            // Kill PTY observer
+            try { callState.ptyObserver?.kill() } catch { /* ignore */ }
+            // Graceful shutdown: Ctrl-C then delayed kill (all non-blocking with execFile)
+            execFile('tmux', ['send-keys', '-t', callState.callSessionName, 'C-c'], { timeout: 5000 }, () => {
+              setTimeout(() => {
+                execFile('tmux', ['kill-session', '-t', callState.callSessionName], { timeout: 5000 }, () => { /* ignore */ })
+              }, 500)
+            })
+            removeBuffer(callState.callSessionName)
+            callSessions.delete(agentId)
+          }
+
           // Notify cerebellum no companion connected
           import('./lib/agent.ts').then(({ agentRegistry }) => {
             const agent = agentRegistry.getExistingAgent(agentId)
             const cerebellum = agent?.getCerebellum()
             if (cerebellum) {
               cerebellum.setCompanionConnected(false)
-              // Clean up listener
+              // Clean up listeners
               if (ws._companionCleanup?.listener) {
                 cerebellum.off('voice:speak', ws._companionCleanup.listener)
+                cerebellum.off('voice:interrupt', ws._companionCleanup.listener)
               }
             }
           }).catch(() => { /* ignore */ })
@@ -896,6 +1475,126 @@ async function startServer(handleRequest) {
       return
     }
 
+    // ── Chat-only WebSocket connection ─────────────────────────────────
+    // Lightweight connection that only participates in chat:* protocol.
+    // Skips PTY attach, history capture, and raw terminal broadcast.
+    if (query.chatOnly === '1') {
+      // Remote host: proxy the chatOnly WebSocket to the remote server
+      if (query.host && typeof query.host === 'string') {
+        try {
+          const host = getHostById(query.host)
+          if (!host) {
+            ws.close(1008, `Host not found: ${query.host}`)
+            return
+          }
+          if (!isSelf(host.id)) {
+            console.log(`[Chat] Proxying chat-only WS for ${sessionName} to remote host ${host.id}`)
+            handleRemoteWorker(ws, sessionName, host.url, '&chatOnly=1')
+            return
+          }
+          // isSelf — fall through to local chatOnly handling
+        } catch (err) {
+          console.error(`[Chat] Error routing chatOnly to remote host:`, err)
+          ws.close(1011, 'Remote host routing error')
+          return
+        }
+      }
+
+      // Get or create minimal session state for chatClients
+      let sessionState = terminalSessions.get(sessionName)
+      const isStub = !sessionState
+      console.log(`[Chat] Chat-only client connected for ${sessionName} (${isStub ? 'new stub' : 'existing session, hasPTY=' + !!sessionState?.ptyProcess + ', chatClients=' + (sessionState?.chatClients?.size ?? 0)})`)
+      if (!sessionState) {
+        // No terminal session exists — create a stub for chat-only clients
+        sessionState = {
+          clients: new Set(),
+          chatClients: new Set(),
+          ptyProcess: null,
+          logStream: null,
+          loggingEnabled: false,
+          cleanupTimer: null,
+          terminalBuffer: null,
+          jsonlWatcher: null,
+          jsonlFileSize: 0,
+          jsonlFilePath: null,
+        }
+        terminalSessions.set(sessionName, sessionState)
+      }
+
+      // Initialize chatClients if missing (existing sessions before this change)
+      if (!sessionState.chatClients) {
+        sessionState.chatClients = new Set()
+      }
+
+      sessionState.chatClients.add(ws)
+
+      // Protocol-level heartbeat tracking
+      ws._isAlive = true
+      ws.on('pong', () => { ws._isAlive = true })
+
+      ws.on('message', async (data) => {
+        try {
+          const parsed = JSON.parse(data.toString())
+
+          // Heartbeat ping/pong for chatOnly connections
+          if (parsed.type === 'ping') {
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'pong' }))
+            return
+          }
+
+          if (parsed.type === 'chat:requestHistory') {
+            try {
+              const history = await getChatHistory(sessionName, parsed.agentId)
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'chat:history', data: history }))
+              }
+            } catch (err) {
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'chat:error', error: err.message }))
+              }
+            }
+            startJsonlWatcher(sessionName, sessionState, parsed.agentId)
+          } else if (parsed.type === 'chat:send') {
+            if (parsed.message) {
+              // Always use tmux send-keys -l with proper escaping and delay.
+              // Direct ptyProcess.write() bypasses tmux input handling and
+              // doesn't give Claude Code the 100ms gap it needs between text
+              // and Enter to process the input.
+              try {
+                const escaped = parsed.message.replace(/'/g, "'\\''")
+                execSync(`tmux send-keys -t "${sessionName}" -l '${escaped}'`, { timeout: 3000 })
+                // 100ms delay so Claude Code processes the literal text before Enter
+                await new Promise(r => setTimeout(r, 100))
+                execSync(`tmux send-keys -t "${sessionName}" Enter`, { timeout: 3000 })
+                if (ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: 'chat:sent' }))
+                }
+                // Burst-read JSONL to catch user message echo and early response
+                for (const delay of [500, 1500, 3000, 5000, 8000, 12000]) {
+                  setTimeout(() => broadcastJsonlUpdates(sessionName, sessionState), delay)
+                }
+              } catch (err) {
+                if (ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: 'chat:error', error: 'Failed to send: ' + err.message }))
+                }
+              }
+            }
+          }
+        } catch { /* not JSON, ignore */ }
+      })
+
+      ws.on('close', () => {
+        sessionState.chatClients?.delete(ws)
+        console.log(`[Chat] Chat-only client disconnected from ${sessionName}`)
+      })
+
+      ws.on('error', () => {
+        sessionState.chatClients?.delete(ws)
+      })
+
+      return // Skip all PTY/terminal setup below
+    }
+
     // Check if this is a remote host connection
     if (query.host && typeof query.host === 'string') {
       try {
@@ -907,11 +1606,22 @@ async function startServer(handleRequest) {
           return
         }
 
+        if (host.enabled === false) {
+          console.warn(`🌐 [REMOTE] Host disabled, attempting anyway: ${query.host} (${host.offlineReason || 'no reason'})`)
+        }
+
         // Use isSelf() to determine if this is a local or remote host
         // This is more reliable than checking host.type which may be undefined
         if (!isSelf(host.id)) {
+          // Forward original query params (cols, rows, socket) so remote PTY
+          // spawns with the correct terminal dimensions
+          const forwardParams = []
+          if (query.cols) forwardParams.push(`cols=${query.cols}`)
+          if (query.rows) forwardParams.push(`rows=${query.rows}`)
+          if (query.socket) forwardParams.push(`socket=${encodeURIComponent(query.socket)}`)
+          const extraParams = forwardParams.length > 0 ? `&${forwardParams.join('&')}` : ''
           console.log(`🌐 [REMOTE] Routing ${sessionName} to host ${host.id} (${host.url})`)
-          handleRemoteWorker(ws, sessionName, host.url)
+          handleRemoteWorker(ws, sessionName, host.url, extraParams)
           return
         }
         // If isSelf(host.id) is true, fall through to local tmux handling
@@ -922,21 +1632,17 @@ async function startServer(handleRequest) {
       }
     }
 
+    const socketPath = query.socket || undefined
+
     // Cloud-agent dispatch: if the requested session belongs to an agent with
     // deployment.type === 'cloud', proxy the WebSocket to the agent's container
     // via handleRemoteWorker. The container's in-process ai-maestro-agent server
     // speaks the same /term protocol the host server speaks (initial connected
     // handshake, raw PTY frames, JSON input messages), so the proxy is a plain
     // WS-to-WS pipe — no protocol bridging.
-    //
-    // Cross-host case is handled by the existing isSelf branch above: a cloud
-    // agent on a peer host first proxies host→host, then this branch fires on
-    // the agent's own host with localhost-relative routing.
     try {
       const { getAgent, getAgentByName } = await import('./lib/agent-registry.ts')
-      // sessionName may be either the agent's name (preferred — agentToSession
-      // returns name for cloud agents) or its UUID (older clients, or
-      // operator-typed URLs). Try ID first since it's the authoritative key.
+      // sessionName may be either the agent's name or its UUID. Try ID first.
       const cloudAgent = getAgent(sessionName) || getAgentByName(sessionName)
       if (cloudAgent?.deployment?.type === 'cloud') {
         const cloudWsUrl = cloudAgent.deployment.cloud?.websocketUrl
@@ -951,12 +1657,15 @@ async function startServer(handleRequest) {
           .replace(/\/term.*$/, '')
           .replace(/^ws:/, 'http:')
           .replace(/^wss:/, 'https:')
-        // The container's /term?name=... lookup uses AGENT_ID (= agent name),
-        // NOT the agent UUID. Always pass the canonical name so the container
-        // resolves correctly regardless of whether the inbound URL had name or UUID.
         const containerSessionName = cloudAgent.name || sessionName
+        // Forward terminal dimensions to cloud container
+        const cloudParams = []
+        if (query.cols) cloudParams.push(`cols=${query.cols}`)
+        if (query.rows) cloudParams.push(`rows=${query.rows}`)
+        if (query.socket) cloudParams.push(`socket=${encodeURIComponent(query.socket)}`)
+        const cloudExtraParams = cloudParams.length > 0 ? `&${cloudParams.join('&')}` : ''
         console.log(`☁️  [CLOUD] Routing ${sessionName} (resolved to ${containerSessionName}) to container at ${containerBaseUrl}`)
-        handleRemoteWorker(ws, containerSessionName, containerBaseUrl)
+        handleRemoteWorker(ws, containerSessionName, containerBaseUrl, cloudExtraParams)
         return
       }
     } catch (error) {
@@ -968,7 +1677,8 @@ async function startServer(handleRequest) {
     // Get or create session state (for traditional local tmux sessions)
     let sessionState = terminalSessions.get(sessionName)
 
-    if (!sessionState) {
+    // Also create PTY if sessionState exists but has no ptyProcess (chatOnly stub)
+    if (!sessionState || !sessionState.ptyProcess) {
       let ptyProcess
 
       // Spawn PTY with tmux attach, with retry logic for transient failures.
@@ -976,7 +1686,6 @@ async function startServer(handleRequest) {
       // tmux may still be detaching. Retrying after a short delay resolves this.
       const PTY_SPAWN_MAX_RETRIES = 3
       const PTY_SPAWN_RETRY_DELAY_MS = 500
-      const socketPath = query.socket || undefined
 
       for (let attempt = 1; attempt <= PTY_SPAWN_MAX_RETRIES; attempt++) {
         try {
@@ -1042,9 +1751,51 @@ async function startServer(handleRequest) {
         }
       }
 
-      // If another client created session state during retry, skip creation
-      if (sessionState) {
+      // If another client created session state during retry (with PTY), skip creation
+      if (sessionState && sessionState.ptyProcess) {
         // Fall through to add client to existing session
+      } else if (sessionState && !sessionState.ptyProcess && ptyProcess) {
+        // chatOnly stub exists — attach PTY and set up streaming/exit handlers
+        sessionState.ptyProcess = ptyProcess
+        sessionState.loggingEnabled = true
+        sessionState.terminalBuffer = getOrCreateBuffer(sessionName)
+        if (globalLoggingEnabled && !sessionState.logStream) {
+          const logFilePath = path.join(logsDir, `${sessionName}.txt`)
+          sessionState.logStream = fs.createWriteStream(logFilePath, { flags: 'a' })
+        }
+
+        ptyProcess.onData((data) => {
+          try {
+            const cleanedData = data.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+            const isStatusPattern =
+              /[✳·]\s*\w+ing[\.…]/.test(cleanedData) ||
+              cleanedData.includes('esc to interrupt') ||
+              cleanedData.includes('? for shortcuts') ||
+              /Tip:/.test(cleanedData) ||
+              /^[─>]+\s*$/.test(cleanedData.replace(/[\r\n]/g, '')) ||
+              /\[\d+\/\d+\]/.test(cleanedData) ||
+              /^\d{2}:\d{2}:\d{2}\s+\[\d+\/\d+\]/.test(cleanedData)
+            if (globalLoggingEnabled && sessionState.logStream && sessionState.loggingEnabled && !isStatusPattern) {
+              try { sessionState.logStream.write(data) } catch {}
+            }
+            const hasSubstantialContent = data.length >= 3 &&
+              !(data.startsWith('\x1b') && !/[\x20-\x7E]/.test(data))
+            if (hasSubstantialContent) trackSessionActivity(sessionName)
+            if (sessionState.terminalBuffer && hasSubstantialContent) sessionState.terminalBuffer.write(data)
+            sessionState.clients.forEach((client) => {
+              if (client.readyState === 1) {
+                try { client.send(data) } catch {}
+              }
+            })
+          } catch (error) {
+            console.error(`[PTY] Error in onData handler for ${sessionName}:`, error)
+          }
+        })
+
+        ptyProcess.onExit(({ exitCode, signal }) => {
+          console.log(`[PTY] Process exited for ${sessionName} (code: ${exitCode}, signal: ${signal})`)
+          cleanupSession(sessionName, sessionState, `pty_exit_${exitCode || signal}`, true)
+        })
       } else if (!ptyProcess) {
         // Should not happen, but guard against it
         ws.close(1011, 'PTY spawn failed unexpectedly')
@@ -1060,11 +1811,15 @@ async function startServer(handleRequest) {
 
       sessionState = {
         clients: new Set(),
+        chatClients: new Set(), // WebSocket clients subscribed to chat events
         ptyProcess,
         logStream,
         loggingEnabled: true, // Default to enabled (but only works if globalLoggingEnabled is true)
         cleanupTimer: null, // Timer for cleaning up PTY when no clients connected
-        terminalBuffer: getOrCreateBuffer(sessionName) // Cerebellum terminal buffer for voice subsystem
+        terminalBuffer: getOrCreateBuffer(sessionName), // Cerebellum terminal buffer for voice subsystem
+        jsonlWatcher: null, // fs.watchFile cleanup handle for JSONL file watching
+        jsonlFileSize: 0,   // Track file size for incremental reads
+        jsonlFilePath: null, // Path to the watched JSONL file
       }
       terminalSessions.set(sessionName, sessionState)
 
@@ -1106,6 +1861,24 @@ async function startServer(handleRequest) {
             trackSessionActivity(sessionName)
           }
 
+          // Extract activity signals for chat clients
+          if (sessionState.chatClients?.size > 0 && hasSubstantialContent) {
+            const activity = extractPtyActivity(cleanedData)
+            if (activity) {
+              const now = Date.now()
+              const lastBroadcast = sessionState._lastActivityBroadcast || 0
+              // Throttle: max once per 500ms unless the label changed
+              if (now - lastBroadcast > 500 || activity.label !== sessionState._lastActivityLabel) {
+                sessionState._lastActivityBroadcast = now
+                sessionState._lastActivityLabel = activity.label
+                const msg = JSON.stringify({ type: 'chat:activity', data: activity })
+                sessionState.chatClients.forEach(ws => {
+                  if (ws.readyState === 1) try { ws.send(msg) } catch {}
+                })
+              }
+            }
+          }
+
           // Feed data to cerebellum terminal buffer (for voice subsystem)
           if (sessionState.terminalBuffer && hasSubstantialContent) {
             sessionState.terminalBuffer.write(data)
@@ -1134,8 +1907,33 @@ async function startServer(handleRequest) {
       }
     }
 
-    // Add client to session
-    sessionState.clients.add(ws)
+    // Disable tmux mouse mode per-session so xterm.js handles mouse natively.
+    // Without this, ~/.tmux.conf "set -g mouse on" causes tmux to intercept
+    // click-drag (yellow copy-mode selection instead of browser clipboard) and
+    // wheel events (tmux copy-mode instead of app-native scrolling).
+    try {
+      const tmuxBase = socketPath ? `tmux -S "${socketPath}"` : 'tmux'
+      execSync(`${tmuxBase} set-option -t "${sessionName}" mouse off`, { timeout: 2000, stdio: 'pipe' })
+    } catch (e) {
+      console.warn(`[PTY] Failed to set mouse off for ${sessionName}:`, e.message)
+    }
+
+    // Capture FULL pane content (scrollback + visible area) with ANSI color codes.
+    // We send this as a single snapshot and intentionally DON'T add the client to the
+    // PTY broadcast set yet — the PTY's initial `tmux attach` redraw would duplicate
+    // the visible area. By delaying broadcast join, the redraw is discarded.
+    try {
+      const tmuxBase = socketPath ? `tmux -S "${socketPath}"` : 'tmux'
+      const paneContent = execSync(
+        `${tmuxBase} capture-pane -t "${sessionName}" -e -p -S -5000 2>/dev/null`,
+        { encoding: 'utf8', timeout: 3000 }
+      )
+      if (paneContent && paneContent.trim() && ws.readyState === 1) {
+        ws.send(paneContent.replace(/\n/g, '\r\n'))
+      }
+    } catch (e) {
+      // capture failed — client will get content once added to broadcast
+    }
 
     // Track connection as activity (so newly opened sessions show as active)
     trackSessionActivity(sessionName)
@@ -1148,46 +1946,30 @@ async function startServer(handleRequest) {
       sessionState.cleanupTimer = null
     }
 
-    // Send scrollback history to new clients - ASYNC to avoid blocking the event loop
-    // The client can start typing immediately; history loads in the background
-    setTimeout(async () => {
-      try {
-        const { getRuntime: getRt } = await import('./lib/agent-runtime.ts')
-        const runtime = getRt()
-
-        let historyContent = ''
-        try {
-          // Capture scrollback history (up to 2000 lines) WITHOUT escape sequences
-          // Reduced from 5000 to 2000 for faster loading
-          historyContent = await runtime.capturePane(sessionName, 2000)
-        } catch (historyError) {
-          console.error('Failed to capture history:', historyError)
-        }
-
-        if (ws.readyState === 1) {
-          if (historyContent) {
-            // Send with proper line endings
-            const formattedHistory = historyContent.replace(/\n/g, '\r\n')
-            ws.send(formattedHistory)
-          }
-          ws.send(JSON.stringify({ type: 'history-complete' }))
-        }
-      } catch (error) {
-        console.error('Error capturing terminal history:', error)
-        if (ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'history-complete' }))
-        }
+    // Add client to broadcast AFTER the PTY's initial redraw has passed (discarded).
+    // 150ms is enough for the tmux attach redraw to fire and be ignored.
+    // After this, the client receives all live PTY output going forward.
+    setTimeout(() => {
+      sessionState.clients.add(ws)
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'history-complete' }))
       }
-    }, 100)
+    }, 150)
 
     // Handle client input
-    ws.on('message', (data) => {
+    ws.on('message', async (data) => {
       try {
         const message = data.toString()
 
         // Check if it's a JSON message (for resize events, logging control, etc.)
         try {
           const parsed = JSON.parse(message)
+
+          // Heartbeat ping/pong — respond immediately to keep mobile connections alive
+          if (parsed.type === 'ping') {
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'pong' }))
+            return
+          }
 
           if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
             sessionState.ptyProcess.resize(parsed.cols, parsed.rows)
@@ -1199,12 +1981,59 @@ async function startServer(handleRequest) {
             console.log(`Logging ${parsed.enabled ? 'enabled' : 'disabled'} for session: ${sessionName}`)
             return
           }
+
+          // ── Chat protocol messages ────────────────────────────────
+          if (parsed.type === 'chat:subscribe') {
+            sessionState.chatClients.add(ws)
+            console.log(`[Chat] Client subscribed to chat for ${sessionName}`)
+            return
+          }
+
+          if (parsed.type === 'chat:requestHistory') {
+            try {
+              const history = await getChatHistory(sessionName, parsed.agentId)
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'chat:history', data: history }))
+              }
+            } catch (err) {
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'chat:error', error: err.message }))
+              }
+            }
+            // Start JSONL file watcher for this session if not already watching
+            startJsonlWatcher(sessionName, sessionState, parsed.agentId)
+            return
+          }
+
+          if (parsed.type === 'chat:send') {
+            if (parsed.message) {
+              try {
+                const escaped = parsed.message.replace(/'/g, "'\\''")
+                execSync(`tmux send-keys -t "${sessionName}" -l '${escaped}'`, { timeout: 3000 })
+                await new Promise(r => setTimeout(r, 100))
+                execSync(`tmux send-keys -t "${sessionName}" Enter`, { timeout: 3000 })
+                if (ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: 'chat:sent' }))
+                }
+                for (const delay of [500, 1500, 3000, 5000, 8000, 12000]) {
+                  setTimeout(() => broadcastJsonlUpdates(sessionName, sessionState), delay)
+                }
+              } catch (err) {
+                if (ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: 'chat:error', error: 'Failed to send: ' + err.message }))
+                }
+              }
+            }
+            return
+          }
         } catch {
           // Not JSON, treat as raw input
         }
 
         // Send input to PTY
-        sessionState.ptyProcess.write(message)
+        if (sessionState.ptyProcess) {
+          sessionState.ptyProcess.write(message)
+        }
       } catch (error) {
         console.error('Error processing message:', error)
       }
@@ -1228,8 +2057,37 @@ async function startServer(handleRequest) {
   server.keepAliveTimeout = 15 * 60 * 1000
   server.headersTimeout = 15 * 60 * 1000 + 1000
 
+  // ── Chat WebSocket heartbeat sweeper ────────────────────────────
+  // Every 30s, send a protocol-level ping to all chat clients.
+  // If a client missed the previous ping (didn't pong), it's dead — terminate it.
+  setInterval(() => {
+    terminalSessions.forEach((sessionState, sessionName) => {
+      sessionState.chatClients?.forEach(ws => {
+        if (ws._isAlive === false) {
+          console.log(`[Chat] Terminating zombie chat client for ${sessionName}`)
+          ws.terminate()
+          sessionState.chatClients.delete(ws)
+          return
+        }
+        ws._isAlive = false
+        ws.ping() // RFC 6455 protocol ping — browser auto-responds with pong
+      })
+    })
+  }, 30000)
+
   server.listen(port, hostname, async () => {
     console.log(`> Ready on http://${hostname}:${port}`)
+
+    // Kill orphaned __call tmux sessions from previous server crashes
+    try {
+      const tmuxOut = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'] })
+      for (const name of tmuxOut.trim().split('\n')) {
+        if (name && name.endsWith('__call')) {
+          try { execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'ignore', timeout: 5000 }) } catch { /* ignore */ }
+          console.log(`[CALL-SESSION] Cleaned up orphaned call session: ${name}`)
+        }
+      }
+    } catch { /* tmux not available or no sessions */ }
 
     // Run startup self-diagnostics (non-blocking)
     setTimeout(async () => {
@@ -1338,11 +2196,27 @@ async function startServer(handleRequest) {
 
     // Start periodic orphaned PTY cleanup to prevent leaks
     startOrphanedPtyCleanup()
+
+    // Start the agent schedule executor (checks due schedules every 60s)
+    setTimeout(async () => {
+      try {
+        const { startScheduler } = await import('./lib/schedule-executor.ts')
+        startScheduler()
+      } catch (error) {
+        console.error('[Scheduler] Failed to start schedule executor:', error.message)
+      }
+    }, 10000) // Wait 10 seconds for all services to be ready
   })
 
   // Graceful shutdown - kill PTYs FIRST before closing server
-  const gracefulShutdown = (signal) => {
+  const gracefulShutdown = async (signal) => {
     console.log(`[Server] Received ${signal}, shutting down gracefully...`)
+
+    // Stop the scheduler
+    try {
+      const { stopScheduler } = await import('./lib/schedule-executor.ts')
+      stopScheduler()
+    } catch { /* ignore */ }
 
     // Kill all PTY processes FIRST and synchronously
     const sessionCount = terminalSessions.size

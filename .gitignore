@@ -102,11 +102,6 @@ logs/
 docs/marketing/
 marketing/
 
-# AI team operator-private instructions (per-agent on-wake routines, mesh
-# UUIDs, host roles, standing authorities). Operator infra context — not
-# meant for the open-source repo; contents are loaded at runtime per agent.
-ai-team/
-
 # Planning files (temporary, not committed)
 task_plan.md
 findings.md
@@ -157,6 +152,12 @@ public/avatars/*_enhanced.png
 
 # Presentation (hedge fund deck, Remotion animations)
 presentation/
+docs/FORK-ANALYSIS.md
 
-# Incoming scratch (screenshots, drops — not part of repo)
+# Incoming scratch (screenshots, drops)
 incoming/
+
+# AI team operator-private instructions (per-agent on-wake routines, mesh
+# UUIDs, host roles, standing authorities). Operator infra context — not
+# meant for the open-source repo; contents are loaded at runtime per agent.
+ai-team/

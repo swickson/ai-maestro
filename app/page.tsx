@@ -21,7 +21,7 @@ import AgentPlayback from '@/components/AgentPlayback'
 import { useAgents } from '@/hooks/useAgents'
 import { TerminalProvider } from '@/contexts/TerminalContext'
 import { useToast } from '@/contexts/ToastContext'
-import { Terminal, Mail, User, GitBranch, MessageSquare, Share2, FileText, Moon, Power, Loader2, Brain, Plus, Search, Download, Play, ExternalLink } from 'lucide-react'
+import { Terminal, Mail, User, GitBranch, MessageSquare, Share2, FileText, Moon, Power, Loader2, Brain, Plus, Search, Download, Play, ExternalLink, PanelTop } from 'lucide-react'
 import { agentToSession, getAgentBaseUrl } from '@/lib/agent-utils'
 import type { Agent } from '@/types/agent'
 
@@ -82,6 +82,12 @@ const DocumentationPanel = dynamic(
   { ssr: false }
 )
 
+// Only shown on canvas tab
+const CanvasPanel = dynamic(
+  () => import('@/components/CanvasPanel'),
+  { ssr: false }
+)
+
 export default function DashboardPage() {
   const { addToast } = useToast()
   // Agent-centric: Primary hook is useAgents
@@ -111,7 +117,15 @@ export default function DashboardPage() {
     setLayoutOverride(next)
     localStorage.setItem('aimaestro-layout-mode', next)
   }
-  const [activeTab, setActiveTab] = useState<'terminal' | 'chat' | 'messages' | 'worktree' | 'graph' | 'memory' | 'docs' | 'search' | 'export' | 'playback'>('terminal')
+  const [activeTab, setActiveTab] = useState<'terminal' | 'chat' | 'messages' | 'worktree' | 'graph' | 'memory' | 'docs' | 'canvas' | 'search' | 'export' | 'playback'>(() => {
+    if (typeof window === 'undefined') return 'chat'
+    return (localStorage.getItem('aimaestro-active-tab') as any) || 'chat'
+  })
+  // Persist tab choice in localStorage
+  useEffect(() => {
+    localStorage.setItem('aimaestro-active-tab', activeTab)
+  }, [activeTab])
+
   const [unreadCount, setUnreadCount] = useState(0)
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [profileAgent, setProfileAgent] = useState<Agent | null>(null)
@@ -480,7 +494,7 @@ export default function DashboardPage() {
   }
 
   // Performs the actual wake with selected program
-  const handleWakeConfirm = async (program: string) => {
+  const handleWakeConfirm = async (program: string, options?: { permissionMode?: string }) => {
     if (!wakeDialogAgent) return
 
     const agent = wakeDialogAgent
@@ -491,10 +505,14 @@ export default function DashboardPage() {
 
     try {
       // Always call local server — the route proxies to remote hosts server-side
+      const body: Record<string, unknown> = { program, hostUrl: agent.hostUrl }
+      if (options?.permissionMode && options.permissionMode !== 'supervised') {
+        body.permissionMode = options.permissionMode
+      }
       const response = await fetch(`/api/agents/${agent.id}/wake`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ program, hostUrl: agent.hostUrl }),
+        body: JSON.stringify(body),
       })
 
       if (!response.ok) {
@@ -506,13 +524,12 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Failed to wake agent:', error)
       const errMsg = error instanceof Error ? error.message : 'Unknown error'
-      const isNetworkError = errMsg.includes('unreachable') || errMsg.includes('fetch') || errMsg.includes('network') || errMsg.includes('abort')
       addToast({
         type: 'error',
         title: 'Failed to wake agent',
-        message: isNetworkError && agent.hostUrl
+        message: agent.hostUrl
           ? `Host ${agent.hostUrl} may be unreachable: ${errMsg}`
-          : errMsg,
+          : `${errMsg}. Check your network connection and try again.`,
       })
     } finally {
       setWakingAgentId(null)
@@ -682,29 +699,48 @@ export default function DashboardPage() {
               </div>
             )}
 
-            {/* Truly offline agent (no session config, not standalone) - show profile prompt */}
-            {activeAgent && activeAgent.session?.status === 'offline' && !activeAgent.session?.standalone && !(activeAgent.sessions && activeAgent.sessions.length > 0) && (
-              <div className="flex-1 flex items-center justify-center text-gray-400">
-                <div className="text-center max-w-md">
-                  <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
-                    <User className="w-10 h-10 text-gray-500" />
+            {/* Standalone/offline fallbacks — only when the main renderer below won't handle this agent */}
+            {activeAgent && !selectableAgents.some(a => a.id === activeAgentId) && (
+              activeAgent.session?.standalone ? (
+                <div className="flex-1 flex items-center justify-center text-gray-400">
+                  <div className="text-center max-w-md">
+                    <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-violet-900/30 flex items-center justify-center">
+                      <Terminal className="w-10 h-10 text-violet-400" />
+                    </div>
+                    <p className="text-xl mb-2 text-gray-300">{activeAgent.label || activeAgent.name || activeAgent.alias}</p>
+                    <p className="text-sm mb-2 text-gray-500">Standalone Agent</p>
+                    <p className="text-xs text-gray-600">This agent is running outside tmux. No terminal view available.</p>
+                    <button
+                      onClick={() => handleShowAgentProfile(activeAgent)}
+                      className="mt-4 px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-all"
+                    >
+                      View Profile
+                    </button>
                   </div>
-                  <p className="text-xl mb-2 text-gray-300">{activeAgent.label || activeAgent.name || activeAgent.alias}</p>
-                  <p className="text-sm mb-4 text-gray-500">This agent is offline</p>
-                  <button
-                    onClick={() => handleStartSession(activeAgent)}
-                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-all"
-                  >
-                    Start Session
-                  </button>
-                  <button
-                    onClick={() => handleShowAgentProfile(activeAgent)}
-                    className="ml-3 px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-all"
-                  >
-                    View Profile
-                  </button>
                 </div>
-              </div>
+              ) : activeAgent.session?.status === 'offline' ? (
+                <div className="flex-1 flex items-center justify-center text-gray-400">
+                  <div className="text-center max-w-md">
+                    <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
+                      <User className="w-10 h-10 text-gray-500" />
+                    </div>
+                    <p className="text-xl mb-2 text-gray-300">{activeAgent.label || activeAgent.name || activeAgent.alias}</p>
+                    <p className="text-sm mb-4 text-gray-500">This agent is offline</p>
+                    <button
+                      onClick={() => handleStartSession(activeAgent)}
+                      className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-all"
+                    >
+                      Start Session
+                    </button>
+                    <button
+                      onClick={() => handleShowAgentProfile(activeAgent)}
+                      className="ml-3 px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-all"
+                    >
+                      View Profile
+                    </button>
+                  </div>
+                </div>
+              ) : null
             )}
 
             {/* Only render the active agent - no need to mount all 40+ agents */}
@@ -724,17 +760,6 @@ export default function DashboardPage() {
                   {/* Tab Navigation - Responsive with flex-wrap */}
                   <div className="flex flex-wrap border-b border-gray-800 bg-gray-900 flex-shrink-0">
                     <button
-                      onClick={() => setActiveTab('terminal')}
-                      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-all duration-200 ${
-                        activeTab === 'terminal'
-                          ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800/50'
-                          : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/30'
-                      }`}
-                    >
-                      <Terminal className="w-4 h-4" />
-                      Terminal
-                    </button>
-                    <button
                       onClick={() => setActiveTab('chat')}
                       className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-all duration-200 ${
                         activeTab === 'chat'
@@ -744,6 +769,17 @@ export default function DashboardPage() {
                     >
                       <MessageSquare className="w-4 h-4" />
                       Chat
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('terminal')}
+                      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-all duration-200 ${
+                        activeTab === 'terminal'
+                          ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800/50'
+                          : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/30'
+                      }`}
+                    >
+                      <Terminal className="w-4 h-4" />
+                      Terminal
                     </button>
                     <button
                       onClick={() => setActiveTab('messages')}
@@ -804,6 +840,17 @@ export default function DashboardPage() {
                     >
                       <FileText className="w-4 h-4" />
                       Docs
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('canvas')}
+                      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-all duration-200 ${
+                        activeTab === 'canvas'
+                          ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800/50'
+                          : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/30'
+                      }`}
+                    >
+                      <PanelTop className="w-4 h-4" />
+                      Canvas
                     </button>
                     <button
                       onClick={() => setActiveTab('search')}
@@ -1002,6 +1049,12 @@ export default function DashboardPage() {
                         hostUrl={getAgentBaseUrl(agent)}
                         isActive={true}
                       />
+                    ) : activeTab === 'canvas' ? (
+                      <CanvasPanel
+                        agentId={agent.id}
+                        hostUrl={getAgentBaseUrl(agent)}
+                        isActive={true}
+                      />
                     ) : activeTab === 'search' ? (
                       <div className="flex-1 overflow-auto p-4">
                         <AgentSearch
@@ -1100,6 +1153,7 @@ export default function DashboardPage() {
           onConfirm={handleWakeConfirm}
           agentName={wakeDialogAgent?.name || wakeDialogAgent?.id || ''}
           agentAlias={wakeDialogAgent?.alias}
+          defaultPermissionMode={(wakeDialogAgent as any)?.permissionMode}
         />
 
         {/* Help Panel */}

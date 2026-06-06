@@ -5,11 +5,6 @@
  * existing cloud agent while preserving all persisted config (programArgs,
  * model, mounts, hooks, label, avatar, working directory, tags, etc.).
  *
- * Replaces the prior 2-step "delete + manually-construct create body" dance,
- * which silently dropped fields the operator forgot to forward — programArgs
- * being the canonical case, surfaced 2026-04-28 on Mason/Optic/Hardin recreates
- * (kanban 5e4ebdd5).
- *
  * Thin wrapper — business logic in services/agents-docker-service.ts.
  */
 

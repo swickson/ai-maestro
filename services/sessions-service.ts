@@ -27,13 +27,13 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import type { Session } from '@/types/session'
-import { getAgent, getAgentBySession, getAgentByName, createAgent, updateAgent, deleteAgentBySession, renameAgentSession } from '@/lib/agent-registry'
+import { getAgent, getAgentBySession, getAgentByName, createAgent, deleteAgentBySession, renameAgentSession } from '@/lib/agent-registry'
 import { loadAgents } from '@/lib/agent-registry'
-import { getHosts, getSelfHost, getSelfHostId, isSelf, getHostById } from '@/lib/hosts-config'
+import { getHosts, getSelfHost, isSelf, getHostById } from '@/lib/hosts-config'
 import { persistSession, loadPersistedSessions, unpersistSession } from '@/lib/session-persistence'
-import { parseNameForDisplay } from '@/types/agent'
+import { parseNameForDisplay, isCallSession } from '@/types/agent'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
-import { sessionActivity, agentActivity, broadcastStatusUpdate } from '@/services/shared-state'
+import { sessionActivity, agentActivity, terminalSessions, broadcastStatusUpdate, broadcastChatEvent } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
 import crypto from 'crypto'
 import { type ServiceResult, missingField, notFound, alreadyExists, invalidField, operationFailed, serviceError } from '@/services/service-errors'
@@ -198,6 +198,9 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
     const sessions: Session[] = []
 
     for (const disc of discovered) {
+      // Skip companion call forks — they are temporary and should not appear in the dashboard
+      if (isCallSession(disc.name)) continue
+
       const activityTimestamp = sessionActivity.get(disc.name)
       let lastActivity: string
       let status: 'active' | 'idle' | 'disconnected'
@@ -210,7 +213,16 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
         status = 'disconnected'
       }
 
-      const agent = getAgentBySession(disc.name)
+      let agent = getAgentBySession(disc.name)
+
+      // Fallback: session name might be UUID@host (from legacy bug where agentId was used as session name)
+      if (!agent) {
+        const uuidMatch = disc.name.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:@|$)/)
+        if (uuidMatch) {
+          agent = getAgent(uuidMatch[1])
+        }
+      }
+
       // Prefer registry workingDirectory over tmux-derived (tmux reports $HOME if tilde path failed)
       const agentWorkingDir = agent?.workingDirectory || agent?.sessions?.[0]?.workingDirectory
 
@@ -302,9 +314,7 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
       console.error('Error discovering standalone agents:', error)
     }
 
-    // Discover Docker container agents (fallback for containers without a fresh
-    // heartbeat — e.g., supervisor wedged or pre-heartbeat image). Skips by name
-    // when the heartbeat block has already populated the session.
+    // Discover Docker container agents (fallback for containers without a fresh heartbeat)
     try {
       const { stdout: dockerOutput } = await execAsync(
         "docker ps --filter 'name=aim-' --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || echo ''"
@@ -556,13 +566,38 @@ export function broadcastActivityUpdate(
   status: string,
   hookStatus?: string,
   notificationType?: string,
-  agentId?: string
+  agentId?: string,
+  hookState?: any
 ): ServiceResult<{ success: boolean }> {
   if (!sessionName && !agentId) {
     return missingField('sessionName')
   }
 
   broadcastStatusUpdate(sessionName, status, hookStatus, notificationType, agentId)
+
+  // Push hookState to chat-subscribed WebSocket clients in real-time
+  if (hookState) {
+    let delivered = false
+    // Try the provided sessionName first
+    if (sessionName) {
+      const session = terminalSessions.get(sessionName)
+      const chatClients = (session as any)?.chatClients as Set<import('ws').WebSocket> | undefined
+      if (chatClients && chatClients.size > 0) {
+        broadcastChatEvent(sessionName, 'chat:hookState', { data: hookState })
+        delivered = true
+      }
+    }
+    // Fallback: if agentId is provided and sessionName didn't deliver,
+    // resolve the agent's name and try that as the session key
+    if (!delivered && agentId) {
+      const agent = getAgent(agentId)
+      const resolvedName = agent?.name
+      if (resolvedName && resolvedName !== sessionName) {
+        broadcastChatEvent(resolvedName, 'chat:hookState', { data: hookState })
+      }
+    }
+  }
+
   return { data: { success: true }, status: 200 }
 }
 
@@ -633,8 +668,9 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
   // Local session creation
   const runtime = getRuntime()
   const normalizedName = name.toLowerCase()
-  const registeredAgent = agentId ? getAgent(agentId) : null
-  const actualSessionName = registeredAgent?.name || normalizedName
+  // Always use the friendly agent name for the tmux session (never UUID)
+  // agentId is only used for linking to an existing agent, not naming
+  const actualSessionName = normalizedName
 
   const sessionExists = await runtime.sessionExists(actualSessionName)
   if (sessionExists) {
@@ -649,14 +685,14 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
   const cwd = resolvedDir || process.cwd()
   await runtime.createSession(actualSessionName, cwd)
 
-  // Register agent (reuse the one we looked up by agentId, or find by name)
+  // Register agent
   const agentName = normalizedName
-  let existingAgent = registeredAgent || getAgentByName(agentName)
+  let registeredAgent = getAgentByName(agentName)
 
-  if (!existingAgent) {
+  if (!registeredAgent) {
     try {
       const { tags } = parseNameForDisplay(agentName)
-      existingAgent = createAgent({
+      registeredAgent = createAgent({
         name: agentName,
         label,
         avatar,
@@ -668,32 +704,24 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
         workingDirectory: cwd,
         programArgs: programArgs || '',
       })
-      console.log(`[Sessions] Registered new agent: ${agentName} (${existingAgent.id})`)
+      console.log(`[Sessions] Registered new agent: ${agentName} (${registeredAgent.id})`)
     } catch (createError) {
       console.warn(`[Sessions] Could not register agent ${agentName}:`, createError)
-    }
-  } else if (workingDirectory && workingDirectory !== existingAgent.workingDirectory) {
-    // Agent already exists by name — update workingDirectory if explicitly provided
-    try {
-      updateAgent(existingAgent.id, { workingDirectory })
-      console.log(`[Sessions] Updated workingDirectory for existing agent ${agentName}`)
-    } catch (updateError) {
-      console.warn(`[Sessions] Could not update workingDirectory for ${agentName}:`, updateError)
     }
   }
 
   // Persist session metadata (legacy)
   persistSession({
-    id: actualSessionName,
-    name: actualSessionName,
+    id: normalizedName,
+    name: normalizedName,
     workingDirectory: cwd,
     createdAt: new Date().toISOString(),
     ...(agentId && { agentId }),
-    ...(existingAgent && { agentId: existingAgent.id })
+    ...(registeredAgent && { agentId: registeredAgent.id })
   })
 
   // Initialize AMP
-  const registeredAgentId = existingAgent?.id
+  const registeredAgentId = registeredAgent?.id
   try {
     await initAgentAMPHome(agentName, registeredAgentId)
     const ampDir = getAgentAMPDir(agentName, registeredAgentId)
@@ -712,15 +740,15 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     console.warn(`[Sessions] Could not set up AMP for ${agentName}:`, ampError)
   }
 
-  // Launch program. Fall back to existingAgent.program BEFORE the
+  // Launch program. Fall back to registeredAgent.program BEFORE the
   // 'claude-code' literal so a wake-path that doesn't forward the program
   // field (UI-less reattach, scripted wake) picks up the registry's
   // current program value. Without this, an antigravity agent woken via
   // a no-program POST falls through to 'claude-code' and the dispatch
-  // launches `claude` instead of `agy`. agents-core-service.ts:1710 already
-  // does this for its wake path; mirroring here closes PR-3. Banked
-  // empirical: LucIA (dev-ziggy-fullstack, Milo) 2026-05-22.
-  const selectedProgram = (program || existingAgent?.program || 'claude-code').toLowerCase()
+  // launches `claude` instead of `agy`. agents-core-service.ts wake path
+  // already does this; mirroring here closes PR-3. Banked empirical:
+  // LucIA (dev-ziggy-fullstack, Milo) 2026-05-22.
+  const selectedProgram = (program || registeredAgent?.program || 'claude-code').toLowerCase()
   if (selectedProgram !== 'none' && selectedProgram !== 'terminal') {
     let startCommand = ''
     if (selectedProgram.includes('claude')) startCommand = 'claude'
@@ -733,7 +761,7 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     else if (selectedProgram.includes('openclaw')) startCommand = 'openclaw'
     else startCommand = 'claude'
 
-    const effectiveArgs = programArgs || existingAgent?.programArgs
+    const effectiveArgs = programArgs || registeredAgent?.programArgs
     if (effectiveArgs && typeof effectiveArgs === 'string') {
       const sanitized = effectiveArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
       if (sanitized) startCommand = `${startCommand} ${sanitized}`
@@ -749,7 +777,7 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
     }
   }
 
-  return { data: { success: true, name: actualSessionName, agentId: existingAgent?.id }, status: 200 }
+  return { data: { success: true, name: actualSessionName, agentId: registeredAgent?.id }, status: 200 }
 }
 
 /**

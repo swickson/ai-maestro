@@ -32,5 +32,4 @@ fi
 
 # Step 4: Start the actual server
 echo "[AI Maestro] Starting server..."
-export NODE_ENV=production
 exec ./node_modules/.bin/tsx server.mjs
