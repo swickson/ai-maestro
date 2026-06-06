@@ -33,7 +33,7 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
 
     const ext = await pipeline('feature-extraction', MODEL, {
       dtype: 'q8',  // Quantized for speed (was: quantized: true)
-      device: 'auto',  // Let it choose best available (CPU in Node.js)
+      device: 'cpu',  // Force CPU - 'auto' tries CUDA first which fails on no-GPU servers
       progress_callback: (progress: any) => {
         if (progress.status === 'progress' && progress.progress) {
           console.log(`[Embeddings] Loading... ${Math.round(progress.progress)}%`);

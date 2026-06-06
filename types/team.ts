@@ -34,7 +34,7 @@ export interface Team {
 }
 
 export interface TeamsFile {
-  version: 1
+  version: 1 | 2
   teams: Team[]
 }
 

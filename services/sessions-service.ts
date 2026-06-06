@@ -223,10 +223,13 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
         }
       }
 
+      // Prefer registry workingDirectory over tmux-derived (tmux reports $HOME if tilde path failed)
+      const agentWorkingDir = agent?.workingDirectory || agent?.sessions?.[0]?.workingDirectory
+
       sessions.push({
         id: disc.name,
         name: disc.name,
-        workingDirectory: disc.workingDirectory,
+        workingDirectory: agentWorkingDir || disc.workingDirectory,
         status,
         createdAt: disc.createdAt,
         lastActivity,
@@ -275,18 +278,17 @@ async function fetchLocalSessions(hostId: string): Promise<Session[]> {
       console.error('Error discovering cloud agents:', error)
     }
 
-    // Discover standalone agents (registered with heartbeat, no tmux session, no session history)
-    // Agents with session history (e.g. hibernated agents) are NOT standalone.
-    // This block runs BEFORE Docker so heartbeat-enriched entries (with agentId,
-    // standalone flag, real workingDirectory) win the name-uniqueness race.
+    // Discover heartbeat-registered agents (no tmux session). Must run BEFORE
+    // the Docker-discovery block: a cloud agent's container appears in `docker ps`
+    // AND has a fresh heartbeat. If Docker discovery wins the name-uniqueness race,
+    // the heartbeat block skips at the sessions.find() guard and the session
+    // entry is left without status=active / agentId / standalone, so the UI
+    // renders the cloud agent as offline despite a healthy heartbeat.
     try {
       const allAgents = loadAgents()
       for (const agent of allAgents) {
         const agentName = agent.name || agent.alias
         if (!agentName || sessions.find(s => s.name === agentName)) continue
-        if (agent.deployment?.type === 'cloud') continue
-        // Skip agents with tmux session history — they are managed (hibernated), not standalone
-        if ((agent.sessions || []).length > 0) continue
 
         const heartbeatTs = agentActivity.get(agent.id)
         if (!heartbeatTs) continue
