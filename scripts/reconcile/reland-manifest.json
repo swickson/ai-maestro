@@ -16,7 +16,8 @@
   },
   "reviewFlaggedAdoptUpstream": [
     "components/team-meeting/MeetingChatPanel.tsx",
-    "components/team-meeting/MeetingRoom.tsx"
+    "components/team-meeting/MeetingRoom.tsx",
+    "server.mjs"
   ],
   "keepOurs": [
     ".gitmodules",

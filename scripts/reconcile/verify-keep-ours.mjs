@@ -34,11 +34,15 @@ const same = (a, b, f) => { try { execSync(`git diff --quiet ${a} ${b} -- "${f}"
 const fail = [];
 const note = (m) => console.log(m);
 
-// --- 1a. Pin upstream base via merge-base (self-correcting vs a moving origin/main) ---
-let BASE;
-try { BASE = sh(`git merge-base ${RECONCILE_BRANCH} origin/main`); }
-catch { BASE = sh(`git merge-base ${RECONCILE_BRANCH} origin/HEAD`); }
-if (BASE !== EXPECT_BASE) fail.push(`upstream merge-base ${BASE} != pinned ${EXPECT_BASE} (wrong upstream commit — partition drift)`);
+// --- 1a. Host-agnostic upstream base (Watson, Holmes review): the pinned SHA IS the base.
+// Do NOT derive via `git merge-base <branch> origin/main` — that throws on any checkout where
+// origin != the 23blocks upstream or the reconcile branch is remote-only (Holmes, swickson CI),
+// disabling the gate exactly where it's the permanent guard. --is-ancestor still catches a wrong base. ---
+const BASE = EXPECT_BASE;
+try { execSync(`git cat-file -e ${EXPECT_BASE}`, { env: GENV }); }
+catch { fail.push(`pinned upstream base ${EXPECT_BASE} not present in this repo (fetch the 23blocks upstream commit)`); }
+try { execSync(`git merge-base --is-ancestor ${EXPECT_BASE} ${REF}`, { env: GENV }); }
+catch { fail.push(`pinned upstream base ${EXPECT_BASE} is not an ancestor of ${REF} (wrong base or wrong branch)`); }
 
 // --- 1b. Re-derive the contested set INDEPENDENTLY of the manifest ---
 const contested = sh(`git diff --name-only ${OURS} ${BASE}`).split('\n').filter(Boolean);

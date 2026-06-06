@@ -32,17 +32,14 @@ const RECONCILE_TIP = 'b11deeb';
 const GENV = { ...process.env, GIT_LITERAL_PATHSPECS: '1' };
 const sh = (c) => execSync(c, { encoding: 'utf8', env: GENV }).trim();
 
-// --- Pin the upstream base via merge-base (self-correcting regardless of how far origin/main moved) ---
-let BASE;
-try {
-  BASE = sh(`git merge-base ${RECONCILE_BRANCH} origin/main`);
-} catch {
-  BASE = sh(`git merge-base ${RECONCILE_BRANCH} origin/HEAD`);
-}
-if (BASE !== EXPECT_BASE) {
-  console.error(`FATAL: upstream merge-base ${BASE} != pinned ${EXPECT_BASE}. Wrong upstream commit — partition would drift.`);
-  process.exit(1);
-}
+// --- Host-agnostic upstream base: the pinned SHA IS the base. Do NOT derive via
+// `git merge-base <branch> origin/main` — that throws wherever origin != 23blocks upstream
+// or the reconcile branch is remote-only (Holmes, swickson CI). --is-ancestor still validates. ---
+const BASE = EXPECT_BASE;
+try { execSync(`git cat-file -e ${EXPECT_BASE}`, { env: GENV }); }
+catch { console.error(`FATAL: pinned upstream base ${EXPECT_BASE} not present (fetch the 23blocks upstream commit).`); process.exit(1); }
+try { execSync(`git merge-base --is-ancestor ${EXPECT_BASE} ${RECONCILE_TIP}`, { env: GENV }); }
+catch { console.error(`FATAL: pinned base ${EXPECT_BASE} is not an ancestor of ${RECONCILE_TIP}.`); process.exit(1); }
 
 // Verify the reconcile tip we classify against matches the canonical remote tip (not the stale local branch).
 const tipSha = sh(`git rev-parse ${RECONCILE_TIP}`);
@@ -129,6 +126,16 @@ const FORCE_HAND_MERGE = [
 const REVIEW_FLAGGED_ADOPT_UPSTREAM = [
   'components/team-meeting/MeetingChatPanel.tsx', // §3.2 ESCALATE — taking theirs = Shane decision-2 (adopt rendering); routes/plumbing stay ours
   'components/team-meeting/MeetingRoom.tsx',      // §3.2 ESCALATE — same
+  // server.mjs (Watson, Holmes review): adoptUpstream is a 966+/92- WHOLESALE swap of the most
+  // constraint-laden host file (WS upgrade handler + session pooling per CLAUDE.md). Upstream's
+  // terminal-history path differs architecturally from ours (inline `capture-pane -e` 5000-line +
+  // delayed-broadcast-join redraw-dedup vs ours' runtime.capturePane() 2000-line no-escape) and
+  // pairs with a KEEP_OURS client (TerminalView/useTerminal). The gate asserts ==upstream but
+  // CANNOT judge whether adoptUpstream was the right CALL. NOT a dropped-fix (the single
+  // history-complete emit is unconditional-after-150ms, covers both ours' try+catch paths), but
+  // the server↔client terminal contract is HARD-GATED on Watson's HOST local-tmux canary
+  // (scrollback + Ctrl+L discriminator) — cloud-Hale canary does not exercise the host server.mjs path.
+  'server.mjs',
 ];
 
 const forceKeepOurs = new Set(FORCE_KEEP_OURS);
