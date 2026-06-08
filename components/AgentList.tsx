@@ -1560,6 +1560,7 @@ export default function AgentList({
         onConfirm={handleWakeConfirm}
         agentName={wakeDialogAgent?.name || wakeDialogAgent?.id || ''}
         agentAlias={wakeDialogAgent?.alias}
+        agentProgram={(wakeDialogAgent as any)?.program}
         defaultPermissionMode={(wakeDialogAgent as any)?.permissionMode}
       />
     </div>

@@ -397,6 +397,7 @@ export default function MeetingSidebar({
         onConfirm={handleWakeConfirm}
         agentName={wakeDialogAgent?.name || wakeDialogAgent?.id || ''}
         agentAlias={wakeDialogAgent?.label || wakeDialogAgent?.alias}
+        agentProgram={(wakeDialogAgent as any)?.program}
         defaultPermissionMode={(wakeDialogAgent as any)?.permissionMode}
       />
     </div>
