@@ -36,7 +36,7 @@ RUN sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
     && locale-gen
 
 # Install Node.js 20.x
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
@@ -104,16 +104,28 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install && npm cache clean --force
 
-# Install agent runtime CLIs globally. The image is multi-runtime so the
-# same `ai-maestro-agent:latest` can host Claude, Gemini, or Codex agents
-# — which one launches at first start is determined by AI_TOOL (built from
-# body.program in createDockerAgent). Without all three baked in, agents
-# whose profile.runtime is anything other than `claude` silently fall back
-# to a bare shell because tmux send-keys "${AI_TOOL}" hits command-not-found.
+# User-owned npm global prefix so the runtime `claude` user can self-update the
+# agent CLIs (npm i -g ...@latest) WITHOUT root. Set NPM_CONFIG_PREFIX LATE —
+# after the local `npm install` above and the earlier `npm install -g yarn` —
+# so only the agent CLIs below are redirected into the user prefix. The runtime
+# PATH that reaches AI_TOOL gets /home/claude/.npm-global/bin via CONTAINER_PATH
+# in services/agents-docker-service.ts (PR #175); they ship in lockstep.
+ENV NPM_CONFIG_PREFIX=/home/claude/.npm-global
+RUN mkdir -p /home/claude/.npm-global/bin && chown -R claude:claude /home/claude/.npm-global
+
+# Install agent runtime CLIs globally AS THE claude USER (into the user prefix
+# above), so claude can later self-update them. The image is multi-runtime so
+# the same `ai-maestro-agent` image can host Claude, Gemini, or Codex agents —
+# which one launches at first start is determined by AI_TOOL (built from
+# body.program in createDockerAgent). Without all three baked in, agents whose
+# profile.runtime is anything other than `claude` silently fall back to a bare
+# shell because tmux send-keys "${AI_TOOL}" hits command-not-found.
+USER claude
 RUN npm install -g \
     @anthropic-ai/claude-code \
     @google/gemini-cli \
     @openai/codex
+USER root
 
 # Copy agent server code
 COPY agent-server.js ./
@@ -189,7 +201,7 @@ ENV SHELL=/bin/zsh
 # inside the container without the runtime -e PATH= override that
 # createDockerAgent injects (v0.30.19). The runtime override still wins
 # for operator-customized PATHs; this is the long-term default.
-ENV PATH=/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/home/claude/.npm-global/bin:/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # CI=true — preempts the watch-mode trap class. Cloud-agent containers run
 # automated agent code (vitest, nodemon, webpack-dev-server, vite preview,
