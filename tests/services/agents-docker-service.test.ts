@@ -1785,7 +1785,7 @@ describe('buildAmpCommonEnv', () => {
       AMP_AGENT_ID: uuid,
       AMP_DIR: `/home/claude/.agent-messaging/agents/${uuid}`,
       AMP_MAESTRO_URL: hostUrl,
-      PATH: '/home/claude/.local/bin:/home/claude/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      PATH: '/home/claude/.local/bin:/home/claude/.local/share/aimaestro/cli:/home/claude/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',
     })
   })
