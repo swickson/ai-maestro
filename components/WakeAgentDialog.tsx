@@ -13,6 +13,7 @@ interface WakeAgentDialogProps {
   onConfirm: (program: string, options?: { permissionMode?: AgentPermissionMode }) => void
   agentName: string
   agentAlias?: string
+  agentProgram?: string
   defaultPermissionMode?: AgentPermissionMode
 }
 
@@ -46,6 +47,13 @@ const CLI_OPTIONS = [
     command: 'cursor'
   },
   {
+    id: 'antigravity',
+    name: 'Antigravity CLI',
+    description: 'Google\'s Antigravity AI CLI',
+    icon: Sparkles,
+    command: 'agy'
+  },
+  {
     id: 'terminal',
     name: 'Terminal Only',
     description: 'Plain shell without AI assistant',
@@ -54,15 +62,27 @@ const CLI_OPTIONS = [
   }
 ]
 
+// Map an agent's stored program identifier (e.g. 'antigravity', 'claude-code')
+// to the matching CLI_OPTIONS id so the dialog pre-selects what the agent
+// actually runs. Substring match mirrors the backend dispatch
+// (lib/agent-paths.ts, sessions-service.ts). Falls back to 'claude'.
+export function resolveProgramId(program?: string): string {
+  if (!program) return 'claude'
+  const p = program.toLowerCase()
+  const match = CLI_OPTIONS.find(o => p.includes(o.id) || p === o.command)
+  return match?.id || 'claude'
+}
+
 export default function WakeAgentDialog({
   isOpen,
   onClose,
   onConfirm,
   agentName,
   agentAlias,
+  agentProgram,
   defaultPermissionMode
 }: WakeAgentDialogProps) {
-  const [selectedProgram, setSelectedProgram] = useState<string>('claude')
+  const [selectedProgram, setSelectedProgram] = useState<string>(resolveProgramId(agentProgram))
   const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>(defaultPermissionMode || 'supervised')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [isWaking, setIsWaking] = useState(false)
@@ -75,15 +95,16 @@ export default function WakeAgentDialog({
     setMounted(true)
   }, [])
 
-  // Reset state when dialog closes or opens
+  // Reset state when dialog closes or opens. On open, pre-select the agent's
+  // stored program so e.g. an Antigravity agent defaults to Antigravity, not Claude.
   useEffect(() => {
     if (!isOpen) {
       setIsWaking(false)
-      setSelectedProgram('claude')
-      setPermissionMode(defaultPermissionMode || 'supervised')
       setShowAdvanced(false)
     }
-  }, [isOpen, defaultPermissionMode])
+    setSelectedProgram(resolveProgramId(agentProgram))
+    setPermissionMode(defaultPermissionMode || 'supervised')
+  }, [isOpen, defaultPermissionMode, agentProgram])
 
   // Reset permission mode when switching away from Claude Code
   const handleProgramChange = (program: string) => {
