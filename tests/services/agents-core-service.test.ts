@@ -144,6 +144,7 @@ import {
   initializeStartup,
   getStartupInfo,
   proxyHealthCheck,
+  resolveStartCommand,
 } from '@/services/agents-core-service'
 
 // ============================================================================
@@ -1156,5 +1157,36 @@ describe('proxyHealthCheck', () => {
     const result = await proxyHealthCheck(null as any)
 
     expect(result.status).toBe(400)
+  })
+})
+
+// ============================================================================
+// resolveStartCommand — host-wake program→binary dispatch
+// Regression guard: the 23blocks reland silently reverted this resolver,
+// dropping the antigravity→agy branch (PR #149) so program=antigravity
+// agents woke as `claude`. A revert of this branch must fail here loudly.
+// ============================================================================
+
+describe('resolveStartCommand', () => {
+  it('maps antigravity to the agy binary (not claude)', () => {
+    expect(resolveStartCommand('antigravity')).toBe('agy')
+  })
+
+  it('does not let antigravity fall through to the claude default', () => {
+    expect(resolveStartCommand('antigravity')).not.toBe('claude')
+  })
+
+  it('maps the core programs to their binaries', () => {
+    expect(resolveStartCommand('claude')).toBe('claude')
+    expect(resolveStartCommand('claude-code')).toBe('claude')
+    expect(resolveStartCommand('codex')).toBe('codex')
+    expect(resolveStartCommand('aider')).toBe('aider')
+    expect(resolveStartCommand('cursor')).toBe('cursor')
+    expect(resolveStartCommand('gemini')).toBe('gemini')
+    expect(resolveStartCommand('opencode')).toBe('opencode')
+  })
+
+  it('defaults unknown programs to claude', () => {
+    expect(resolveStartCommand('something-else')).toBe('claude')
   })
 })

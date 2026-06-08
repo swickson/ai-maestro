@@ -257,7 +257,7 @@ function sanitizeArgs(args: string): string {
 }
 
 /** Resolve program name to CLI command */
-function resolveStartCommand(program: string): string {
+export function resolveStartCommand(program: string): string {
   if (program.includes('claude') || program.includes('claude code')) {
     return 'claude'
   } else if (program.includes('codex')) {
@@ -266,6 +266,12 @@ function resolveStartCommand(program: string): string {
     return 'aider'
   } else if (program.includes('cursor')) {
     return 'cursor'
+  } else if (program.includes('antigravity')) {
+    // Antigravity CLI binary is `agy` (not `antigravity`). Checked before
+    // gemini — agy stores under ~/.gemini/antigravity-cli/, so guard against
+    // any future label nesting. Restores PR #149; reverted by the 23blocks
+    // reland (sessions-service kept it, this resolver — the host wake path — lost it).
+    return 'agy'
   } else if (program.includes('gemini')) {
     return 'gemini'
   } else if (program.includes('opencode')) {
