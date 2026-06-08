@@ -38,15 +38,19 @@ async function createAnthropicClient(): Promise<AnthropicClient | null> {
       return null
     }
 
-    // Use require to avoid webpack static analysis
-    // This allows the module to be optional
-    const moduleName = '@anthropic-ai/sdk'
-    // eslint-disable-next-line
-    const Anthropic = require(moduleName).default
+    // Dynamic import — works in both Next.js webpack and tsx (ESM) contexts.
+    // The host-wake/headless/dev paths run via `tsx server.mjs` where bare
+    // require() is undefined, so the require() form silently disabled the
+    // Claude memory provider there. @anthropic-ai/sdk is a declared dependency,
+    // so the static import resolves cleanly under webpack too. Restores #129
+    // (859e0ac), reverted by the 23blocks reland.
+    const mod = await import('@anthropic-ai/sdk')
+    const Anthropic = mod.default
     return new Anthropic({ apiKey }) as unknown as AnthropicClient
   } catch (error: unknown) {
     const err = error as { code?: string; message?: string }
-    if (err.code === 'MODULE_NOT_FOUND' || (err.message && err.message.includes('Cannot find module'))) {
+    if (err.code === 'MODULE_NOT_FOUND' || err.code === 'ERR_MODULE_NOT_FOUND' ||
+        (err.message && err.message.includes('Cannot find module'))) {
       console.log('[CLAUDE] @anthropic-ai/sdk not installed - Claude provider unavailable')
     } else {
       console.log('[CLAUDE] Failed to create client:', err.message)
