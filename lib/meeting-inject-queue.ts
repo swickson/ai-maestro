@@ -12,14 +12,18 @@
  * Cherry-picked from swickson/ai-maestro PRs #25 and #50.
  */
 
+import { resolveKind, type AgentKind } from './program-resolver'
+
 // ── Types ───────────────────────────────────────────────────────────────────
+
+// AgentKind's canonical home is lib/program-resolver (single source of truth);
+// re-exported here for back-compat with existing importers.
+export type { AgentKind }
 
 export interface QueuedMeetingMessage {
   text: string
   enqueuedAt: string // ISO
 }
-
-export type AgentKind = 'claude' | 'codex' | 'gemini' | 'antigravity' | 'unknown'
 
 // ── Queue ───────────────────────────────────────────────────────────────────
 
@@ -55,15 +59,13 @@ export function clearAll(): void {
 
 // ── Agent Kind Detection ────────────────────────────────────────────────────
 
-/** Infer agent kind from the running program name. */
+/**
+ * Infer agent kind from the running program name.
+ * Thin wrapper over the shared kind table (lib/program-resolver); meeting
+ * routing defaults unrecognized programs to 'unknown' (→ legacy send-keys path).
+ */
 export function inferKindFromProgram(program: string | undefined | null): AgentKind {
-  if (!program) return 'unknown'
-  const p = program.toLowerCase()
-  if (p.includes('claude')) return 'claude'
-  if (p.includes('codex') || p.includes('gpt')) return 'codex'
-  if (p.includes('antigravity')) return 'antigravity'
-  if (p.includes('gemini')) return 'gemini'
-  return 'unknown'
+  return resolveKind(program, { default: 'unknown' })
 }
 
 /**
@@ -79,7 +81,13 @@ export function shouldUseAdditionalContext(program: string | undefined | null): 
   if (!flag) return false
 
   const kind = inferKindFromProgram(program)
-  if (kind === 'unknown') return false
+  // 'unknown' and 'openclaw' are never additionalContext-eligible: openclaw is
+  // discover-and-attach (clawdbot) with no UserPromptSubmit drain hook, so a
+  // queued context block would silently never drain (= dropped meeting message).
+  // This keeps openclaw non-eligible even under MAESTRO_MEETING_CONTEXT_KINDS=all,
+  // completing the same deferral the binary path makes (openclaw is not launchable
+  // either). Add eligibility when openclaw gains a drain hook, verified.
+  if (kind === 'unknown' || kind === 'openclaw') return false
 
   const allowed = flag.toLowerCase().trim()
   if (allowed === 'all') return true
