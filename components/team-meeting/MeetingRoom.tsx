@@ -159,7 +159,8 @@ function meetingReducer(state: TeamMeetingState, action: TeamMeetingAction): Tea
       return { ...state, rightPanelOpen: true, rightPanelTab: action.tab }
 
     case 'OPEN_KANBAN':
-      return { ...state, kanbanOpen: true }
+      // Mutual-exclude: opening kanban closes chat overlay (only one occupies the middle slot)
+      return { ...state, kanbanOpen: true, chatOpen: false }
 
     case 'CLOSE_KANBAN':
       return { ...state, kanbanOpen: false }
@@ -218,6 +219,22 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
   const [notFound, setNotFound] = useState(false)
   const persistedMeetingIdRef = useRef<string | null>(null)
   const creatingMeetingRef = useRef(false)
+
+  // Restore preferred chat-mode from localStorage on mount.
+  // Per design lock 2026-05-04: focus-mode preference survives reload so the
+  // long-running-meeting use case does not have to re-pop the overlay each load.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (window.localStorage.getItem('meeting.chatOpen') === '1') {
+      dispatch({ type: 'OPEN_CHAT' })
+    }
+  }, [])
+
+  // Persist chat-mode changes back to localStorage.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('meeting.chatOpen', state.chatOpen ? '1' : '0')
+  }, [state.chatOpen])
 
   // Restore meeting from disk on mount (skip for new meetings)
   useEffect(() => {
@@ -437,6 +454,19 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
     isActive: state.phase === 'active',
   })
 
+  // Resume a loop-guard-paused meeting. Sourced inline (direct POST to the
+  // existing loop-guard endpoint) rather than via useMeetingMessages so the
+  // chat hook + /api/messages/meeting route stay untouched by this restore.
+  const continueMeeting = useCallback(async () => {
+    const id = persistedMeetingIdRef.current || state.meetingId
+    if (!id) return
+    try {
+      await fetch(`/api/meetings/${id}/loop-guard`, { method: 'POST' })
+    } catch (err) {
+      console.error('Failed to continue meeting:', err)
+    }
+  }, [state.meetingId])
+
   // Poll unread message counts per agent (every 10s)
   const [messageCountsByAgent, setMessageCountsByAgent] = useState<Record<string, number>>({})
   useEffect(() => {
@@ -630,8 +660,10 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
                   mode="overlay"
                   agents={selectedAgents}
                   messages={chatHook.messages}
+                  meetingId={persistedMeetingIdRef.current || state.meetingId || undefined}
                   onSendToAgent={chatHook.sendToAgent}
                   onBroadcastToAll={chatHook.broadcastToAll}
+                  onContinue={continueMeeting}
                   onClose={() => dispatch({ type: 'CLOSE_CHAT' })}
                 />
               ) : (
