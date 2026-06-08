@@ -22,6 +22,7 @@ import * as os from 'os'
 import * as crypto from 'crypto'
 
 import { CONTAINER_CWD, CONTAINER_CWD_ENCODED, CONTAINER_CWD_GEMINI_PROJECT } from './container-utils'
+import { resolveBinary, resolveKind } from './program-resolver'
 
 // Minimal shape — avoids dragging the full Agent class into this lookup-only
 // module. Callers pass either an Agent instance or a plain serialized record.
@@ -35,62 +36,31 @@ export interface AgentPathInput {
 }
 
 /**
- * Resolve a program identifier (agent.program — "antigravity", "claude",
- * "gemini", "codex", "aider", "cursor", "opencode") to the actual binary
- * name. Most identifiers happen to equal their binary; antigravity is the
- * outlier (binary: `agy`) and is the load-bearing reason this resolver
- * exists rather than callers using `program` verbatim.
+ * Resolve a program identifier (agent.program) to the actual binary name.
+ * antigravity is the outlier (binary: `agy`); most identifiers equal their
+ * binary. Re-exported from the single source of truth (lib/program-resolver)
+ * so the host-wake path and the cloud AI_TOOL composition share one table.
  *
- * Two call sites consume this:
- *   - services/agents-core-service.ts host-wake resolveStartCommand (legacy
- *     site, kept as re-export for back-compat)
- *   - services/agents-docker-service.ts cloud-agent AI_TOOL env
- *     composition. Without applying this at composition time, AI_TOOL
- *     bakes the program identifier verbatim into the container env, and
- *     agent-container/agent-server.js:167's
- *     `tmux send-keys "unset CI && ${AI_TOOL}"` wake-line fails with
- *     `command not found: antigravity` on first wake. PR-3 hotfix.
- *
- * Lives in this lib leaf module (not in services/agents-core-service.ts
- * where the host-wake resolveStartCommand previously sat) because importing
- * agents-core-service into agents-docker-service drags the runtime/cozo
- * import chain into otherwise-pure code, breaking the docker-service test
- * file load.
+ * Consumed by services/agents-docker-service.ts (cloud-agent AI_TOOL env —
+ * without applying this at composition time, AI_TOOL bakes the program
+ * identifier verbatim and agent-container/agent-server.js's
+ * `tmux send-keys "unset CI && ${AI_TOOL}"` wake-line fails with
+ * `command not found: antigravity`). program-resolver lives in a pure leaf
+ * module for the same reason this re-export does: importing the runtime/cozo
+ * chain into agents-docker-service breaks its test file load.
  */
-export function resolveStartCommand(program: string): string {
-  if (program.includes('claude') || program.includes('claude code')) {
-    return 'claude'
-  } else if (program.includes('codex')) {
-    return 'codex'
-  } else if (program.includes('aider')) {
-    return 'aider'
-  } else if (program.includes('cursor')) {
-    return 'cursor'
-  } else if (program.includes('antigravity')) {
-    return 'agy'
-  } else if (program.includes('gemini')) {
-    return 'gemini'
-  } else if (program.includes('opencode')) {
-    return 'opencode'
-  }
-  return 'claude' // Default
-}
+export { resolveBinary as resolveStartCommand } from './program-resolver'
 
-// Cloud-agent provider — normalized from agent.program (free-form values like
-// 'claude code', 'claude-code', 'gemini', 'codex' across the registry). The
-// resolver only needs to know "is this Claude, Gemini, or Codex" so it can
-// pick the right per-program bind-mount source. Exported so the chat-service
-// can branch on the same single source of truth instead of re-deriving the
-// substring match inline.
+/**
+ * Cloud-agent provider — which per-program bind-mount source a cloud agent
+ * needs. Narrowed to the cloud-deployable kinds; host-only programs
+ * (aider/cursor/opencode), openclaw (discover-and-attach), and unknown have
+ * no cloud mount and resolve to 'claude'. Backed by the shared kind table so
+ * the antigravity-before-gemini precedence lives in exactly one place.
+ */
 export function cloudProgram(agent: AgentPathInput): 'claude' | 'gemini' | 'codex' | 'antigravity' {
-  const raw = (agent.program || '').toLowerCase()
-  // Check 'antigravity' BEFORE 'gemini' — they don't overlap substring-wise, but
-  // agy stores under ~/.gemini/antigravity-cli/ so any future label that
-  // combines tokens stays unambiguous.
-  if (raw.includes('antigravity')) return 'antigravity'
-  if (raw.includes('gemini')) return 'gemini'
-  if (raw.includes('codex')) return 'codex'
-  return 'claude' // default — pre-PR-#117 agents without an explicit program field
+  const kind = resolveKind(agent.program, { default: 'claude' })
+  return kind === 'gemini' || kind === 'codex' || kind === 'antigravity' ? kind : 'claude'
 }
 
 function isCloudAgent(agent: AgentPathInput): boolean {

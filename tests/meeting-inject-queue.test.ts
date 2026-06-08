@@ -130,6 +130,13 @@ describe('meeting-inject-queue', () => {
       expect(shouldUseAdditionalContext('vim')).toBe(false)
     })
 
+    it('returns false for openclaw even under "all" (no drain hook — deferral lock)', () => {
+      // openclaw is discover-and-attach (clawdbot); additionalContext would
+      // silently never drain. Must stay non-eligible even with =all.
+      process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'all'
+      expect(shouldUseAdditionalContext('openclaw')).toBe(false)
+    })
+
     it('returns true for matching kind', () => {
       process.env.MAESTRO_MEETING_CONTEXT_KINDS = 'claude'
       expect(shouldUseAdditionalContext('claude')).toBe(true)

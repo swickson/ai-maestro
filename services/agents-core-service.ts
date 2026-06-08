@@ -60,6 +60,7 @@ import {
   setCloudContainerStatus,
 } from '@/lib/agent-registry'
 import { resolveAgentIdentifier } from '@/lib/messageQueue'
+import { resolveBinary } from '@/lib/program-resolver'
 import { getHosts, getSelfHost, getSelfHostId, isSelf, updateHostRaw } from '@/lib/hosts-config'
 import { persistSession, unpersistSession } from '@/lib/session-persistence'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
@@ -256,29 +257,13 @@ function sanitizeArgs(args: string): string {
   return args.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
 }
 
-/** Resolve program name to CLI command */
-export function resolveStartCommand(program: string): string {
-  if (program.includes('claude') || program.includes('claude code')) {
-    return 'claude'
-  } else if (program.includes('codex')) {
-    return 'codex'
-  } else if (program.includes('aider')) {
-    return 'aider'
-  } else if (program.includes('cursor')) {
-    return 'cursor'
-  } else if (program.includes('antigravity')) {
-    // Antigravity CLI binary is `agy` (not `antigravity`). Checked before
-    // gemini — agy stores under ~/.gemini/antigravity-cli/, so guard against
-    // any future label nesting. Restores PR #149; reverted by the 23blocks
-    // reland (sessions-service kept it, this resolver — the host wake path — lost it).
-    return 'agy'
-  } else if (program.includes('gemini')) {
-    return 'gemini'
-  } else if (program.includes('opencode')) {
-    return 'opencode'
-  }
-  return 'claude' // Default
-}
+/**
+ * Resolve program name to CLI command.
+ * Re-exported from the single source of truth (lib/program-resolver) so the
+ * host-wake path (wakeAgent) and every other launcher share one table — the
+ * reland reverted a private copy of this here, which PR #171 had to re-fix.
+ */
+export { resolveBinary as resolveStartCommand }
 
 /**
  * Wait until the CLI program in a tmux session is ready to accept input.
@@ -1861,7 +1846,7 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
         } catch { /* non-fatal */ }
         console.log(`[Wake] Terminal only mode - no AI program started`)
       } else {
-        let startCommand = resolveStartCommand(program)
+        let startCommand = resolveBinary(program)
 
         // Build full command with programArgs and model
         let fullCommand = startCommand

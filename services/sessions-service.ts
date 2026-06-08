@@ -35,6 +35,7 @@ import { parseNameForDisplay, isCallSession } from '@/types/agent'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { sessionActivity, agentActivity, terminalSessions, broadcastStatusUpdate, broadcastChatEvent } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
+import { resolveBinary } from '@/lib/program-resolver'
 import crypto from 'crypto'
 import { type ServiceResult, missingField, notFound, alreadyExists, invalidField, operationFailed, serviceError } from '@/services/service-errors'
 
@@ -750,16 +751,13 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
   // LucIA (dev-ziggy-fullstack, Milo) 2026-05-22.
   const selectedProgram = (program || registeredAgent?.program || 'claude-code').toLowerCase()
   if (selectedProgram !== 'none' && selectedProgram !== 'terminal') {
-    let startCommand = ''
-    if (selectedProgram.includes('claude')) startCommand = 'claude'
-    else if (selectedProgram.includes('codex')) startCommand = 'codex'
-    else if (selectedProgram.includes('aider')) startCommand = 'aider'
-    else if (selectedProgram.includes('cursor')) startCommand = 'cursor'
-    else if (selectedProgram.includes('antigravity')) startCommand = 'agy'
-    else if (selectedProgram.includes('gemini')) startCommand = 'gemini'
-    else if (selectedProgram.includes('opencode')) startCommand = 'opencode'
-    else if (selectedProgram.includes('openclaw')) startCommand = 'openclaw'
-    else startCommand = 'claude'
+    // Single source of truth (lib/program-resolver). NOTE: openclaw is
+    // intentionally NOT a launch target here — clawdbot owns its own tmux
+    // sessions on custom sockets and is discover-and-attach, never launched
+    // via this default-socket create path. The old openclaw→openclaw branch
+    // was dead for real openclaw agents; resolveBinary returns the 'claude'
+    // default for it, which this path never actually reaches for clawdbot.
+    let startCommand = resolveBinary(selectedProgram)
 
     const effectiveArgs = programArgs || registeredAgent?.programArgs
     if (effectiveArgs && typeof effectiveArgs === 'string') {
