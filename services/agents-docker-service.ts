@@ -1341,7 +1341,17 @@ export function buildCloudGeminiReadthroughMounts(
 // inside the container even though the binaries are mounted and work by full
 // path. The cli/ entry was added 2026-05-06 alongside the matching
 // scripts-dir bind mount in buildAmpCommonMounts (kanban 0d80aed7).
-const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:${CONTAINER_HOME}/.local/share/aimaestro/cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+//
+// .npm-global/bin is the user-owned npm global prefix the agent-container
+// image installs the AI CLIs into (claude-code / gemini-cli / codex) so the
+// non-root `claude` user can self-update them (`npm i -g …@latest`) without
+// sudo — the stock image installed them as root under /usr (root:root), so
+// every CLI auto-update failed with "no write permission to npm prefix". With
+// the user-prefix image the /usr copy goes away, so this runtime PATH MUST
+// carry .npm-global/bin or AI_TOOL (`claude`/`codex`/`gemini`) won't resolve
+// at launch. Safe to land ahead of the image: a non-existent PATH dir is
+// simply skipped, so /usr-install containers are unaffected until rebuilt.
+const CONTAINER_PATH = `${CONTAINER_HOME}/.local/bin:${CONTAINER_HOME}/.local/share/aimaestro/cli:${CONTAINER_HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
 
 // Per-container agent-identity env (TMUX session, AI program, agent id, host
 // URL) that every cloud agent needs regardless of provider. createDockerAgent
