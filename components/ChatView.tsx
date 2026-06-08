@@ -5,6 +5,7 @@ import { User, Bot, Wrench, Loader2, Send, RefreshCw, AlertCircle, ChevronDown, 
 import { MarkdownContent } from '@/components/chat/MarkdownRenderer'
 import ToolBurstGroup from '@/components/chat/ToolBurstGroup'
 import { groupMessages, getToolPreview, type ToolBurst } from '@/lib/chat-utils'
+import { agentIsOnline } from '@/lib/agent-utils'
 import type { Agent } from '@/types/agent'
 
 // Collapsible thinking block
@@ -608,7 +609,12 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
     }
   }
 
-  const isOnline = agent.sessions?.some(s => s.status === 'online')
+  // Cloud-aware online check: agent.session (singular) is heartbeat-derived, so
+  // cloud agents (tmux runs in-container, no host tmux) render as online — the
+  // desktop-chat parallel of the #168 sidebar fix. The bare agent.sessions[]
+  // check is host-tmux-enumerated and wrongly disabled chat input for cloud
+  // agents even though the server gate (agentSessionReady) already accepts them.
+  const isOnline = agentIsOnline(agent)
 
   // Group consecutive tool-only messages into collapsible bursts
   const groupedItems = useMemo(() => groupMessages(messages, chatMode), [messages, chatMode])
