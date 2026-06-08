@@ -454,19 +454,6 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
     isActive: state.phase === 'active',
   })
 
-  // Resume a loop-guard-paused meeting. Sourced inline (direct POST to the
-  // existing loop-guard endpoint) rather than via useMeetingMessages so the
-  // chat hook + /api/messages/meeting route stay untouched by this restore.
-  const continueMeeting = useCallback(async () => {
-    const id = persistedMeetingIdRef.current || state.meetingId
-    if (!id) return
-    try {
-      await fetch(`/api/meetings/${id}/loop-guard`, { method: 'POST' })
-    } catch (err) {
-      console.error('Failed to continue meeting:', err)
-    }
-  }, [state.meetingId])
-
   // Poll unread message counts per agent (every 10s)
   const [messageCountsByAgent, setMessageCountsByAgent] = useState<Record<string, number>>({})
   useEffect(() => {
@@ -663,7 +650,7 @@ export default function MeetingRoom({ meetingId, teamParam }: MeetingRoomProps) 
                   meetingId={persistedMeetingIdRef.current || state.meetingId || undefined}
                   onSendToAgent={chatHook.sendToAgent}
                   onBroadcastToAll={chatHook.broadcastToAll}
-                  onContinue={continueMeeting}
+                  onContinue={chatHook.continueMeeting}
                   onClose={() => dispatch({ type: 'CLOSE_CHAT' })}
                 />
               ) : (
