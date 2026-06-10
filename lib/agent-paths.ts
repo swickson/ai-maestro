@@ -12,9 +12,8 @@
  *   - claude: ~/.aimaestro/agents/<uuid>/claude-projects/ → /home/claude/.claude/projects/
  *   - claude: ~/.aimaestro/agents/<uuid>/chat-state/      → /home/claude/.aimaestro/chat-state/
  *   - gemini: ~/.aimaestro/agents/<uuid>/gemini-chats/    → /home/claude/.gemini/tmp/workspace/chats/
- *
- * Codex deferred — no cloud-Codex agents in mesh yet; row will be added when
- * Shane lands Vance on Codex (kanban tbd).
+ *   - codex:  ~/.aimaestro/agents/<uuid>/codex-app-data/sessions/ → /home/claude/.codex/sessions/
+ *     (single-dir OPT-B mount of the whole ~/.codex tree, kanban 01e11bf9)
  */
 
 import * as path from 'path'
@@ -104,9 +103,14 @@ export function resolveConversationDir(
         // once a logged-in cloud agent generates sample conversation files.
         return path.join(agentDir, 'antigravity-app-data', 'conversations')
       case 'codex':
-        // No cloud-Codex agent in mesh; row deferred to its own kanban
-        // when Vance migrates to Codex.
-        return null
+        // Codex writes conversation transcripts as rollout-*.jsonl under
+        // ~/.codex/sessions/<YYYY>/<MM>/<DD>/. The whole ~/.codex tree is
+        // bind-mounted single-source (OPT-B, kanban 01e11bf9) at
+        // <agentDir>/codex-app-data/ → /home/claude/.codex/. Returns the
+        // sessions subdir so the chat-history reader scans the rollout files.
+        // (All host threads.rollout_path values resolve under ~/.codex/sessions
+        // with no config override — verified on bananajr 2026-06-10.)
+        return path.join(agentDir, 'codex-app-data', 'sessions')
       case 'claude':
       default:
         return path.join(agentDir, 'claude-projects', CONTAINER_CWD_ENCODED)

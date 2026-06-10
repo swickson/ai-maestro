@@ -699,94 +699,75 @@ export function buildCloudGeminiSettingsMount(
 //    default. Codex's config.toml schema accepts per-project trust_level
 //    blocks; "trusted" is the documented value.
 //
-// Per-agent isolation: both files live under ~/.aimaestro/agents/<id>/,
-// bind-mounted RW at /home/claude/.codex/version.json + config.toml by
-// the corresponding mount builders. Host operator's ~/.codex is never
-// touched.
+// Per-agent isolation: all codex state lives under
+// ~/.aimaestro/agents/<id>/codex-app-data/, bind-mounted RW as a single dir
+// onto /home/claude/.codex by buildCloudCodexAppDataMount (OPT-B, kanban
+// 01e11bf9). Host operator's ~/.codex is never touched.
+//
+// Subdir name for the OPT-B single-dir codex mount source. Holds config.toml,
+// auth.json, version.json, hooks.json AND codex's own runtime state (sessions/
+// rollout jsonl, logs_2/state_5/goals_1 sqlite). Mirrors antigravity-app-data.
+export const CODEX_APP_DATA_DIR = 'codex-app-data'
+
+// One-time consolidation helper: copy a pre-OPT-B flat per-agent codex file
+// (<agentDir>/codex-<x>.json|toml) into the new codex-app-data/ dir when the
+// new file does not yet exist. Lets an existing codex agent keep its config/
+// auth/version/hooks when it crosses from the 4-file-mount shape to the
+// single-dir mount on its first create/update-runtime under the new code.
+// Returns true iff a legacy file was migrated. Idempotent (no-op once the
+// codex-app-data/ file exists).
+function seedFromLegacyCodexFile(
+  agentDir: string,
+  legacyName: string,
+  destPath: string
+): boolean {
+  const legacyPath = path.join(agentDir, legacyName)
+  try {
+    if (fs.existsSync(legacyPath)) {
+      fs.copyFileSync(legacyPath, destPath)
+      fs.chmodSync(destPath, 0o600)
+      return true
+    }
+  } catch (err) {
+    console.warn(`[seedFromLegacyCodexFile] ${legacyName}:`, err instanceof Error ? err.message : err)
+  }
+  return false
+}
+
 export function provisionCloudCodexConfig(
   agentId: string,
   hostHome: string = os.homedir()
 ): { versionPath: string; configTomlPath: string; hooksPath: string } {
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
-  fs.mkdirSync(agentDir, { recursive: true })
-  const versionPath = path.join(agentDir, 'codex-version.json')
+  const codexDir = path.join(agentDir, CODEX_APP_DATA_DIR)
+  fs.mkdirSync(codexDir, { recursive: true })
+  const versionPath = path.join(codexDir, 'version.json')
   if (!fs.existsSync(versionPath)) {
-    const versionState = {
-      latest_version: '999.0.0',
-      last_checked_at: '2099-01-01T00:00:00.000Z',
-      dismissed_version: '999.0.0',
+    if (!seedFromLegacyCodexFile(agentDir, 'codex-version.json', versionPath)) {
+      const versionState = {
+        latest_version: '999.0.0',
+        last_checked_at: '2099-01-01T00:00:00.000Z',
+        dismissed_version: '999.0.0',
+      }
+      fs.writeFileSync(versionPath, JSON.stringify(versionState) + '\n', { mode: 0o600 })
     }
-    fs.writeFileSync(versionPath, JSON.stringify(versionState) + '\n', { mode: 0o600 })
   }
-  const configTomlPath = path.join(agentDir, 'codex-config.toml')
+  const configTomlPath = path.join(codexDir, 'config.toml')
   if (!fs.existsSync(configTomlPath)) {
-    const configToml =
-      '[projects."/workspace"]\n' +
-      'trust_level = "trusted"\n'
-    fs.writeFileSync(configTomlPath, configToml, { mode: 0o600 })
+    if (!seedFromLegacyCodexFile(agentDir, 'codex-config.toml', configTomlPath)) {
+      const configToml =
+        '[projects."/workspace"]\n' +
+        'trust_level = "trusted"\n'
+      fs.writeFileSync(configTomlPath, configToml, { mode: 0o600 })
+    }
   }
-  const hooksPath = path.join(agentDir, 'codex-hooks.json')
+  const hooksPath = path.join(codexDir, 'hooks.json')
   if (!fs.existsSync(hooksPath)) {
-    fs.writeFileSync(hooksPath, '{}\n', { mode: 0o600 })
+    if (!seedFromLegacyCodexFile(agentDir, 'codex-hooks.json', hooksPath)) {
+      fs.writeFileSync(hooksPath, '{}\n', { mode: 0o600 })
+    }
   }
   return { versionPath, configTomlPath, hooksPath }
-}
-
-// File-level bind mount for the per-agent codex config.toml. Mount target
-// parent (/home/claude/.codex) is pre-created in agent-container/Dockerfile.
-//
-// RW: codex rewrites config.toml when the operator runs /config or similar
-// in-CLI commands. Per-agent isolation unchanged.
-export function buildCloudCodexConfigTomlMount(
-  agentId: string,
-  hostHome: string = os.homedir()
-): SandboxMount {
-  return {
-    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-config.toml'),
-    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'config.toml'),
-  }
-}
-
-// File-level bind mount for the per-agent codex hooks.json. Mount target
-// parent (/home/claude/.codex) is pre-created in agent-container/Dockerfile
-// alongside config.toml + auth.json.
-//
-// Codex reads hook definitions from ~/.codex/hooks.json at session start
-// (verified against developers.openai.com/codex/hooks 2026-05-27). Schema:
-// { "hooks": { "<EventName>": [ { "hooks": [ { "type": "command", "command": "..." } ] } ] } }
-//
-// RW: codex itself doesn't rewrite hooks.json today, but the operator (or
-// a future ai-maestro helper) may edit it from inside the container; RW
-// keeps that path open and matches the config.toml mount mode.
-//
-// Default skeleton is "{}" — no hooks active. Operators wiring a
-// UserPromptSubmit recall hook (e.g., Ziggy memory injection) populate
-// this file post-create. Per-agent isolation unchanged.
-export function buildCloudCodexHooksMount(
-  agentId: string,
-  hostHome: string = os.homedir()
-): SandboxMount {
-  return {
-    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-hooks.json'),
-    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'hooks.json'),
-  }
-}
-
-// File-level bind mount for the per-agent codex version.json. Mount target
-// parent (/home/claude/.codex) must pre-exist in the image as claude-owned
-// — see agent-container/Dockerfile — otherwise Docker auto-creates it as
-// root and blocks codex from writing siblings (auth, sessions, history).
-//
-// RW: codex rewrites version.json on every update-check refresh. Per-agent
-// isolation unchanged. Mount is harmless for non-codex programs.
-export function buildCloudCodexVersionMount(
-  agentId: string,
-  hostHome: string = os.homedir()
-): SandboxMount {
-  return {
-    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-version.json'),
-    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'version.json'),
-  }
 }
 
 // Provision per-container Codex CLI auth: at agent-create time, copy the
@@ -813,8 +794,17 @@ export function provisionCloudCodexAuth(
   hostHome: string = os.homedir()
 ): { authPath: string; bootstrapped: boolean } {
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
-  fs.mkdirSync(agentDir, { recursive: true })
-  const authPath = path.join(agentDir, 'codex-auth.json')
+  const codexDir = path.join(agentDir, CODEX_APP_DATA_DIR)
+  fs.mkdirSync(codexDir, { recursive: true })
+  const authPath = path.join(codexDir, 'auth.json')
+  // One-time consolidation: migrate a pre-OPT-B flat codex-auth.json forward
+  // BEFORE the host-seed step so an already-logged-in agent keeps its
+  // credentials across the shape switch. seedFromHostFile's empty-{}-reseed
+  // contract still applies afterward: a non-empty migrated auth blocks reseed
+  // (per-agent login preserved); a {} placeholder still allows host reseed.
+  if (!fs.existsSync(authPath)) {
+    seedFromLegacyCodexFile(agentDir, 'codex-auth.json', authPath)
+  }
   const bootstrapped = seedFromHostFile(
     path.join(hostHome, '.codex', 'auth.json'),
     authPath,
@@ -825,20 +815,43 @@ export function provisionCloudCodexAuth(
   return { authPath, bootstrapped }
 }
 
-// File-level bind mount for the per-agent codex auth.json. Mount target
-// parent (/home/claude/.codex) is pre-created in agent-container/Dockerfile
-// alongside the .gemini sibling.
+// Single-dir bind mount (OPT-B, kanban 01e11bf9) for the Codex CLI's entire
+// ~/.codex tree. Codex stores config.toml + auth.json + version.json +
+// hooks.json AND its own runtime state — sessions/ (rollout-*.jsonl
+// transcripts, the chat-history source) plus logs_2/state_5/goals_1/
+// memories_1 sqlite — all under ~/.codex/. Single mount over the whole dir
+// intentionally, replacing the prior 4 file-level mounts:
 //
-// RW: codex writes auth.json on token refresh + re-login. Per-agent
-// isolation unchanged — host operator's ~/.codex/auth.json is read at
-// provision time and never touched again.
-export function buildCloudCodexAuthMount(
+//   - Inode-safe under codex's atomic sqlite/token rewrites. logs_2.sqlite,
+//     state_5.sqlite et al. rewrite via WAL-checkpoint + rename, and auth.json
+//     rotates atomically via temp+rename; file-level bind mounts stale
+//     silently on rename (they bind the inode at container-create). A
+//     dir-mount survives because the rename happens INSIDE the bind-mount
+//     surface. See [[feedback_docker_file_mount_inode]].
+//
+//   - Persists transcripts across /recreate. Without sessions/ on a host
+//     bind-mount, a codex cloud agent's conversation history (rollout-*.jsonl)
+//     lived only in the container writable layer and was WIPED on every
+//     /recreate (the gap that lost R2D2's history). All 128 host
+//     threads.rollout_path values resolve under ~/.codex/sessions with no
+//     config override, so the whole-dir mount covers transcripts + all sqlite
+//     in one surface — verified on bananajr 2026-06-10.
+//
+//   - Version-proof against codex storage-shape drift. The sqlite filenames
+//     are version-numbered (logs_2/state_5/goals_1) and codex is migrating
+//     from jsonl-only to sqlite-backed token accounting; a single dir-mount
+//     captures whatever shape the binary writes without per-file plumbing.
+//
+//   - Operator-reserved-path coverage: CONTAINER_HOME/.codex is already in
+//     OPERATOR_RESERVED_CONTAINER_PATH_ROOTS, so this mount's containerPath is
+//     the reserved root itself — no new entry needed.
+export function buildCloudCodexAppDataMount(
   agentId: string,
   hostHome: string = os.homedir()
 ): SandboxMount {
   return {
-    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'codex-auth.json'),
-    containerPath: path.posix.join(CONTAINER_HOME, '.codex', 'auth.json'),
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, CODEX_APP_DATA_DIR),
+    containerPath: path.posix.join(CONTAINER_HOME, '.codex'),
   }
 }
 
@@ -1039,7 +1052,8 @@ export function provisionCloudCodexZiggyMcpEntry(
     '.aimaestro',
     'agents',
     agentId,
-    'codex-config.toml',
+    CODEX_APP_DATA_DIR,
+    'config.toml',
   )
   // provisionCloudCodexConfig must have run first (it creates the file with
   // the [projects."/workspace"] trust block). If absent, write a minimal
@@ -1056,6 +1070,9 @@ export function provisionCloudCodexZiggyMcpEntry(
     (existing.endsWith('\n') || existing === '' ? '' : '\n') +
     '\n[mcp_servers.ziggy]\n' +
     `command = "${startScript}"\n`
+  // Ensure codex-app-data/ exists for the defensive branch (no prior
+  // provisionCloudCodexConfig run) — the OPT-B dir is the config's parent.
+  fs.mkdirSync(path.dirname(configTomlPath), { recursive: true })
   fs.writeFileSync(configTomlPath, existing + block, { mode: 0o600 })
   return { configTomlPath, mcpBlockAdded: true }
 }
@@ -1227,6 +1244,16 @@ export function migrateAgentPersistence(
     // implicit/, settings.json, installation_id, keybindings.json so a
     // logged-in agy session survives /recreate UUID rotation.
     'antigravity-app-data',
+    // Codex full ~/.codex tree — single-dir OPT-B mount (kanban 01e11bf9).
+    // Carries forward config.toml, auth.json, version.json, hooks.json AND
+    // codex's runtime state (sessions/ rollout-*.jsonl transcripts + logs_2/
+    // state_5/goals_1 sqlite) so a codex agent's login + trust + FULL
+    // conversation history survive /recreate UUID rotation. The flat
+    // codex-*.json fileAssets above are retained for the one-time pre-OPT-B
+    // carry-forward: on /recreate of a pre-01e11bf9 agent the legacy flat
+    // files migrate, then provisionCloudCodex* consolidate them into
+    // codex-app-data/ in the new UUID dir.
+    'codex-app-data',
   ]
   for (const name of dirAssets) {
     const src = path.join(fromDir, name)
@@ -1799,10 +1826,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       buildCloudGeminiOAuthMount(agentId),
       ...geminiReadthroughMounts,
       buildCloudAntigravityAppDataMount(agentId),
-      buildCloudCodexVersionMount(agentId),
-      buildCloudCodexAuthMount(agentId),
-      buildCloudCodexConfigTomlMount(agentId),
-      buildCloudCodexHooksMount(agentId),
+      buildCloudCodexAppDataMount(agentId),
       ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(name)] : []),
       restorationSentinelMount,
     ],
@@ -2315,6 +2339,24 @@ export async function updateContainerMountsAndExtraEnv(
   // skip the wait, racing host-side prep again. See kanban fcabb870.
   clearRestorationSentinel(agentId)
 
+  // (Re-)provision codex config + auth on update-runtime. Idempotent
+  // (existsSync-guarded), but load-bearing for the OPT-B shape switch (kanban
+  // 01e11bf9): on the FIRST /update-runtime of an existing codex agent onto
+  // the new single-dir mount, these seed codex-app-data/{config.toml,auth.json,
+  // version.json,hooks.json} from the agent's pre-OPT-B flat codex-*.json files
+  // (seedFromLegacyCodexFile) so the agent does not lose trust/login/version
+  // state when /home/claude/.codex flips from 4 file-mounts to one dir-mount.
+  // Mirrors the createDockerAgent provisioning sequence.
+  try {
+    provisionCloudCodexConfig(agentId)
+  } catch (err) {
+    console.warn('[update-runtime] Could not provision cloud codex config:', err instanceof Error ? err.message : err)
+  }
+  try {
+    provisionCloudCodexAuth(agentId)
+  } catch (err) {
+    console.warn('[update-runtime] Could not provision cloud codex auth:', err instanceof Error ? err.message : err)
+  }
   // (Re-)provision Codex Ziggy MCP entry if ziggy=true. Idempotent — the
   // helper short-circuits when the [mcp_servers.ziggy] block already exists
   // in config.toml. Mirrors the createDockerAgent provisioning sequence so
@@ -2338,10 +2380,7 @@ export async function updateContainerMountsAndExtraEnv(
       buildCloudGeminiOAuthMount(agentId),
       ...geminiReadthroughMounts,
       buildCloudAntigravityAppDataMount(agentId),
-      buildCloudCodexVersionMount(agentId),
-      buildCloudCodexAuthMount(agentId),
-      buildCloudCodexConfigTomlMount(agentId),
-      buildCloudCodexHooksMount(agentId),
+      buildCloudCodexAppDataMount(agentId),
       ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(agent.name)] : []),
       restorationSentinelMount,
     ],
