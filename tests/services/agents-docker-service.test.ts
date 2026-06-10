@@ -27,10 +27,7 @@ import {
   buildCloudGeminiOAuthMount,
   buildCloudGeminiReadthroughMounts,
   buildCloudAntigravityAppDataMount,
-  buildCloudCodexVersionMount,
-  buildCloudCodexAuthMount,
-  buildCloudCodexConfigTomlMount,
-  buildCloudCodexHooksMount,
+  buildCloudCodexAppDataMount,
   buildZiggyCodeMount,
   buildZiggyEnvOverlayMount,
   provisionCloudCodexZiggyMcpEntry,
@@ -161,9 +158,7 @@ describe('validateMounts', () => {
         buildCloudGeminiOAuthMount(uuid, home),
         ...buildCloudGeminiReadthroughMounts(uuid, home),
         buildCloudAntigravityAppDataMount(uuid, home),
-        buildCloudCodexVersionMount(uuid, home),
-        buildCloudCodexAuthMount(uuid, home),
-        buildCloudCodexConfigTomlMount(uuid, home),
+        buildCloudCodexAppDataMount(uuid, home),
       ]
       expect(validateMounts(allSystemMounts, 'system')).toBeNull()
     })
@@ -219,9 +214,7 @@ describe('validateMounts', () => {
         buildCloudGeminiOAuthMount(uuid, home),
         ...buildCloudGeminiReadthroughMounts(uuid, home),
         buildCloudAntigravityAppDataMount(uuid, home),
-        buildCloudCodexVersionMount(uuid, home),
-        buildCloudCodexAuthMount(uuid, home),
-        buildCloudCodexConfigTomlMount(uuid, home),
+        buildCloudCodexAppDataMount(uuid, home),
       ]
       const allReserved = [
         ...ALWAYS_RESERVED_CONTAINER_PATH_ROOTS,
@@ -992,9 +985,9 @@ describe('provisionCloudCodexConfig', () => {
     fs.rmSync(tmpHome, { recursive: true, force: true })
   })
 
-  it('writes codex-version.json with dismissed_version sentinel suppressing the update modal (kanban 22f4af86)', () => {
+  it('writes codex-app-data/version.json with dismissed_version sentinel suppressing the update modal (kanban 22f4af86)', () => {
     const { versionPath } = provisionCloudCodexConfig(uuid, tmpHome)
-    expect(versionPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-version.json'))
+    expect(versionPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data', 'version.json'))
     const body = JSON.parse(fs.readFileSync(versionPath, 'utf8'))
     expect(body.dismissed_version).toBe('999.0.0')
     expect(body.latest_version).toBe('999.0.0')
@@ -1005,26 +998,26 @@ describe('provisionCloudCodexConfig', () => {
     expect(fs.statSync(versionPath).mode & 0o777).toBe(0o600)
   })
 
-  it('creates the per-UUID dir if missing', () => {
-    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-    expect(fs.existsSync(agentDir)).toBe(false)
+  it('creates the per-UUID codex-app-data dir if missing', () => {
+    const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+    expect(fs.existsSync(codexDir)).toBe(false)
     provisionCloudCodexConfig(uuid, tmpHome)
-    expect(fs.existsSync(agentDir)).toBe(true)
+    expect(fs.existsSync(codexDir)).toBe(true)
   })
 
-  it('preserves existing codex-version.json content across re-runs (operator override intent)', () => {
-    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-    fs.mkdirSync(agentDir, { recursive: true })
-    const versionPath = path.join(agentDir, 'codex-version.json')
+  it('preserves existing version.json content across re-runs (operator override intent)', () => {
+    const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+    fs.mkdirSync(codexDir, { recursive: true })
+    const versionPath = path.join(codexDir, 'version.json')
     const existing = '{"latest_version":"0.130.0","last_checked_at":"2026-05-15T00:00:00Z","dismissed_version":"0.130.0"}\n'
     fs.writeFileSync(versionPath, existing)
     provisionCloudCodexConfig(uuid, tmpHome)
     expect(fs.readFileSync(versionPath, 'utf8')).toBe(existing)
   })
 
-  it('writes codex-config.toml pre-trusting /workspace so codex skips the trust modal on first launch (kanban 354a5174 trust-modal sibling)', () => {
+  it('writes codex-app-data/config.toml pre-trusting /workspace so codex skips the trust modal on first launch (kanban 354a5174 trust-modal sibling)', () => {
     const { configTomlPath } = provisionCloudCodexConfig(uuid, tmpHome)
-    expect(configTomlPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-config.toml'))
+    expect(configTomlPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data', 'config.toml'))
     const body = fs.readFileSync(configTomlPath, 'utf8')
     expect(body).toContain('[projects."/workspace"]')
     expect(body).toContain('trust_level = "trusted"')
@@ -1035,47 +1028,56 @@ describe('provisionCloudCodexConfig', () => {
     expect(fs.statSync(configTomlPath).mode & 0o777).toBe(0o600)
   })
 
-  it('preserves existing codex-config.toml across re-runs (operator hand-edit intent)', () => {
-    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-    fs.mkdirSync(agentDir, { recursive: true })
-    const configTomlPath = path.join(agentDir, 'codex-config.toml')
+  it('preserves existing config.toml across re-runs (operator hand-edit intent)', () => {
+    const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+    fs.mkdirSync(codexDir, { recursive: true })
+    const configTomlPath = path.join(codexDir, 'config.toml')
     const existing = '[projects."/workspace"]\ntrust_level = "trusted"\n\n[other]\nfoo = "bar"\n'
     fs.writeFileSync(configTomlPath, existing)
     provisionCloudCodexConfig(uuid, tmpHome)
     expect(fs.readFileSync(configTomlPath, 'utf8')).toBe(existing)
   })
+
+  it('consolidates pre-OPT-B flat codex-*.json into codex-app-data/ on first run (kanban 01e11bf9 shape switch)', () => {
+    // An existing codex agent crossing from the 4-file-mount era has flat
+    // codex-version.json / codex-config.toml / codex-hooks.json under agentDir.
+    // First provision under the new code must migrate them INTO codex-app-data/
+    // rather than overwrite with defaults, so trust/version/hooks state survives.
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'codex-version.json'), '{"dismissed_version":"0.140.0"}\n')
+    fs.writeFileSync(path.join(agentDir, 'codex-config.toml'), '[projects."/workspace"]\ntrust_level = "trusted"\n\n[legacy]\nx = 1\n')
+    fs.writeFileSync(path.join(agentDir, 'codex-hooks.json'), '{"hooks":{"LegacyEvent":[]}}\n')
+    const { versionPath, configTomlPath, hooksPath } = provisionCloudCodexConfig(uuid, tmpHome)
+    expect(versionPath).toBe(path.join(agentDir, 'codex-app-data', 'version.json'))
+    expect(JSON.parse(fs.readFileSync(versionPath, 'utf8')).dismissed_version).toBe('0.140.0')
+    expect(fs.readFileSync(configTomlPath, 'utf8')).toContain('[legacy]')
+    expect(fs.readFileSync(hooksPath, 'utf8')).toContain('LegacyEvent')
+  })
 })
 
-describe('buildCloudCodexConfigTomlMount', () => {
-  it('returns a file-level bind mount for /home/claude/.codex/config.toml', () => {
+describe('buildCloudCodexAppDataMount', () => {
+  it('returns a single-dir bind mount of codex-app-data onto /home/claude/.codex (OPT-B, kanban 01e11bf9)', () => {
     const uuid = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
     const home = '/home/operator'
-    const m = buildCloudCodexConfigTomlMount(uuid, home)
-    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-config.toml`)
-    expect(m.containerPath).toBe('/home/claude/.codex/config.toml')
+    const m = buildCloudCodexAppDataMount(uuid, home)
+    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-app-data`)
+    expect(m.containerPath).toBe('/home/claude/.codex')
     expect(m.readOnly).toBeUndefined()
   })
 
   it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
     const uuid = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
     const home = '/home/operator'
-    expect(validateMounts([buildCloudCodexConfigTomlMount(uuid, home)], 'system')).toBeNull()
-  })
-})
-
-describe('buildCloudCodexHooksMount', () => {
-  it('returns a file-level bind mount for /home/claude/.codex/hooks.json', () => {
-    const uuid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
-    const home = '/home/operator'
-    const m = buildCloudCodexHooksMount(uuid, home)
-    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-hooks.json`)
-    expect(m.containerPath).toBe('/home/claude/.codex/hooks.json')
-    expect(m.readOnly).toBeUndefined()
+    expect(validateMounts([buildCloudCodexAppDataMount(uuid, home)], 'system')).toBeNull()
   })
 
-  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
-    const uuid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
-    expect(validateMounts([buildCloudCodexHooksMount(uuid, '/home/operator')], 'system')).toBeNull()
+  it('containerPath is the reserved /home/claude/.codex root itself (no operator-shadow gap)', () => {
+    const m = buildCloudCodexAppDataMount('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', '/home/operator')
+    const matched = OPERATOR_RESERVED_CONTAINER_PATH_ROOTS.find(
+      r => m.containerPath === r || m.containerPath.startsWith(`${r}/`)
+    )
+    expect(matched).toBe('/home/claude/.codex')
   })
 })
 
@@ -1091,9 +1093,9 @@ describe('provisionCloudCodexConfig — codex-hooks.json skeleton', () => {
     fs.rmSync(tmpHome, { recursive: true, force: true })
   })
 
-  it('writes codex-hooks.json with empty {} skeleton when missing', () => {
+  it('writes codex-app-data/hooks.json with empty {} skeleton when missing', () => {
     const { hooksPath } = provisionCloudCodexConfig(uuid, tmpHome)
-    expect(hooksPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-hooks.json'))
+    expect(hooksPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data', 'hooks.json'))
     expect(fs.readFileSync(hooksPath, 'utf8')).toBe('{}\n')
   })
 
@@ -1102,10 +1104,10 @@ describe('provisionCloudCodexConfig — codex-hooks.json skeleton', () => {
     expect(fs.statSync(hooksPath).mode & 0o777).toBe(0o600)
   })
 
-  it('preserves existing codex-hooks.json content across re-runs (operator-written hooks intent)', () => {
-    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-    fs.mkdirSync(agentDir, { recursive: true })
-    const hooksPath = path.join(agentDir, 'codex-hooks.json')
+  it('preserves existing hooks.json content across re-runs (operator-written hooks intent)', () => {
+    const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+    fs.mkdirSync(codexDir, { recursive: true })
+    const hooksPath = path.join(codexDir, 'hooks.json')
     const existing = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/opt/recall.sh"}]}]}}\n'
     fs.writeFileSync(hooksPath, existing)
     provisionCloudCodexConfig(uuid, tmpHome)
@@ -1180,10 +1182,11 @@ describe('Ziggy MCP integration helpers', () => {
     })
 
     it('appends [mcp_servers.ziggy] block pointing at the canonical start.sh', () => {
-      // Pre-seed config.toml as provisionCloudCodexConfig would have written it.
-      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-      fs.mkdirSync(agentDir, { recursive: true })
-      const configTomlPath = path.join(agentDir, 'codex-config.toml')
+      // Pre-seed config.toml as provisionCloudCodexConfig would have written it
+      // (now under codex-app-data/ per OPT-B kanban 01e11bf9).
+      const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+      fs.mkdirSync(codexDir, { recursive: true })
+      const configTomlPath = path.join(codexDir, 'config.toml')
       fs.writeFileSync(configTomlPath, '[projects."/workspace"]\ntrust_level = "trusted"\n')
 
       const { mcpBlockAdded } = provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
@@ -1196,9 +1199,9 @@ describe('Ziggy MCP integration helpers', () => {
     })
 
     it('is idempotent — re-running short-circuits and does not duplicate', () => {
-      const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-      fs.mkdirSync(agentDir, { recursive: true })
-      const configTomlPath = path.join(agentDir, 'codex-config.toml')
+      const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+      fs.mkdirSync(codexDir, { recursive: true })
+      const configTomlPath = path.join(codexDir, 'config.toml')
       fs.writeFileSync(configTomlPath, '[projects."/workspace"]\ntrust_level = "trusted"\n')
 
       provisionCloudCodexZiggyMcpEntry(uuid, tmpHome)
@@ -1266,23 +1269,6 @@ describe('buildCloudAntigravityAppDataMount (kanban 49cc27d7, OPT-B single-dir)'
     expect(
       validateMounts([mount], 'operator'),
     ).toMatch(/reserved by AI Maestro/)
-  })
-})
-
-describe('buildCloudCodexVersionMount', () => {
-  it('returns a file-level bind mount for /home/claude/.codex/version.json', () => {
-    const uuid = '88888888-bbbb-8888-bbbb-888888888888'
-    const home = '/home/operator'
-    const m = buildCloudCodexVersionMount(uuid, home)
-    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-version.json`)
-    expect(m.containerPath).toBe('/home/claude/.codex/version.json')
-    expect(m.readOnly).toBeUndefined()
-  })
-
-  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
-    const uuid = '88888888-bbbb-8888-bbbb-888888888888'
-    const home = '/home/operator'
-    expect(validateMounts([buildCloudCodexVersionMount(uuid, home)], 'system')).toBeNull()
   })
 })
 
@@ -1380,7 +1366,7 @@ describe('provisionCloudCodexAuth', () => {
       '{"OPENAI_API_KEY":"sk-test-from-host","tokens":{"access":"abc"}}\n', { mode: 0o600 })
 
     const { authPath, bootstrapped } = provisionCloudCodexAuth(uuid, tmpHome)
-    expect(authPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-auth.json'))
+    expect(authPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data', 'auth.json'))
     expect(bootstrapped).toBe(true)
     const body = JSON.parse(fs.readFileSync(authPath, 'utf8'))
     expect(body.OPENAI_API_KEY).toBe('sk-test-from-host')
@@ -1398,14 +1384,14 @@ describe('provisionCloudCodexAuth', () => {
     expect(fs.statSync(authPath).mode & 0o777).toBe(0o600)
   })
 
-  it('preserves existing per-agent codex-auth.json across re-runs (per-agent rotation independence)', () => {
+  it('preserves existing per-agent codex-app-data/auth.json across re-runs (per-agent rotation independence)', () => {
     const hostCodexDir = path.join(tmpHome, '.codex')
     fs.mkdirSync(hostCodexDir, { recursive: true })
     fs.writeFileSync(path.join(hostCodexDir, 'auth.json'),
       '{"OPENAI_API_KEY":"sk-host-NEW"}\n', { mode: 0o600 })
-    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-    fs.mkdirSync(agentDir, { recursive: true })
-    const authPath = path.join(agentDir, 'codex-auth.json')
+    const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+    fs.mkdirSync(codexDir, { recursive: true })
+    const authPath = path.join(codexDir, 'auth.json')
     const existing = '{"OPENAI_API_KEY":"sk-rotated-by-codex-runtime"}\n'
     fs.writeFileSync(authPath, existing)
     const result = provisionCloudCodexAuth(uuid, tmpHome)
@@ -1413,11 +1399,11 @@ describe('provisionCloudCodexAuth', () => {
     expect(fs.readFileSync(authPath, 'utf8')).toBe(existing)
   })
 
-  it('creates the per-UUID dir if missing', () => {
-    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
-    expect(fs.existsSync(agentDir)).toBe(false)
+  it('creates the per-UUID codex-app-data dir if missing', () => {
+    const codexDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'codex-app-data')
+    expect(fs.existsSync(codexDir)).toBe(false)
     provisionCloudCodexAuth(uuid, tmpHome)
-    expect(fs.existsSync(agentDir)).toBe(true)
+    expect(fs.existsSync(codexDir)).toBe(true)
   })
 
   it('re-bootstraps codex-auth.json when migrated predecessor placeholder is empty {} and host now has auth (kanban 02a8ebda recreate-path)', () => {
@@ -1452,23 +1438,6 @@ describe('provisionCloudCodexAuth', () => {
 
     expect(result.bootstrapped).toBe(false)
     expect(fs.readFileSync(result.authPath, 'utf8')).toBe(rotated)
-  })
-})
-
-describe('buildCloudCodexAuthMount', () => {
-  it('returns a file-level bind mount for /home/claude/.codex/auth.json', () => {
-    const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
-    const home = '/home/operator'
-    const m = buildCloudCodexAuthMount(uuid, home)
-    expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/codex-auth.json`)
-    expect(m.containerPath).toBe('/home/claude/.codex/auth.json')
-    expect(m.readOnly).toBeUndefined()
-  })
-
-  it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
-    const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
-    const home = '/home/operator'
-    expect(validateMounts([buildCloudCodexAuthMount(uuid, home)], 'system')).toBeNull()
   })
 })
 
@@ -1622,6 +1591,14 @@ describe('migrateAgentPersistence', () => {
     fs.mkdirSync(path.join(fromDir, 'gemini-chats'), { recursive: true })
     fs.writeFileSync(path.join(fromDir, 'gemini-chats', 'session-2026-05-11-abc12345.jsonl'),
       '{"id":"evt-1","type":"user","content":[{"text":"history from gemini predecessor"}],"timestamp":"2026-05-11T00:00:00Z"}\n', { mode: 0o600 })
+    // kanban 01e11bf9 codex-app-data single-dir mount — codex transcripts
+    // (sessions/ rollout jsonl) + sqlite state must survive recreate.
+    fs.mkdirSync(path.join(fromDir, 'codex-app-data', 'sessions', '2026', '06', '09'), { recursive: true })
+    fs.writeFileSync(
+      path.join(fromDir, 'codex-app-data', 'sessions', '2026', '06', '09', 'rollout-2026-06-09T12-11-38-pred.jsonl'),
+      '{"type":"session_meta","payload":{"cwd":"/workspace"}}\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(fromDir, 'codex-app-data', 'config.toml'),
+      '[projects."/workspace"]\ntrust_level = "trusted"\n', { mode: 0o600 })
   })
 
   afterEach(() => {
@@ -1682,6 +1659,19 @@ describe('migrateAgentPersistence', () => {
     const dst = path.join(tmpHome, '.aimaestro', 'agents', toId, 'gemini-chats', 'session-2026-05-11-abc12345.jsonl')
     expect(fs.existsSync(dst)).toBe(true)
     expect(fs.readFileSync(dst, 'utf8')).toContain('history from gemini predecessor')
+  })
+
+  it('migrates codex-app-data/ recursively so cloud-Codex transcripts + sqlite survive recreate-with-persistFromAgentId (kanban 01e11bf9)', () => {
+    // Sister to claude-projects/gemini-chats for the codex single-dir mount.
+    // Without this, recreating a cloud-Codex agent (R2D2-class) with
+    // persistFromAgentId wipes ~/.codex/sessions rollout transcripts + the
+    // logs_2/state_5 sqlite — the exact data-loss this PR closes.
+    migrateAgentPersistence(fromId, toId, tmpHome)
+    const toBase = path.join(tmpHome, '.aimaestro', 'agents', toId, 'codex-app-data')
+    const rollout = path.join(toBase, 'sessions', '2026', '06', '09', 'rollout-2026-06-09T12-11-38-pred.jsonl')
+    expect(fs.existsSync(rollout)).toBe(true)
+    expect(fs.readFileSync(rollout, 'utf8')).toContain('session_meta')
+    expect(fs.readFileSync(path.join(toBase, 'config.toml'), 'utf8')).toContain('trust_level = "trusted"')
   })
 
   it('preserves restrictive 0600 mode on copied JSON files', () => {

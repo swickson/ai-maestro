@@ -92,13 +92,22 @@ describe('resolveConversationDir', () => {
     )
   })
 
-  it('cloud Codex agent: returns null (deferred to its own kanban when Vance migrates to Codex)', () => {
+  it('cloud Codex agent: derives from per-agent codex-app-data/sessions path (kanban 01e11bf9, single-dir OPT-B mount)', () => {
     const agent = {
       id: 'future-codex-uuid',
       program: 'codex',
       deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-future-codex' } },
     }
-    expect(resolveConversationDir(agent, HOST_HOME)).toBeNull()
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(
+      path.join(
+        HOST_HOME,
+        '.aimaestro',
+        'agents',
+        'future-codex-uuid',
+        'codex-app-data',
+        'sessions',
+      ),
+    )
   })
 
   it('cloud agent with no explicit program defaults to claude path', () => {
