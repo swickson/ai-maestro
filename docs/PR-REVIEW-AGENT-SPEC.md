@@ -152,7 +152,11 @@ A reviewer's most common operation — "what does this change touch / who calls 
 1. ✅ **Discord wiring** — single shared GitHub-alerts channel; one `WATCH_WEBHOOKS` triple appended in `discord-gateway/.env` → AMP to `dev-columbo-holmes@n4x-corp.aimaestro.local`; gateway restarted + verified (both watch entries live, Discord connected).
 2. ✅ **Repo slugs** — finalized as the 6-repo allowlist above; library seeded.
 
-**Only remaining go-live gate:** interactive `codex login` in Columbo's container tmux (OAuth — operator's lane; determines spend attribution).
+**Only remaining go-live gate:** interactive `codex login` in Columbo's container tmux (OAuth — operator's lane; determines spend attribution). *(Completed 2026-06-11; end-to-end Discord→triage verified live on a real `allianceos` issue.)*
+
+**Routing + autonomy roadmap (2026-06-11):**
+- ✅ **Repo → orchestrator routing live for issue triage.** Columbo holds a verified repo→lead AMP map (COLUMBO_INSTRUCTIONS.md §3A): ai-maestro/-plugins→KAI, gateways→Bishop, ziggy→dev-ziggy-orchestrator, n4safety-app→Zach (`dev-n4safety-operator`), allianceos→Luke (`dev-allianceos-luke`). On triage he AMPs the repo's lead.
+- 🔜 **PR-review auto-handoff (NOT yet — gated on Shane):** detect PRs from the internal team → after posting the review, AMP the repo lead the review/handle → that team folds it in and continues autonomously, no human in the loop. Foundation (routing map + provenance check) is the next phase; review-routing stays OFF until explicitly enabled (COLUMBO_INSTRUCTIONS.md §5B).
 
 ---
 
