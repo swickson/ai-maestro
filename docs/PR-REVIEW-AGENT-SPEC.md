@@ -148,9 +148,11 @@ A reviewer's most common operation — "what does this change touch / who calls 
 - ✅ **v1 trigger:** Discord doorbell from day one (not poll-first). Poll (`gh pr list`) demoted to degraded-mode backstop only.
 - ✅ **Disk budget:** cap `/srv/review-repos`, periodic `git gc`, drop repos untouched 30d (re-clone cheap). Exact ceiling settled with Hutch at build.
 
-**Still open (load-bearing for the Discord-now build):**
-1. **Discord wiring specifics:** which channel(s) GitHub's native webhook posts to, and the `WatchWebhookEntry` config in the discord-gateway that maps that channel → AMP to the reviewer. (Coordinate with the discord-gateway owner.)
-2. **Exact repo slugs** for Ziggy, N4 Safety, and Alliance OS (owner/name) for the allowlist + initial clones.
+**Resolved 2026-06-11 (build complete):**
+1. ✅ **Discord wiring** — single shared GitHub-alerts channel; one `WATCH_WEBHOOKS` triple appended in `discord-gateway/.env` → AMP to `dev-columbo-holmes@n4x-corp.aimaestro.local`; gateway restarted + verified (both watch entries live, Discord connected).
+2. ✅ **Repo slugs** — finalized as the 6-repo allowlist above; library seeded.
+
+**Only remaining go-live gate:** interactive `codex login` in Columbo's container tmux (OAuth — operator's lane; determines spend attribution).
 
 ---
 
