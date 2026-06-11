@@ -159,4 +159,41 @@ After create (+ PATCH hook, + auth):
 
 ---
 
-_Watson sections (§1 pattern, §2–6, §8–9) reflect mechanics verified during the 2026-06-08 gateways dev-team standup (Crease/Whistler/Mother). Bishop's §1 rationale + §7 orchestration reflect the same standup's orchestration + the worktree-collision incident and its fix (2026-06-08/09)._
+## 10. Review-only variant (Columbo) — multi-repo reviewer + issue triager
+
+A cloud agent that **reads many repos** and **never builds/commits/pushes** — it reviews PRs and triages issues, then returns to idle. It inherits §1–§6 (mounts, prerequisites, create/hook/lifecycle) and overrides only the role-specific parts below. Full design record + decision ledger: [`docs/PR-REVIEW-AGENT-SPEC.md`](./PR-REVIEW-AGENT-SPEC.md).
+
+**What flips vs. the coding agent (§1):** the repos are a **disposable cache**, not the deliverable — nobody reviews the reviewer's working tree, and it's a single agent, so the "clean reviewable tree" and "N-agent collision" rationales don't apply. What's precious is **identity only**.
+
+**Mounts (override §1's "coding repo"):**
+| Mount | Lifecycle | Holds |
+|---|---|---|
+| **Home** `/home/gosub/agents/columbo` (identical path) | precious, survives recreate | GitHub App creds (`.pem` + Client ID), AMP identity, review log (dedup), on-wake instructions file |
+| **Repo library** `/srv/review-repos` (identical path) | **disposable** — `rm -rf` + re-clone freely | warm working copies of allowlisted repos + graphify graphs + caches |
+
+Cleaving precious-home from disposable-cache means disk reclaim / repo reset never risks identity (the §1 reason, sharpened for an always-on reviewer).
+
+**Program:** `codex` (autonomy flag `--dangerously-bypass-approvals-and-sandbox`, per §4). Codex graphify skill installs to `~/.codex/skills`; invocation is `$graphify` (not `/graphify`); set `multi_agent = true` under `[features]` in `~/.codex/config.toml`.
+
+**Auth (overrides §5's interactive OAuth) — GitHub App, not a PAT.** *Why not a PAT:* the watched repos are owned by the `swickson` **personal account** where the reviewer is only a collaborator; personal-repo collaborators get only the **write** role (triage is org-only) AND fine-grained PATs **cannot scope another personal account's repos** (verified — GitHub docs). So no PAT can enforce least-privilege here. A **GitHub App installation token is scoped to exactly the App's permissions regardless of collaborator role → the agent physically cannot push/merge.** App `n4x-columbo`: `pull_requests:write` + `issues:write` + `contents:read` + `metadata:read`; comments sign `n4x-columbo[bot]`.
+- **Token-minter** (in home, openssl+curl+jq — no image bake needed): JWT signed RS256 with `iss`=**Client ID** (`Iv23…`, GitHub-recommended over numeric App ID), `iat`=now-60, `exp`=now+540; `POST /app/installations/<id>/access_tokens` → short-lived (`≤1h`) `ghs_…` token used as `Authorization: token`.
+- **Verified 2026-06-11 (Holmes):** Client ID `Iv23li40UW1VO1FpVPAz`; installs `139685565` (swickson → 5 repos) + `139704047` (SEACWORX → `allianceos` only). Full chain (JWT→install-token→scoped-repo) proven, no push.
+- **Creds staging:** `.pem` + Client ID live in the home mount `/home/gosub/agents/columbo/` (move them there at build, never leave in the host homedir). Container runs as `claude`; ensure the files are readable by it.
+
+**Allowlist (load-bearing — bounds what a forged trigger can clone):** `swickson/{ziggy, n4safety-app, aimaestro-gateways, ai-maestro-plugins, ai-maestro}` + `SEACWORX/allianceos`.
+
+**Trigger — Discord doorbell (no open port):** GitHub's native Discord webhook → the GitHub-alerts channel → `discord-gateway` `WATCH_WEBHOOKS` match → AMP to Columbo. Append a triple `channelId:webhookId:columbo@<addr>` to the existing `WATCH_WEBHOOKS` env (format proven in prod; one entry already routes a channel → Hale) and restart `discord-gateway`. Discord is only the *doorbell* — the embed carries the PR/issue URL; `gh`/the API supplies structured data. Poll (`gh pr list`) is the degraded-mode backstop only.
+
+**Review + triage loop:** resolve repo+# from the AMP trigger → check it's on the allowlist → `cd` the library copy → `git fetch` → `gh pr checkout` (PR) → review (read diff + cross-ref live code, optional tests in a throwaway worktree, removed after) → `gh pr comment`/`--request-changes` (never `--approve`); for issues → classify + label/comment/route via AMP. Append `(repo, #, head SHA, verdict)` to the home review log; idle.
+
+**Dedup (load-bearing):** key the review log on **(repo, PR#, head SHA)**. Review on `opened` + `synchronize`-with-new-SHA; skip drafts; never re-review the same head SHA.
+
+**Security (scope-relaxed):** internal repos only, all PR authors trusted → **PR-test-execution is acceptable** (the untrusted-RCE concern doesn't apply); container isolation is defense-in-depth, not the gate. Comment-only + App `contents:read` + the allowlist bound blast radius.
+
+**Concurrency:** serialize for v1 (drain the AMP inbox after each review); fan-out is a v2 concern.
+
+**Fleet direction:** Columbo is the pilot for per-agent GitHub identities (attribution + least-privilege vs. every agent sharing the operator's `gh` auth). When templatizing for the orchestrators, a **GitHub App per role** (reviewer-App, builder-App) scales cleaner than N machine-user PATs — short-lived tokens, no per-account 2FA/PAT sprawl, and it sidesteps the personal-repo resource-owner limitation entirely.
+
+---
+
+_Watson sections (§1 pattern, §2–6, §8–10) reflect mechanics verified during the 2026-06-08 gateways dev-team standup (Crease/Whistler/Mother) + the 2026-06-11 Columbo GitHub-App provisioning. Bishop's §1 rationale + §7 orchestration reflect the same standup's orchestration + the worktree-collision incident and its fix (2026-06-08/09)._
