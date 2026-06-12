@@ -82,6 +82,8 @@ For **Gemini/antigravity** agents, add reinforcement ("…then re-read and follo
 
 **Autonomy is per-provider** — `--dangerously-skip-permissions` is CLAUDE-ONLY; baking it into codex/gemini breaks launch (unrecognized flag). Use the table.
 
+**AMP-scripts PATH gotcha (non-Claude agents).** The AMP CLI lives at `/home/claude/.local/bin/` and **is** on the container shell PATH (default `sh` and login shell both resolve `amp-send`) — so a human in tmux or a `docker exec` probe finds it fine. But **Codex's command-execution environment doesn't surface that PATH** (observed standing up Columbo, 2026-06-11: it couldn't invoke `amp-send` by bare name until steered). Claude agents inherit it and don't hit this. **Fix: in any non-Claude agent's instructions, reference AMP by absolute path** (`/home/claude/.local/bin/amp-send`) or have it `export PATH=/home/claude/.local/bin:$PATH` first — and verify by what the *harness* sees, not what `docker exec`/tmux shows (they mislead here).
+
 ---
 
 ## 5. Auth setup (per provider)
