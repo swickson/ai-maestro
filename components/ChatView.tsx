@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback, useMemo, type KeyboardEvent, type ChangeEvent } from 'react'
-import { User, Bot, Wrench, Loader2, Send, RefreshCw, AlertCircle, ChevronDown, ChevronRight, Copy, Check, MessageSquare, ScanEye, Brain, X } from 'lucide-react'
+import { User, Bot, Wrench, Loader2, Send, RefreshCw, AlertCircle, ChevronDown, ChevronRight, Copy, Check, MessageSquare, ScanEye, Brain, X, Pause } from 'lucide-react'
 import { MarkdownContent } from '@/components/chat/MarkdownRenderer'
 import ToolBurstGroup from '@/components/chat/ToolBurstGroup'
 import { groupMessages, getToolPreview, type ToolBurst } from '@/lib/chat-utils'
@@ -108,6 +108,14 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
       label: string;
       action: string;
       rule?: string;
+    }>;
+    // AskUserQuestion payload — interactive questions Claude is blocked on,
+    // captured by the PreToolUse hook before the assistant turn hits the transcript.
+    questions?: Array<{
+      question: string;
+      header?: string;
+      options: Array<{ label: string; description?: string }>;
+      multiSelect?: boolean;
     }>;
     notificationType?: string;
     updatedAt?: string;
@@ -245,14 +253,17 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
             }
 
             case 'chat:hookState': {
-              // Permission prompts are "sticky" — once we have a permission_request,
-              // only replace it with another permission_request. Null or waiting_for_input
-              // cannot clear it. Only explicit user action (sendQuickResponse → setHookState(null))
-              // or an assistant message (chat:messages handler) can clear it.
+              // Interactive prompts (permission_request + AskUserQuestion's
+              // question_prompt) are "sticky" — once we have one, a content-free
+              // waiting_for_input or null cannot clear it (that blank state is the
+              // hang). Only another interactive prompt, explicit user action
+              // (sendQuickResponse → setHookState(null)), or an assistant message
+              // (chat:messages handler) can clear it.
               const newState = data.data || null
+              const isInteractive = (s?: string) => s === 'permission_request' || s === 'question_prompt'
               setHookState(prev => {
-                if (prev?.status === 'permission_request') {
-                  if (newState?.status === 'permission_request') return newState
+                if (isInteractive(prev?.status)) {
+                  if (isInteractive(newState?.status)) return newState
                   return prev
                 }
                 return newState
@@ -382,9 +393,9 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
     }
   }, [messages, pendingMessages])
 
-  // Auto-scroll when permission prompt appears
+  // Auto-scroll when an interactive prompt appears
   useEffect(() => {
-    if (hookState?.status === 'permission_request') {
+    if (hookState?.status === 'permission_request' || hookState?.status === 'question_prompt') {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [hookState])
@@ -625,6 +636,7 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
   // are invisible — keep looking until we find user or assistant.
   const activityState = useMemo(() => {
     if (hookState?.status === 'permission_request') return 'permission' as const
+    if (hookState?.status === 'question_prompt') return 'question' as const
     if (hookState?.status === 'waiting_for_input') return 'waiting' as const
     if (pendingMessages.length > 0 || isSending) return 'thinking' as const
     if (messages.length > 0) {
@@ -646,6 +658,7 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
             !isOnline ? 'bg-red-500'
             : activityState === 'thinking' ? 'bg-amber-400 animate-pulse'
             : activityState === 'permission' ? 'bg-red-400 animate-pulse'
+            : activityState === 'question' ? 'bg-cyan-400 animate-pulse'
             : activityState === 'waiting' ? 'bg-green-400'
             : 'bg-gray-500'
           }`} />
@@ -657,6 +670,7 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
                   ? `${liveActivity.label}${liveActivity.detail ? ` · ${liveActivity.detail}` : ''}...`
                   : 'Agent is working...')
               : activityState === 'permission' ? 'Permission needed'
+              : activityState === 'question' ? 'Waiting for your answer'
               : activityState === 'waiting' ? 'Ready for input'
               : agent.label || agent.name || agent.alias || 'Chat'}
             </h3>
@@ -980,7 +994,7 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
         })}
 
         {/* Live activity indicator — shows what the agent is doing right now */}
-        {activityState === 'thinking' && liveActivity && hookState?.status !== 'permission_request' && (
+        {activityState === 'thinking' && liveActivity && hookState?.status !== 'permission_request' && hookState?.status !== 'question_prompt' && (
           <div className="flex justify-start">
             <div className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-gray-800/60 border border-gray-700/50">
               <div className="flex gap-0.5">
@@ -1056,6 +1070,88 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ASK USER QUESTION — interactive prompt captured by the PreToolUse hook.
+            Claude defers the assistant turn (with the tool_use) to the transcript
+            until the user answers, so without this the chat shows a blank spinner.
+            Renders the first question inline; multi-question degrades to the terminal. */}
+        {hookState?.status === 'question_prompt' && hookState.questions && hookState.questions.length > 0 && (() => {
+          const q = hookState.questions[0]
+          const extraQuestions = hookState.questions.length - 1
+          return (
+            <div className="flex justify-start">
+              <div className="max-w-[85%]">
+                <div className="rounded-2xl px-4 py-3 bg-cyan-900/30 border border-cyan-700/50 text-cyan-100">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-2 h-2 rounded-full animate-pulse bg-cyan-400" />
+                    <span className="text-xs font-medium text-cyan-400">
+                      {q.header || 'Claude is asking'}
+                    </span>
+                  </div>
+                  <div className="text-sm text-cyan-100 mb-2">{q.question}</div>
+                  <div className="space-y-1.5">
+                    {q.options.map((opt, optIdx) => (
+                      <button
+                        key={optIdx}
+                        onClick={() => sendQuickResponse(String(optIdx + 1))}
+                        disabled={isSending}
+                        className="flex items-start gap-2 w-full text-left px-3 py-2 rounded-lg transition-all disabled:opacity-50 bg-cyan-800/20 hover:bg-cyan-700/30 border border-cyan-600/30 hover:border-cyan-500/50"
+                      >
+                        <span className="text-cyan-400 font-bold w-5 text-center flex-shrink-0 mt-0.5">
+                          {optIdx + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <span className="text-sm text-cyan-200">{opt.label}</span>
+                          {opt.description && (
+                            <p className="text-xs text-cyan-400/60 mt-0.5">{opt.description}</p>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                    {/* "Other" — focus the input to type a custom answer (matches terminal) */}
+                    <button
+                      onClick={() => {
+                        const el = document.querySelector<HTMLTextAreaElement>('[data-chat-input]')
+                        el?.focus()
+                      }}
+                      disabled={isSending}
+                      className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg bg-gray-800/30 hover:bg-gray-700/40 border border-gray-600/30 hover:border-gray-500/50 transition-all"
+                    >
+                      <span className="text-gray-400 font-bold w-5 text-center flex-shrink-0">
+                        {q.options.length + 1}
+                      </span>
+                      <span className="text-sm text-gray-300">Other (type your answer)</span>
+                    </button>
+                  </div>
+                  {extraQuestions > 0 && (
+                    <p className="text-xs text-cyan-400/60 mt-2">
+                      +{extraQuestions} more question{extraQuestions > 1 ? 's' : ''} after this — open the Terminal tab to finish.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* WAITING-FOR-INPUT banner fallback — a blocking interactive prompt the
+            hook couldn't capture richly (permission/question with no options). Scoped
+            to notificationType 'permission_prompt' so it does NOT fire on idle_prompt
+            (the normal "agent finished, ready for your next message" state, which also
+            writes waiting_for_input). Without this the chat shows a blank spinner. */}
+        {hookState?.status === 'waiting_for_input' && hookState?.notificationType === 'permission_prompt' && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%]">
+              <div className="flex items-center gap-2 rounded-2xl px-4 py-3 bg-gray-800/60 border border-gray-600/50 text-gray-200">
+                <Pause className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                <span className="text-sm">
+                  Agent is waiting for your input (interactive prompt) — open the{' '}
+                  <span className="font-medium text-amber-300">Terminal</span> tab to respond.
+                </span>
               </div>
             </div>
           </div>

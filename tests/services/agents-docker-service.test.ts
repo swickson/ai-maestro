@@ -612,10 +612,16 @@ describe('provisionCloudClaudeConfig', () => {
     const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     const containerHook = `/home/claude/.aimaestro/agents/${uuid}/claude-hook.cjs`
-    for (const event of ['Notification', 'Stop', 'SessionStart', 'UserPromptSubmit']) {
+    for (const event of ['Notification', 'PreToolUse', 'Stop', 'SessionStart', 'UserPromptSubmit']) {
       const cfg = settings.hooks[event][0]
       expect(cfg.hooks[0].command).toBe(`node ${containerHook}`)
     }
+  })
+
+  it('registers a PreToolUse hook matched to AskUserQuestion so cloud agents capture interactive questions before they block', () => {
+    const { settingsPath } = provisionCloudClaudeConfig(uuid, tmpHome, tmpRepo)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(settings.hooks.PreToolUse[0].matcher).toBe('AskUserQuestion')
   })
 
   it('seeds skipDangerousModePermissionPrompt: true so cloud agents do not re-prompt the bypass warning on every recreate', () => {

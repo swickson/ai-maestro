@@ -162,7 +162,7 @@ export async function getConversationMessages(
         const stateContent = fs.readFileSync(stateFile, 'utf-8')
         hookState = JSON.parse(stateContent)
 
-        const isWaitingState = hookState.status === 'waiting_for_input' || hookState.status === 'permission_request'
+        const isWaitingState = hookState.status === 'waiting_for_input' || hookState.status === 'permission_request' || hookState.status === 'question_prompt'
         if (!isWaitingState) {
           const stateAge = Date.now() - new Date(hookState.updatedAt).getTime()
           if (stateAge > 60000) {
