@@ -74,13 +74,17 @@ async function broadcastStatusUpdate(cwd, state) {
         // (permission requests + notifications). Consumed by the activity/update
         // route → broadcastActivityUpdate(sessionName, status, hookStatus,
         // notificationType, agentId, hookState).
-        const hookStateData = (state.status === 'permission_request' || state.notificationType)
+        const hookStateData = (state.status === 'permission_request' || state.status === 'question_prompt' || state.notificationType)
             ? {
                 status: state.status,
                 toolName: state.toolName,
                 toolInput: state.toolInput,
                 description: state.description,
                 options: state.options,
+                // AskUserQuestion payload (question_prompt) — the interactive
+                // questions/options Claude is blocked on. Carried so the Chat
+                // view can render them inline instead of a blank spinner.
+                questions: state.questions,
                 message: state.message,
                 notificationType: state.notificationType,
               }
@@ -370,6 +374,33 @@ async function main() {
 
     // Handle different hook events
     switch (hookEvent) {
+        case 'PreToolUse': {
+            // Claude is about to call a tool. We only care about AskUserQuestion
+            // (registered with a matcher so this branch normally only fires for it,
+            // but guard defensively). Claude DEFERS writing the assistant turn
+            // (preamble + AskUserQuestion tool_use) to the transcript JSONL until
+            // AFTER the user answers — so while the prompt is pending the chat view
+            // has nothing to render and paints a blank spinner. PreToolUse fires
+            // BEFORE the block and carries the full tool_input.questions, so we
+            // capture it here and write a question_prompt state the Chat view can
+            // render inline (mirrors how PermissionRequest captures tool_input).
+            const ptuToolName = input.tool_name || input.toolName;
+            const ptuToolInput = input.tool_input || input.toolInput || {};
+            if (ptuToolName === 'AskUserQuestion' && Array.isArray(ptuToolInput.questions) && ptuToolInput.questions.length > 0) {
+                const firstQ = ptuToolInput.questions[0] || {};
+                writeState(cwd, {
+                    status: 'question_prompt',
+                    toolName: ptuToolName,
+                    questions: ptuToolInput.questions,
+                    description: firstQ.question || 'Claude is asking a question',
+                    message: 'Claude is waiting for your answer',
+                    sessionId,
+                    transcriptPath
+                });
+            }
+            break;
+        }
+
         case 'PermissionRequest':
             // Claude is asking for permission to use a tool
             // Input includes: tool_name, tool_input, tool_use_id, permission_suggestions
@@ -442,6 +473,23 @@ async function main() {
         case 'Notification':
             // Check notification type
             const notificationType = input.notification_type || input.type;
+
+            // If an AskUserQuestion prompt was just captured (PreToolUse), the
+            // content-free Notification that follows would otherwise overwrite the
+            // rich question_prompt state with a blank waiting_for_input — re-creating
+            // the hang. Preserve the recent question_prompt instead of downgrading it.
+            try {
+                const qStateDir = path.join(os.homedir(), '.aimaestro', 'chat-state');
+                const qStateFile = path.join(qStateDir, `${hashCwd(cwd)}.json`);
+                if (fs.existsSync(qStateFile)) {
+                    const qExisting = JSON.parse(fs.readFileSync(qStateFile, 'utf8'));
+                    const qAge = Date.now() - new Date(qExisting.updatedAt).getTime();
+                    if (qExisting.status === 'question_prompt' && qAge < 15000) {
+                        debugLog({ event: 'notification_preserved_question_prompt', cwd, notificationType });
+                        break;
+                    }
+                }
+            } catch (e) {}
 
             if (notificationType === 'idle_prompt') {
                 // Claude is waiting for regular input - perfect time to check messages!

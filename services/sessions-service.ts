@@ -155,7 +155,7 @@ function getHookState(workingDir: string): { status: string; notificationType?: 
       const content = fs.readFileSync(stateFile, 'utf-8')
       const state = JSON.parse(content)
 
-      const isWaitingState = state.status === 'waiting_for_input' || state.status === 'permission_request'
+      const isWaitingState = state.status === 'waiting_for_input' || state.status === 'permission_request' || state.status === 'question_prompt'
       if (!isWaitingState) {
         const stateAge = Date.now() - new Date(state.updatedAt).getTime()
         if (stateAge > 60000) return null
@@ -544,7 +544,7 @@ export async function getActivity(): Promise<Record<string, SessionActivityInfo>
     // If the terminal is actively producing output, the agent is working regardless
     // of what the hook state file says — hook files can be stale for seconds after
     // the agent starts processing a new prompt.
-    if (terminalIdle && hookState && (hookState.status === 'waiting_for_input' || hookState.status === 'permission_request')) {
+    if (terminalIdle && hookState && (hookState.status === 'waiting_for_input' || hookState.status === 'permission_request' || hookState.status === 'question_prompt')) {
       status = 'waiting'
     }
 

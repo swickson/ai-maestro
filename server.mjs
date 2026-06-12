@@ -206,7 +206,7 @@ function readHookState(workingDir) {
     if (fs.existsSync(stateFile)) {
       const content = fs.readFileSync(stateFile, 'utf-8')
       const state = JSON.parse(content)
-      const isWaitingState = state.status === 'waiting_for_input' || state.status === 'permission_request'
+      const isWaitingState = state.status === 'waiting_for_input' || state.status === 'permission_request' || state.status === 'question_prompt'
       if (!isWaitingState) {
         const stateAge = Date.now() - new Date(state.updatedAt).getTime()
         if (stateAge > 60000) return null
@@ -290,10 +290,13 @@ async function getChatHistory(sessionName, agentId) {
                      agent.preferences?.defaultWorkingDirectory
   let hookState = readHookState(workingDir)
 
-  // If the file no longer has permission_request but the server remembers one
-  // from this session (agent is still waiting for approval), use the stored state.
-  // This handles tab-switching: component unmounts/remounts while permission is pending.
-  if (hookState?.status !== 'permission_request') {
+  // If the file no longer has an interactive prompt (permission_request or
+  // question_prompt) but the server remembers one from this session (agent is
+  // still waiting for the user), use the stored state. This handles tab-switching
+  // (component unmounts/remounts while pending) and a chat opened mid-prompt after
+  // a content-free Notification clobbered the state file.
+  const isInteractivePrompt = (s) => s === 'permission_request' || s === 'question_prompt'
+  if (!isInteractivePrompt(hookState?.status)) {
     const sessionState = terminalSessions.get(sessionName)
     if (sessionState?._lastPermission) {
       hookState = sessionState._lastPermission
@@ -379,8 +382,10 @@ function broadcastHookState(sessionName, sessionState) {
   const workingDir = sessionState._hookStateWorkingDir
   if (!workingDir) return
   const state = readHookState(workingDir)
-  // Remember permission_request states so we can serve them on history re-requests
-  if (state?.status === 'permission_request') {
+  // Remember interactive prompts (permission_request + AskUserQuestion's
+  // question_prompt) so we can serve them on history re-requests even after a
+  // content-free Notification overwrites the on-disk state file.
+  if (state?.status === 'permission_request' || state?.status === 'question_prompt') {
     sessionState._lastPermission = state
   }
   const stateJson = JSON.stringify(state)

@@ -438,6 +438,15 @@ export function provisionCloudClaudeConfig(
           hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 5 }],
         },
       ],
+      // Capture AskUserQuestion before it blocks — Claude defers the assistant
+      // turn to the transcript until the user answers, so the chat view would
+      // otherwise show a blank spinner. PreToolUse carries tool_input.questions.
+      PreToolUse: [
+        {
+          matcher: 'AskUserQuestion',
+          hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 5 }],
+        },
+      ],
       Stop: [{ hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 5 }] }],
       SessionStart: [{ hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 5 }] }],
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: `node ${containerHook}`, timeout: 30 }] }],

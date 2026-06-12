@@ -255,6 +255,14 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
       label: string;
       action: string;
     }>;
+    // AskUserQuestion payload captured by the PreToolUse hook (see ChatView).
+    questions?: Array<{
+      question: string;
+      header?: string;
+      options: Array<{ label: string; description?: string }>;
+      multiSelect?: boolean;
+    }>;
+    notificationType?: string;
     updatedAt?: string;
   } | null>(null)
   const [input, setInput] = useState('')
@@ -343,6 +351,8 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
                 })
                 setPendingMessages([])
                 if (newMsgs.some((m: ChatMessage) => m.type === 'assistant')) {
+                  // Assistant moved on — clear sticky interactive prompt + activity
+                  setHookState(null)
                   setLiveActivity(null)
                 }
               }
@@ -350,7 +360,18 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
             }
 
             case 'chat:hookState': {
-              setHookState(data.data || null)
+              // Interactive prompts (permission_request + question_prompt) are sticky:
+              // a content-free waiting_for_input/null must not clear them (that blank
+              // state is the hang). Mirrors the desktop ChatView handler.
+              const newState = data.data || null
+              const isInteractive = (s?: string) => s === 'permission_request' || s === 'question_prompt'
+              setHookState(prev => {
+                if (isInteractive(prev?.status)) {
+                  if (isInteractive(newState?.status)) return newState
+                  return prev
+                }
+                return newState
+              })
               // Don't clear pending here — let chat:messages confirm with content match
               break
             }
@@ -494,9 +515,10 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
     setSending(false)
   }
 
-  // Send quick response (for permission prompts)
+  // Send quick response (for permission + question prompts)
   const sendQuickResponse = (text: string) => {
     setSending(true)
+    setHookState(null)
     const pendingMsg = { text, timestamp: new Date().toISOString() }
     setPendingMessages(prev => [...prev, pendingMsg])
 
@@ -542,8 +564,9 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
 
   // Determine status
   const isPermission = hookState?.status === 'permission_request'
+  const isQuestion = hookState?.status === 'question_prompt' && !!hookState?.questions?.length
   const isWaiting = hookState?.status === 'waiting_for_input'
-  const isWorking = pendingMessages.length > 0 || (messages.length > 0 && !isWaiting && !isPermission &&
+  const isWorking = pendingMessages.length > 0 || (messages.length > 0 && !isWaiting && !isPermission && !isQuestion &&
     (messages[messages.length - 1]?.type === 'user' || messages[messages.length - 1]?.type === 'human'))
 
   return (
@@ -879,7 +902,41 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
           </div>
         )}
 
-        {!isPermission && (
+        {/* ASK USER QUESTION — interactive prompt captured by the PreToolUse hook.
+            Without this the chat shows a blank "Ready for input" while Claude is
+            actually blocked on a question. Renders the first question inline. */}
+        {!isPermission && isQuestion && hookState?.questions && (() => {
+          const q = hookState.questions[0]
+          const extra = hookState.questions.length - 1
+          return (
+            <div className="px-3 py-2 bg-cyan-900/20 border-b border-cyan-800/50">
+              {q.header && <p className="text-[11px] font-medium text-cyan-400 mb-0.5">{q.header}</p>}
+              <p className="text-xs text-cyan-100 mb-2">{q.question}</p>
+              <div className="space-y-1.5">
+                {q.options.map((opt, optIdx) => (
+                  <button
+                    key={optIdx}
+                    onClick={() => sendQuickResponse(String(optIdx + 1))}
+                    disabled={sending}
+                    className="flex items-start gap-2 w-full text-left px-3 py-2 rounded-lg
+                      bg-cyan-800/20 hover:bg-cyan-700/30 border border-cyan-600/30
+                      hover:border-cyan-500/50 transition-all disabled:opacity-50"
+                  >
+                    <span className="text-cyan-400 font-bold w-5 text-center flex-shrink-0">{optIdx + 1}</span>
+                    <span className="text-cyan-200 text-sm flex-1">{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+              {extra > 0 && (
+                <p className="text-[11px] text-cyan-400/60 mt-1.5">
+                  +{extra} more question{extra > 1 ? 's' : ''} — use the terminal to finish.
+                </p>
+              )}
+            </div>
+          )
+        })()}
+
+        {!isPermission && !isQuestion && (
           <div className="px-3 py-1.5 flex items-center gap-2">
             <div
               className={`w-2 h-2 rounded-full flex-shrink-0 ${
@@ -887,7 +944,10 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
               }`}
             />
             <span className="text-xs text-gray-400">
-              {isWaiting ? 'Ready for input'
+              {isWaiting
+                ? (hookState?.notificationType === 'permission_prompt'
+                    ? 'Waiting for your input — use the terminal to respond'
+                    : 'Ready for input')
                : isWorking
                  ? (liveActivity ? `${liveActivity.label}${liveActivity.detail ? ` · ${liveActivity.detail}` : ''}` : 'Working...')
                  : 'Idle'}
