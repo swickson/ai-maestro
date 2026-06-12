@@ -883,11 +883,19 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
                     </div>
                   )}
 
-                  {/* AskUserQuestion — interactive options (shown in both modes) */}
+                  {/* AskUserQuestion — historical record (post-answer only).
+                      The tool_use is DEFERRED into the transcript until AFTER the user
+                      answers, so this message-driven block can only ever render
+                      post-answer. Answering happens live via the question_prompt
+                      hookState block (or the terminal), never here — so render this as
+                      a non-interactive record. Without `answered` forced true, the
+                      options reappear clickable once the tool_use lands (the
+                      double-render): a brief active flash before the tool_result greys
+                      it, plus a duplicate of the live prompt. */}
                   {(() => {
                     const askTool = getAskUserQuestion(message)
                     if (!askTool?.input?.questions) return null
-                    const answered = askTool.id ? isQuestionAnswered(askTool.id) : false
+                    const answered = true
                     const questions = askTool.input.questions as Array<{
                       question: string
                       header?: string
