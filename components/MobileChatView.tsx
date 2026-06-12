@@ -661,7 +661,12 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
             const text = extractText(msg)
             const tools = extractToolUses(msg)
             const askQ = extractAskUserQuestion(msg)
-            const answered = askQ ? isQuestionAnswered(askQ.id) : false
+            // Historical record only: the AskUserQuestion tool_use is deferred into
+            // the transcript until after the answer, so this block can only render
+            // post-answer. Live answering is via the question_prompt block / terminal.
+            // Forcing answered=true prevents the double-render (options reappearing
+            // clickable once the tool_use lands). Mirrors ChatView.
+            const answered = true
 
             // AskUserQuestion-only message (no text, just the question)
             if (!text && askQ) {
