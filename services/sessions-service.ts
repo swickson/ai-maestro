@@ -35,7 +35,7 @@ import { parseNameForDisplay, isCallSession } from '@/types/agent'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { sessionActivity, agentActivity, terminalSessions, broadcastStatusUpdate, broadcastChatEvent } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
-import { resolveBinary } from '@/lib/program-resolver'
+import { resolveBinary, LAUNCH_ENV_SCRUB } from '@/lib/program-resolver'
 import crypto from 'crypto'
 import { type ServiceResult, missingField, notFound, alreadyExists, invalidField, operationFailed, serviceError } from '@/services/service-errors'
 
@@ -732,9 +732,10 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
       await runtime.setEnvironment(actualSessionName, 'AIM_AGENT_ID', registeredAgentId)
     }
     await runtime.unsetEnvironment(actualSessionName, 'CLAUDECODE')
+    await runtime.unsetEnvironment(actualSessionName, 'CLAUDE_CODE_CHILD_SESSION')
     const exportCmd = registeredAgentId
-      ? `export AMP_DIR='${ampDir}' AIM_AGENT_NAME='${agentName}' AIM_AGENT_ID='${registeredAgentId}'; unset CLAUDECODE`
-      : `export AMP_DIR='${ampDir}' AIM_AGENT_NAME='${agentName}'; unset CLAUDECODE`
+      ? `export AMP_DIR='${ampDir}' AIM_AGENT_NAME='${agentName}' AIM_AGENT_ID='${registeredAgentId}'; ${LAUNCH_ENV_SCRUB}`
+      : `export AMP_DIR='${ampDir}' AIM_AGENT_NAME='${agentName}'; ${LAUNCH_ENV_SCRUB}`
     await runtime.sendKeys(actualSessionName, `"${exportCmd}"`, { enter: true })
     console.log(`[Sessions] Set AMP_DIR=${ampDir} for agent ${agentName}`)
   } catch (ampError) {

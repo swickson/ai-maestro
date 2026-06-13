@@ -17,6 +17,7 @@ import { tmpdir } from 'os'
 import { getAgentByName, createAgent, deleteAgent } from '@/lib/agent-registry'
 import { parseNameForDisplay } from '@/types/agent'
 import { getRuntime } from '@/lib/agent-runtime'
+import { LAUNCH_ENV_SCRUB } from '@/lib/program-resolver'
 import { type ServiceResult, operationFailed } from '@/services/service-errors'
 
 // ---------------------------------------------------------------------------
@@ -139,9 +140,11 @@ export async function createAssistantAgent(): Promise<ServiceResult<{
       })
     }
 
-    // Unset CLAUDECODE env to avoid nested-session detection
+    // Scrub leaked env: CLAUDECODE (nested-session detection) +
+    // CLAUDE_CODE_CHILD_SESSION (suppresses transcript persistence; see #196)
     await runtime.unsetEnvironment(ASSISTANT_NAME, 'CLAUDECODE')
-    await runtime.sendKeys(ASSISTANT_NAME, '"unset CLAUDECODE"', { enter: true })
+    await runtime.unsetEnvironment(ASSISTANT_NAME, 'CLAUDE_CODE_CHILD_SESSION')
+    await runtime.sendKeys(ASSISTANT_NAME, `"${LAUNCH_ENV_SCRUB}"`, { enter: true })
 
     // Small delay for env to take effect
     await new Promise(resolve => setTimeout(resolve, 300))

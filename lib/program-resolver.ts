@@ -23,6 +23,29 @@
  * services/agents-core-service.ts).
  */
 
+/**
+ * Shell prelude run immediately before launching an agent's program, to scrub
+ * leaked parent-environment vars that change Claude Code's behavior inside the
+ * agent's tmux session.
+ *
+ *   - `CLAUDECODE`               — leaked nested-session marker (long-standing scrub).
+ *   - `CLAUDE_CODE_CHILD_SESSION` — set when the pm2 server itself was launched
+ *     under Claude Code's experimental agent-teams feature; inherited into every
+ *     agent we launch. A standalone CLI claude with this var set runs as a
+ *     "child session" and writes NO per-project transcript
+ *     (`~/.claude/projects/<dir>/<session>.jsonl`), which silently breaks chat
+ *     history (the #197 resolver finds no file) and token-spend visibility for
+ *     all ai-maestro-launched tmux agents. Empirically, unsetting only this var
+ *     restores transcripts; `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` is NOT the
+ *     cause and must stay set (Claude Desktop relies on it). No-op on Linux
+ *     (var unset there). Closes #196.
+ *
+ * Centralized so the launch sites (agents-core-service, sessions-service,
+ * help-service) can't drift apart — a future revert of one copy fails a single
+ * test loudly instead of silently breaking one launch path.
+ */
+export const LAUNCH_ENV_SCRUB = 'unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION'
+
 /** Canonical agent classification. Source of truth for the AgentKind union. */
 export type AgentKind = 'claude' | 'codex' | 'gemini' | 'antigravity' | 'openclaw' | 'unknown'
 

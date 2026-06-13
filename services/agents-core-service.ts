@@ -60,7 +60,7 @@ import {
   setCloudContainerStatus,
 } from '@/lib/agent-registry'
 import { resolveAgentIdentifier } from '@/lib/messageQueue'
-import { resolveBinary } from '@/lib/program-resolver'
+import { resolveBinary, LAUNCH_ENV_SCRUB } from '@/lib/program-resolver'
 import { getHosts, getSelfHost, getSelfHostId, isSelf, updateHostRaw } from '@/lib/hosts-config'
 import { persistSession, unpersistSession } from '@/lib/session-persistence'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
@@ -1842,7 +1842,7 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
       if (program === 'none' || program === 'terminal') {
         // Export env vars for terminal-only mode
         try {
-          await runtime.sendKeys(sessionName, `"export AMP_DIR='${ampDir}' AIM_AGENT_NAME='${agentName}' AIM_AGENT_ID='${agentId}'; unset CLAUDECODE"`, { enter: true })
+          await runtime.sendKeys(sessionName, `"export AMP_DIR='${ampDir}' AIM_AGENT_NAME='${agentName}' AIM_AGENT_ID='${agentId}'; ${LAUNCH_ENV_SCRUB}"`, { enter: true })
         } catch { /* non-fatal */ }
         console.log(`[Wake] Terminal only mode - no AI program started`)
       } else {
@@ -1872,12 +1872,12 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
         // Small delay to let the session initialize
         await new Promise(resolve => setTimeout(resolve, 300))
 
-        // Single send-keys: export env vars, unset CLAUDECODE, then launch program
+        // Single send-keys: export env vars, scrub leaked env, then launch program
         try {
           const envExport = ampDir
             ? `export AMP_DIR='${ampDir}' AIM_AGENT_NAME='${agentName}' AIM_AGENT_ID='${agentId}'; `
             : ''
-          await runtime.sendKeys(sessionName, `"${envExport}unset CLAUDECODE; ${fullCommand}"`, { enter: true })
+          await runtime.sendKeys(sessionName, `"${envExport}${LAUNCH_ENV_SCRUB}; ${fullCommand}"`, { enter: true })
         } catch (error) {
           console.error(`[Wake] Failed to start program:`, error)
         }
