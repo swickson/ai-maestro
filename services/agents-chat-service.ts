@@ -15,6 +15,7 @@ import {
 } from '@/lib/meeting-inject-queue'
 import { sendKeysToAgent, cancelCopyModeForAgent, agentSessionReady } from '@/services/send-keys-to-agent'
 import { resolveConversationDir, resolveChatStateFile, cloudProgram } from '@/lib/agent-paths'
+import { resolveActiveTranscript } from '@/lib/conversation-resolver'
 import { capturePaneFromContainer } from '@/lib/container-utils'
 import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
 import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
@@ -67,29 +68,26 @@ export async function getConversationMessages(
     }
   }
 
-  // Find the most recently modified .jsonl file
-  const files = fs.readdirSync(conversationDir)
-    .filter(f => f.endsWith('.jsonl'))
-    .map(f => ({
-      name: f,
-      path: path.join(conversationDir, f),
-      mtime: fs.statSync(path.join(conversationDir, f)).mtime
-    }))
-    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
-
-  if (files.length === 0) {
+  // Resolve the agent's ACTUAL current transcript via the shared resolver
+  // (prefers the hook's transcriptPath, rejects title-only stubs, reports
+  // pending when the current session's file isn't written yet) — same logic the
+  // live WS chat uses, so the two paths can't drift. See #195.
+  const resolved = resolveActiveTranscript(agent)
+  if (!resolved.path || !resolved.exists) {
     return {
       data: {
         success: true,
         messages: [],
         conversationFile: null,
-        message: 'No conversation files found'
+        message: resolved.pending
+          ? 'Conversation transcript not yet available'
+          : 'No conversation files found'
       },
       status: 200
     }
   }
 
-  const currentConversation = files[0]
+  const currentConversation = { path: resolved.path, mtime: resolved.mtime as Date }
 
   // Read and parse the JSONL file
   const fileContent = fs.readFileSync(currentConversation.path, 'utf-8')
