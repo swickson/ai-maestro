@@ -2677,17 +2677,23 @@ describe('cloudInstructionsContainerPath (provider-aware discovery path)', () =>
 
 describe('cloudInstructionsSourcePath (orchestrator source, per-team)', () => {
   const HOME = '/home/tester'
-  it('resolves <Label>_INSTRUCTIONS.md under the per-team /ai-team dir', () => {
+  it('resolves <Label>_INSTRUCTIONS.md under the per-team ai-team-src dir', () => {
     expect(cloudInstructionsSourcePath('Crease', 'sneakers', HOME))
-      .toBe('/home/tester/.aimaestro/ai-team/sneakers/Crease_INSTRUCTIONS.md')
+      .toBe('/home/tester/.aimaestro/ai-team-src/sneakers/Crease_INSTRUCTIONS.md')
   })
-  it('falls back to the host-default /ai-team dir when no teamId', () => {
+  it('source dir is OUTSIDE the /ai-team mount tree (no peer-readable leak — Watson #193)', () => {
+    const p = cloudInstructionsSourcePath('Crease', 'sneakers', HOME)
+    // must NOT live under the bind-mounted ~/.aimaestro/ai-team/<teamId> dir
+    expect(p.startsWith('/home/tester/.aimaestro/ai-team/')).toBe(false)
+    expect(p).toContain('/.aimaestro/ai-team-src/')
+  })
+  it('falls back to the host-default ai-team-src dir when no teamId', () => {
     expect(cloudInstructionsSourcePath('Mother', undefined, HOME))
-      .toBe('/home/tester/.aimaestro/ai-team/Mother_INSTRUCTIONS.md')
+      .toBe('/home/tester/.aimaestro/ai-team-src/Mother_INSTRUCTIONS.md')
   })
   it('sanitizes the label to a safe basename (no path traversal)', () => {
     const p = cloudInstructionsSourcePath('../../etc/passwd', 'team', HOME)
-    expect(p).toBe('/home/tester/.aimaestro/ai-team/team/etcpasswd_INSTRUCTIONS.md')
+    expect(p).toBe('/home/tester/.aimaestro/ai-team-src/team/etcpasswd_INSTRUCTIONS.md')
     expect(p).not.toContain('..')
   })
   it('per-agent source isolation: different labels → different source files', () => {
@@ -2709,14 +2715,14 @@ describe('provisionCloudInstructions (#191 seed-from-source)', () => {
   }
 
   it('seeds the per-agent instructions.md from the source when source exists', () => {
-    const src = writeSource('.aimaestro/ai-team/sneakers/Crease_INSTRUCTIONS.md', '# Crease §1\nbe helpful')
+    const src = writeSource('.aimaestro/ai-team-src/sneakers/Crease_INSTRUCTIONS.md', '# Crease §1\nbe helpful')
     const { provisioned, instructionsPath } = provisionCloudInstructions('a1', src, tmpHome)
     expect(provisioned).toBe(true)
     expect(fs.readFileSync(instructionsPath, 'utf8')).toContain('# Crease §1')
   })
 
   it('RE-SEEDS from source on re-provision (source-of-truth — RO mount means no edits to preserve)', () => {
-    const src = writeSource('.aimaestro/ai-team/sneakers/Crease_INSTRUCTIONS.md', 'v1')
+    const src = writeSource('.aimaestro/ai-team-src/sneakers/Crease_INSTRUCTIONS.md', 'v1')
     provisionCloudInstructions('a1', src, tmpHome)
     fs.writeFileSync(src, 'v2-bishop-edit') // Bishop updates the source
     const { instructionsPath } = provisionCloudInstructions('a1', src, tmpHome)

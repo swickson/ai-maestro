@@ -1527,8 +1527,13 @@ export function buildCloudTransportRepoMount(
 // gap Watson found: codex's ~/.codex is a full-dir mount so AGENTS.md is durable,
 // but ~/.claude + ~/.gemini are subpath-mounted, so CLAUDE.md/GEMINI.md would
 // live container-layer-only = lost on rebuild). A dedicated file-mount fixes all
-// three uniformly. Source-of-truth = the per-team /ai-team dir (Bishop-maintained
-// <Label>_INSTRUCTIONS.md), the SAME host dir buildCloudAiTeamMount points at.
+// three uniformly. Source-of-truth = a per-team instruction-source dir
+// (Bishop-maintained <Label>_INSTRUCTIONS.md). It deliberately sits OUTSIDE the
+// /ai-team RO mount tree (a sibling ~/.aimaestro/ai-team-src/) — per-agent §1 is
+// private identity, NOT shared /ai-team plan content, so a worker must not be
+// able to read its peers' instruction files through the mounted dir (Watson #193
+// review). Only the agent's own seeded instructions.md is mounted, into its own
+// container at its own discovery path.
 
 // Map the agent's program → its in-container instruction discovery path.
 // claude→CLAUDE.md, codex→AGENTS.md, gemini+antigravity→GEMINI.md (antigravity
@@ -1547,16 +1552,21 @@ export function cloudInstructionsContainerPath(program: string | undefined): str
   }
 }
 
-// Resolve the host-side source instruction file for an agent: the per-team
-// /ai-team dir (matches buildCloudAiTeamMount's source) holding the
-// Bishop-maintained <Label>_INSTRUCTIONS.md. Label is sanitized to a safe
-// basename (no separators / traversal) since it indexes a filesystem path.
+// Resolve the host-side source instruction file for an agent: a per-team
+// instruction-source dir holding the Bishop-maintained <Label>_INSTRUCTIONS.md.
+// Lives at ~/.aimaestro/ai-team-src/<teamId>/ — a SIBLING of the /ai-team mount
+// dir, deliberately NOT inside it: /ai-team is bind-mounted RO into worker
+// containers, so source files placed there would be readable by every peer,
+// contradicting the "§1 = per-agent identity, not shared plan content" model
+// (Watson #193 review). Bishop owns + maintains these files at this path on each
+// host. Label is sanitized to a safe basename (no separators / traversal) since
+// it indexes a filesystem path.
 export function cloudInstructionsSourcePath(
   label: string | undefined,
   teamId: string | undefined,
   hostHome: string = os.homedir()
 ): string {
-  const base = path.join(hostHome, '.aimaestro', 'ai-team')
+  const base = path.join(hostHome, '.aimaestro', 'ai-team-src')
   const dir = teamId ? path.join(base, teamId) : base
   const safeLabel = (label || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'AGENT'
   return path.join(dir, `${safeLabel}_INSTRUCTIONS.md`)
