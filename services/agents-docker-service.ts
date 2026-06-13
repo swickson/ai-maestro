@@ -1993,7 +1993,15 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   // (no TOCTOU). The lock is released on EVERY exit path below (exhaustion,
   // docker failure, success); a pathological uncaught throw is backstopped by
   // the lock's stale-reclaim timeout.
-  const portLock = await acquireCloudPortLock()
+  // Acquire in its own try so a lock-wait timeout surfaces as a clean 503
+  // rather than escaping raw (createDockerAgent has no outer try). Per CelestIA
+  // review note (1) on PR #186.
+  let portLock: CloudPortLock
+  try {
+    portLock = await acquireCloudPortLock()
+  } catch (err) {
+    return serviceError('operation_failed', err instanceof Error ? err.message : 'Could not acquire cloud-port allocation lock', 503)
+  }
   try {
     const reserved = computeReservedCloudPorts(loadAgents(), await getHostBoundPorts())
     const { start, end } = getCloudPortRange()
