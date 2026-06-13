@@ -170,28 +170,12 @@ function killPtyProcess(ptyProcess, sessionName, alreadyExited = false) {
  * Resolve the JSONL conversation file path for an agent.
  * Returns null if not found.
  */
-function resolveJsonlPath(agent) {
-  const workingDir = agent?.workingDirectory ||
-                     agent?.sessions?.[0]?.workingDirectory ||
-                     agent?.preferences?.defaultWorkingDirectory
-  if (!workingDir) return null
-
-  const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects')
-  const projectDirName = workingDir.replace(/[/_]/g, '-')
-  const conversationDir = path.join(claudeProjectsDir, projectDirName)
-
-  if (!fs.existsSync(conversationDir)) return null
-
-  const files = fs.readdirSync(conversationDir)
-    .filter(f => f.endsWith('.jsonl'))
-    .map(f => ({
-      name: f,
-      path: path.join(conversationDir, f),
-      mtime: fs.statSync(path.join(conversationDir, f)).mtime
-    }))
-    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
-
-  return files.length > 0 ? files[0] : null
+// Delegates to the shared resolver (lib/conversation-resolver.ts) so the live
+// WS chat and the REST chat path (services/agents-chat-service.ts) can't drift.
+// Returns a TranscriptResolution { dir, path, mtime, exists, pending }.
+async function resolveJsonlPath(agent) {
+  const { resolveActiveTranscript } = await import('./lib/conversation-resolver.ts')
+  return resolveActiveTranscript(agent)
 }
 
 /**
@@ -276,14 +260,7 @@ async function getChatHistory(sessionName, agentId) {
     return { messages: [], hookState: null }
   }
 
-  const file = resolveJsonlPath(agent)
-  if (!file) {
-    return { messages: [], hookState: null }
-  }
-
-  const fileContent = fs.readFileSync(file.path, 'utf-8')
-  const lines = fileContent.split('\n')
-  const messages = parseJsonlLines(lines, 200)
+  const file = await resolveJsonlPath(agent)
 
   const workingDir = agent.workingDirectory ||
                      agent.sessions?.[0]?.workingDirectory ||
@@ -303,11 +280,22 @@ async function getChatHistory(sessionName, agentId) {
     }
   }
 
+  // No on-disk transcript for the current session (missing dir, or the current
+  // session's transcript isn't written yet — see #196). Return honest empty
+  // history + hookState rather than silently serving a stale title-only stub.
+  if (!file || !file.exists || !file.path) {
+    return { messages: [], hookState, transcriptPending: !!file?.pending }
+  }
+
+  const fileContent = fs.readFileSync(file.path, 'utf-8')
+  const lines = fileContent.split('\n')
+  const messages = parseJsonlLines(lines, 200)
+
   return {
     messages,
     hookState,
     conversationFile: file.path,
-    lastModified: file.mtime.toISOString()
+    lastModified: file.mtime?.toISOString?.()
   }
 }
 
@@ -319,13 +307,15 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
   // Already watching
   if (sessionState.jsonlWatcher) return
 
-  import('./lib/agent-registry.ts').then(({ getAgent, getAgentByName }) => {
+  import('./lib/agent-registry.ts').then(async ({ getAgent, getAgentByName }) => {
     // Try agentId first, fall back to sessionName (remote hosts won't have the local agentId)
     const agent = (agentId && getAgent(agentId)) || getAgentByName(sessionName)
     if (!agent) return
 
-    const file = resolveJsonlPath(agent)
-    if (!file) return
+    // Watch the resolved path even if it doesn't exist yet (file.pending): a
+    // late/deferred transcript will fire fs.watchFile's create event and rebind.
+    const file = await resolveJsonlPath(agent)
+    if (!file || !file.path) return
 
     sessionState.jsonlFilePath = file.path
     try {
