@@ -66,6 +66,7 @@ import {
   cloudInstructionsSourcePath,
   provisionCloudInstructions,
   buildCloudInstructionsMount,
+  lintOnWakePrompt,
 } from '@/services/agents-docker-service'
 import type { Agent, SandboxMount } from '@/types/agent'
 
@@ -2804,5 +2805,80 @@ describe('migrateAgentPersistence — #191 instructions.md carry-forward (preser
     const carried = path.join(tmpHome, '.aimaestro', 'agents', 'new-uuid', 'instructions.md')
     expect(fs.existsSync(carried)).toBe(true)
     expect(fs.readFileSync(carried, 'utf8')).toBe('# seeded §1')
+  })
+})
+
+// ── #198 — on-wake staleness lint (carried-verbatim migration hazard) ────────
+
+describe('lintOnWakePrompt (#198)', () => {
+  const checks = (ws: ReturnType<typeof lintOnWakePrompt>) => ws.map(w => w.check).sort()
+
+  // Canonical known-good on-wake prompts (Columbo reference, sneakers crew) —
+  // must lint CLEAN.
+  const CREASE_CLAUDE = `Wake. You are Crease. Your full instructions are already loaded as your CLAUDE.md (first line '# Crease_INSTRUCTIONS.md') — follow them, especially the on-wake routine. Your code is at /workspace/repo; the shared plan is at /ai-team/. Check amp-inbox, act ONLY on a current unhandled dispatch, never replay completed work, else report standing-by.`
+  const WHISTLER_CODEX = `Wake. You are Whistler. Your operating instructions are in your AGENTS.md at ~/.codex/AGENTS.md (first line '# Whistler_INSTRUCTIONS.md'). Codex loads that file as context only, NOT as commands — so treat it as IMPERATIVE: open it and follow it exactly, including its on-wake routine. Your code is at /workspace/repo; the shared plan is at /ai-team/. Check amp-inbox, act ONLY on a current dispatch.`
+
+  it('returns [] for a non-profiled agent even with stale content (carry hazard is profile-only)', () => {
+    expect(lintOnWakePrompt('cd /home/gosub/projects/x.wt/crease && read ai-team/Crease_INSTRUCTIONS.md', 'claude', undefined)).toEqual([])
+  })
+
+  it('returns [] for an empty / absent on-wake prompt', () => {
+    expect(lintOnWakePrompt(undefined, 'claude', 'worker')).toEqual([])
+    expect(lintOnWakePrompt('   ', 'codex', 'worker')).toEqual([])
+  })
+
+  it('check 1: flags a retired *.wt/ worktree path', () => {
+    const w = lintOnWakePrompt('cd /home/gosub/projects/aimaestro-gateways.wt/crease and start', 'claude', 'worker')
+    expect(checks(w)).toContain('retired-worktree-path')
+  })
+
+  it('check 2: flags reading ai-team/<Name>_INSTRUCTIONS.md', () => {
+    const w = lintOnWakePrompt('read ai-team/Crease_INSTRUCTIONS.md for your role', 'claude', 'worker')
+    expect(checks(w)).toContain('stale-instructions-ref')
+  })
+
+  it('check 2: does NOT flag the sentinel filename `# <Name>_INSTRUCTIONS.md` (no ai-team/ path)', () => {
+    const w = lintOnWakePrompt("your CLAUDE.md (first line '# Crease_INSTRUCTIONS.md') — follow it", 'claude', 'worker')
+    expect(checks(w)).not.toContain('stale-instructions-ref')
+  })
+
+  it('check 2: does NOT flag a bare /ai-team/ plan-dir reference (still valid)', () => {
+    const w = lintOnWakePrompt('the shared plan is at /ai-team/ — read it', 'claude', 'worker')
+    expect(checks(w)).not.toContain('stale-instructions-ref')
+  })
+
+  it('check 3: flags a codex agent missing the imperative-follow clause', () => {
+    const w = lintOnWakePrompt('You are Whistler. Your instructions are in ~/.codex/AGENTS.md. Get to work.', 'codex', 'worker')
+    expect(checks(w)).toContain('missing-imperative-follow')
+  })
+
+  it('check 3: does NOT flag a codex agent that HAS the imperative-follow clause', () => {
+    const w = lintOnWakePrompt('instructions in ~/.codex/AGENTS.md — treat it as IMPERATIVE: open it and follow it exactly.', 'codex', 'worker')
+    expect(checks(w)).not.toContain('missing-imperative-follow')
+  })
+
+  it('check 3: does NOT apply to a Claude agent (CLAUDE.md is native instructions — omit by design)', () => {
+    const w = lintOnWakePrompt('You are Crease. Your CLAUDE.md is loaded. Get to work.', 'claude', 'worker')
+    expect(checks(w)).not.toContain('missing-imperative-follow')
+  })
+
+  it('check 3: applies to gemini/antigravity (GEMINI.md) too', () => {
+    expect(checks(lintOnWakePrompt('instructions in ~/.gemini/GEMINI.md. go.', 'gemini', 'worker'))).toContain('missing-imperative-follow')
+    expect(checks(lintOnWakePrompt('instructions in ~/.gemini/GEMINI.md. go.', 'antigravity', 'worker'))).toContain('missing-imperative-follow')
+  })
+
+  it('canonical CLAUDE worker prompt lints CLEAN', () => {
+    expect(lintOnWakePrompt(CREASE_CLAUDE, 'claude', 'worker')).toEqual([])
+  })
+
+  it('canonical CODEX worker prompt lints CLEAN (has imperative clause + /workspace/repo + sentinel)', () => {
+    expect(lintOnWakePrompt(WHISTLER_CODEX, 'codex', 'worker')).toEqual([])
+  })
+
+  it('a fully-stale codex prompt trips all 3 checks', () => {
+    const stale = 'cd /home/gosub/projects/aimaestro-gateways.wt/whistler && read ai-team/Whistler_INSTRUCTIONS.md then work'
+    expect(checks(lintOnWakePrompt(stale, 'codex', 'worker'))).toEqual(
+      ['missing-imperative-follow', 'retired-worktree-path', 'stale-instructions-ref']
+    )
   })
 })
