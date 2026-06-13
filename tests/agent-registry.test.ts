@@ -1318,6 +1318,51 @@ describe('updateAgentRuntimeConfig', () => {
       expect(reloaded?.deployment?.sandbox?.ziggy).toBeUndefined()
     })
   })
+
+  describe('profile field (§11.1 wave-based dev-team container profile)', () => {
+    it('persists profile + teamId + transportRepo on deployment.sandbox (identity-preserving migration)', () => {
+      const agent = makeCloudAgent('prof-1')
+      const updated = updateAgentRuntimeConfig(agent.id, {
+        profile: 'worker',
+        teamId: 'alpha',
+        transportRepo: '/srv/transport/alpha/wave-1.git',
+      })
+      expect(updated?.deployment?.sandbox?.profile).toBe('worker')
+      expect(updated?.deployment?.sandbox?.teamId).toBe('alpha')
+      expect(updated?.deployment?.sandbox?.transportRepo).toBe('/srv/transport/alpha/wave-1.git')
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.profile).toBe('worker')
+    })
+
+    it('profile=undefined leaves an existing profile untouched', () => {
+      const agent = makeCloudAgent('prof-2')
+      updateAgentRuntimeConfig(agent.id, { profile: 'orchestrator', teamId: 'beta' })
+      updateAgentRuntimeConfig(agent.id, { extraEnv: { FOO: 'bar' } })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.profile).toBe('orchestrator')
+      expect(reloaded?.deployment?.sandbox?.teamId).toBe('beta')
+    })
+
+    it('teamId="" clears the persisted teamId (reassignment), profile survives', () => {
+      const agent = makeCloudAgent('prof-3')
+      updateAgentRuntimeConfig(agent.id, { profile: 'worker', teamId: 'alpha' })
+      updateAgentRuntimeConfig(agent.id, { teamId: '' })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.teamId).toBeUndefined()
+      expect(reloaded?.deployment?.sandbox?.profile).toBe('worker')
+    })
+
+    it('profile coexists with mounts + ziggy on the same sandbox block', () => {
+      const agent = makeCloudAgent('prof-4')
+      const mounts = [{ hostPath: '/repo', containerPath: '/workspace/repo' }]
+      updateAgentRuntimeConfig(agent.id, { mounts, ziggy: true, profile: 'orchestrator', teamId: 'gamma' })
+      const reloaded = getAgent(agent.id)
+      expect(reloaded?.deployment?.sandbox?.mounts).toEqual(mounts)
+      expect(reloaded?.deployment?.sandbox?.ziggy).toBe(true)
+      expect(reloaded?.deployment?.sandbox?.profile).toBe('orchestrator')
+      expect(reloaded?.deployment?.sandbox?.teamId).toBe('gamma')
+    })
+  })
 })
 
 // ============================================================================

@@ -55,6 +55,13 @@ import {
   ALWAYS_RESERVED_CONTAINER_PATH_ROOTS,
   OPERATOR_RESERVED_CONTAINER_PATH_ROOTS,
   OPERATOR_RESERVED_ENV_KEYS,
+  validateProfile,
+  provisionCloudGitIdentity,
+  buildCloudGitConfigMount,
+  buildCloudAiTeamMount,
+  buildCloudTransportRepoMount,
+  buildCloudCommonMounts,
+  buildCloudCommonPrecreateDirs,
 } from '@/services/agents-docker-service'
 import type { Agent, SandboxMount } from '@/types/agent'
 
@@ -1992,6 +1999,24 @@ describe('buildRecreateBody', () => {
     expect(buildRecreateBody(agent).ziggy).toBe(true)
   })
 
+  it('preserves sandbox.profile/teamId/transportRepo through recreate (§11.1 — recreate must NOT silently un-profile)', () => {
+    // Without this, /recreate drops the profile → the recreated agent loses
+    // /ai-team + /transport.git + its per-agent git identity and falls back to
+    // the generic image-baked identity (the exact mis-attribution the §11.6
+    // fail-loud exists to prevent). Watson catch on PR #187.
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        sandbox: { profile: 'worker', teamId: 'alpha', transportRepo: '/srv/transport/alpha/wave-1.git' },
+      },
+    })
+    const body = buildRecreateBody(agent)
+    expect(body.profile).toBe('worker')
+    expect(body.teamId).toBe('alpha')
+    expect(body.transportRepo).toBe('/srv/transport/alpha/wave-1.git')
+  })
+
   it('maps deployment.cloud.runtime fields back into the create body', () => {
     // Closes kanban 105b82a0 — without persisting runtime config on the agent
     // record, recreate fell back to createDockerAgent's hard-coded defaults
@@ -2441,5 +2466,190 @@ describe('getCloudPortRange', () => {
     process.env.CLOUD_AGENT_PORT_RANGE_START = 'abc'
     process.env.CLOUD_AGENT_PORT_RANGE_END = '24000'
     expect(() => getCloudPortRange()).toThrow(/Invalid cloud-agent port range/)
+  })
+})
+
+// ── WS2/WS3 — §11.1 wave-based dev-team container profiles ──────────────────
+
+describe('validateProfile', () => {
+  it('returns null for undefined / null (unprofiled = backward-compatible)', () => {
+    expect(validateProfile(undefined)).toBeNull()
+    expect(validateProfile(null)).toBeNull()
+  })
+  it('accepts worker and orchestrator', () => {
+    expect(validateProfile('worker')).toBeNull()
+    expect(validateProfile('orchestrator')).toBeNull()
+  })
+  it('rejects an unknown profile string (no silent orchestrator-RW escalation)', () => {
+    expect(validateProfile('admin')).toMatch(/profile must be one of/)
+    expect(validateProfile('')).toMatch(/profile must be one of/)
+  })
+  it('rejects a non-string profile', () => {
+    expect(validateProfile(123)).toMatch(/profile must be one of/)
+    expect(validateProfile({})).toMatch(/profile must be one of/)
+  })
+})
+
+describe('buildCloudAiTeamMount (§11.1/§11.2)', () => {
+  const HOME = '/home/tester'
+  it('returns null for an unprofiled agent (no /ai-team mount)', () => {
+    expect(buildCloudAiTeamMount(undefined, undefined, HOME)).toBeNull()
+    expect(buildCloudAiTeamMount(undefined, 'team-x', HOME)).toBeNull()
+  })
+  it('worker → RO mount, orchestrator → RW (single-writer §11.2)', () => {
+    const worker = buildCloudAiTeamMount('worker', 'team-x', HOME)
+    const orch = buildCloudAiTeamMount('orchestrator', 'team-x', HOME)
+    expect(worker).toEqual({ hostPath: '/home/tester/.aimaestro/ai-team/team-x', containerPath: '/ai-team', readOnly: true })
+    expect(orch).toEqual({ hostPath: '/home/tester/.aimaestro/ai-team/team-x', containerPath: '/ai-team', readOnly: false })
+  })
+  it('per-team source when teamId present, host-default when absent', () => {
+    expect(buildCloudAiTeamMount('worker', 'alpha', HOME)?.hostPath).toBe('/home/tester/.aimaestro/ai-team/alpha')
+    expect(buildCloudAiTeamMount('worker', undefined, HOME)?.hostPath).toBe('/home/tester/.aimaestro/ai-team')
+  })
+})
+
+describe('buildCloudTransportRepoMount (§11.4)', () => {
+  it('returns null when transportRepo is unset', () => {
+    expect(buildCloudTransportRepoMount(undefined)).toBeNull()
+    expect(buildCloudTransportRepoMount('')).toBeNull()
+  })
+  it('returns null when the host path does not exist (host-side lifecycle not yet provisioned → no-op)', () => {
+    expect(buildCloudTransportRepoMount('/nonexistent/wave-12345.git')).toBeNull()
+  })
+  it('mounts RW for both profiles when the bare repo exists on host', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-transport-'))
+    try {
+      const m = buildCloudTransportRepoMount(dir)
+      expect(m).toEqual({ hostPath: dir, containerPath: '/transport.git' })
+      expect(m?.readOnly).toBeUndefined() // RW for both worker + orchestrator (§11.4)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('buildCloudGitConfigMount (§11.6)', () => {
+  it('mounts the per-agent gitconfig RO at /home/claude/.gitconfig', () => {
+    expect(buildCloudGitConfigMount('agent-1', '/home/tester')).toEqual({
+      hostPath: '/home/tester/.aimaestro/agents/agent-1/gitconfig',
+      containerPath: '/home/claude/.gitconfig',
+      readOnly: true,
+    })
+  })
+})
+
+describe('provisionCloudGitIdentity (§11.6 fail-loud)', () => {
+  let tmpHome: string
+  const savedEmail = process.env.CLOUD_AGENT_GIT_EMAIL
+  beforeEach(() => { tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-git-')) })
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+    if (savedEmail === undefined) delete process.env.CLOUD_AGENT_GIT_EMAIL
+    else process.env.CLOUD_AGENT_GIT_EMAIL = savedEmail
+  })
+
+  it('FAILS LOUD when CLOUD_AGENT_GIT_EMAIL is unset (profiled agent would mis-attribute)', () => {
+    delete process.env.CLOUD_AGENT_GIT_EMAIL
+    expect(() => provisionCloudGitIdentity('a1', 'CelestIA', tmpHome)).toThrow(/CLOUD_AGENT_GIT_EMAIL is unset/)
+  })
+  it('FAILS LOUD on a malformed email (refuses injectable gitconfig)', () => {
+    process.env.CLOUD_AGENT_GIT_EMAIL = 'not-an-email'
+    expect(() => provisionCloudGitIdentity('a1', 'CelestIA', tmpHome)).toThrow(/not a valid email/)
+  })
+  it('writes [user] name + shared email when env is set', () => {
+    process.env.CLOUD_AGENT_GIT_EMAIL = 'deploy@n4x-corp.example'
+    const { gitconfigPath } = provisionCloudGitIdentity('a1', 'CelestIA', tmpHome)
+    const content = fs.readFileSync(gitconfigPath, 'utf8')
+    expect(content).toContain('name = CelestIA')
+    expect(content).toContain('email = deploy@n4x-corp.example')
+  })
+  it('sanitizes a newline/bracket-injection name (config-section smuggling)', () => {
+    process.env.CLOUD_AGENT_GIT_EMAIL = 'deploy@n4x-corp.example'
+    const { gitconfigPath } = provisionCloudGitIdentity('a1', 'Evil\n[core]\nsshCommand = x', tmpHome)
+    const content = fs.readFileSync(gitconfigPath, 'utf8')
+    // The injection is neutralized: brackets + newlines stripped, so no NEW
+    // config section can be opened (the "sshCommand" text survives only as
+    // harmless inline name-value chars, not a [core] directive).
+    expect(content).not.toContain('[core]')
+    expect(content.match(/\[/g)?.length).toBe(1) // exactly one section header: [user]
+    // name stays on a single line (no smuggled newline opening a directive)
+    const nameLine = content.split('\n').find(l => l.includes('name ='))
+    expect(nameLine).toBeDefined()
+  })
+})
+
+describe('buildCloudCommonMounts (§11.1 + create/update parity)', () => {
+  const HOME = '/home/tester'
+  const sortByContainer = (ms: SandboxMount[]) =>
+    [...ms].sort((a, b) => a.containerPath.localeCompare(b.containerPath))
+
+  it('unprofiled agent gets NO /ai-team, /transport.git, or gitconfig mount (backward-compatible)', () => {
+    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME })
+    const paths = mounts.map(m => m.containerPath)
+    expect(paths).not.toContain('/ai-team')
+    expect(paths).not.toContain('/transport.git')
+    expect(paths).not.toContain('/home/claude/.gitconfig')
+  })
+
+  it('profiled worker gets RO /ai-team + RO gitconfig', () => {
+    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, profile: 'worker', teamId: 'alpha' })
+    const aiTeam = mounts.find(m => m.containerPath === '/ai-team')
+    const gitcfg = mounts.find(m => m.containerPath === '/home/claude/.gitconfig')
+    expect(aiTeam).toEqual({ hostPath: '/home/tester/.aimaestro/ai-team/alpha', containerPath: '/ai-team', readOnly: true })
+    expect(gitcfg?.readOnly).toBe(true)
+  })
+
+  it('profiled orchestrator gets RW /ai-team', () => {
+    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, profile: 'orchestrator', teamId: 'alpha' })
+    expect(mounts.find(m => m.containerPath === '/ai-team')?.readOnly).toBe(false)
+  })
+
+  // THE parity guard (KAI requirement): createDockerAgent + updateContainerMountsAndExtraEnv
+  // now BOTH call buildCloudCommonMounts. Assert that the resolved mount set is
+  // identical given the same agent inputs — full set (paths + modes), order-insensitive.
+  // This converts the old two-hand-maintained-copies drift class into a test-time guarantee.
+  it('produces an IDENTICAL resolved mount set for the create-call and the update-call shape', () => {
+    const createArgs = { useZiggy: true, name: 'celestia', profile: 'worker' as const, teamId: 'alpha', hostHome: HOME }
+    const updateArgs = { useZiggy: true, name: 'celestia', profile: 'worker' as const, teamId: 'alpha', hostHome: HOME }
+    const createList = buildCloudCommonMounts('a1', createArgs)
+    const updateList = buildCloudCommonMounts('a1', updateArgs)
+    expect(sortByContainer(createList)).toEqual(sortByContainer(updateList))
+    // and the resolved set must be non-trivial (guards against an accidental empty return)
+    expect(createList.length).toBeGreaterThan(8)
+  })
+
+  it('includes the ziggy mounts only when useZiggy is true', () => {
+    const withZiggy = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'celestia' })
+    const without = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: false, name: 'celestia' })
+    expect(withZiggy.length).toBeGreaterThan(without.length)
+  })
+})
+
+describe('buildCloudCommonPrecreateDirs (§11.1 — shared mkdir set)', () => {
+  const HOME = '/home/tester'
+  it('includes /ai-team for a profiled agent', () => {
+    const dirs = buildCloudCommonPrecreateDirs('a1', { profile: 'worker', teamId: 'alpha', hostHome: HOME })
+    expect(dirs.some(m => m.containerPath === '/ai-team')).toBe(true)
+  })
+  it('excludes /ai-team for an unprofiled agent', () => {
+    const dirs = buildCloudCommonPrecreateDirs('a1', { hostHome: HOME })
+    expect(dirs.some(m => m.containerPath === '/ai-team')).toBe(false)
+  })
+  it('excludes file-level mounts (gitconfig, settings.json) — only directory sources are pre-created', () => {
+    const dirs = buildCloudCommonPrecreateDirs('a1', { profile: 'worker', hostHome: HOME })
+    expect(dirs.some(m => m.containerPath === '/home/claude/.gitconfig')).toBe(false)
+    expect(dirs.some(m => m.containerPath === '/home/claude/.claude/settings.json')).toBe(false)
+  })
+})
+
+describe('OPERATOR_RESERVED_CONTAINER_PATH_ROOTS — §11.1 additions', () => {
+  it('reserves /ai-team, /transport.git, and the gitconfig so operator mounts cannot shadow them', () => {
+    expect(OPERATOR_RESERVED_CONTAINER_PATH_ROOTS).toContain('/ai-team')
+    expect(OPERATOR_RESERVED_CONTAINER_PATH_ROOTS).toContain('/transport.git')
+    expect(OPERATOR_RESERVED_CONTAINER_PATH_ROOTS).toContain('/home/claude/.gitconfig')
+  })
+  it('validateMounts rejects an operator mount that shadows /ai-team', () => {
+    const err = validateMounts([{ hostPath: '/tmp/evil', containerPath: '/ai-team' }], 'operator')
+    expect(err).toMatch(/reserved by AI Maestro/)
   })
 })

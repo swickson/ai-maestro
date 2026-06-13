@@ -19,6 +19,9 @@
  *     extraEnv?: Record<string, string>,  // Replace operator extraEnv wholesale ({} to clear)
  *     ziggy?: boolean,                    // Toggle ziggy_default attach + Ziggy MCP overlay mounts
  *                                         //   (true requires /opt/stacks/ai-maestro/agent-envs/<name>.env)
+ *     profile?: 'worker' | 'orchestrator', // §11.1 dev-team container profile (identity-preserving migration)
+ *     teamId?: string,                    // scopes the shared /ai-team mount source
+ *     transportRepo?: string,             // absolute host path to the per-wave bare repo
  *   }
  *
  * Any field may be omitted to leave that aspect untouched.
@@ -38,7 +41,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params
-    let body: { mounts?: unknown; extraEnv?: unknown; ziggy?: unknown } = {}
+    let body: { mounts?: unknown; extraEnv?: unknown; ziggy?: unknown; profile?: unknown; teamId?: unknown; transportRepo?: unknown } = {}
     try {
       body = await request.json()
     } catch {
@@ -51,6 +54,9 @@ export async function POST(
       mounts: body.mounts as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['mounts'],
       extraEnv: body.extraEnv as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['extraEnv'],
       ziggy: typeof body.ziggy === 'boolean' ? body.ziggy : undefined,
+      profile: body.profile as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['profile'],
+      teamId: typeof body.teamId === 'string' ? body.teamId : undefined,
+      transportRepo: typeof body.transportRepo === 'string' ? body.transportRepo : undefined,
     })
     return toResponse(result)
   } catch (error) {
