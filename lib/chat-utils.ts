@@ -48,7 +48,7 @@ export type GroupedItem = Message | ToolBurst
 /**
  * Capped exponential backoff for chat WebSocket reconnection.
  * Returns the delay (ms) before the Nth reconnect attempt (0-indexed):
- * 1s, 2s, 4s, 8s, 16s, 32s→capped at 30s for all further attempts.
+ * 1s, 2s, 4s, 8s, 16s, then 30s (the 2^5=32s step is capped) for all further attempts.
  * The reconnect loop never permanently gives up while the view is active —
  * a fixed attempt cap previously left the chat dead forever after a transient
  * outage (e.g. a server restart that outlasted the retry budget).

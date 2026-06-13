@@ -8,7 +8,7 @@ describe('chatReconnectDelay', () => {
     expect(chatReconnectDelay(2)).toBe(4000)
     expect(chatReconnectDelay(3)).toBe(8000)
     expect(chatReconnectDelay(4)).toBe(16000)
-    expect(chatReconnectDelay(5)).toBe(32000 > 30000 ? 30000 : 32000)
+    expect(chatReconnectDelay(5)).toBe(30000) // 2^5=32s capped to 30s
   })
 
   it('caps at 30s and never gives up (no Infinity / NaN for large attempts)', () => {
