@@ -707,6 +707,27 @@ describe('wakeAgent', () => {
     expect(programCall![1]).toContain('--permission-mode auto')
   })
 
+  it('scrubs CLAUDE_CODE_CHILD_SESSION at launch but keeps EXPERIMENTAL_AGENT_TEAMS (#196)', async () => {
+    // Site-level guard (Columbo PR #199 suggestion): pins the launch site itself,
+    // not just the LAUNCH_ENV_SCRUB constant, so a future revert to a bare
+    // `unset CLAUDECODE` here fails loudly. CLAUDE_CODE_CHILD_SESSION=1 inherited
+    // from the agent-teams pm2 parent suppresses per-project transcripts.
+    const agent = makeAgent({ id: 'agent-1', name: 'my-agent', program: 'claude code' })
+    mockAgentRegistry.getAgent.mockReturnValue(agent)
+    mockRuntime.sessionExists.mockResolvedValue(false)
+    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+
+    const result = await wakeAgent('agent-1', {})
+
+    expect(result.status).toBe(200)
+    const programCall = mockRuntime.sendKeys.mock.calls.find(
+      (call: any[]) => call[2]?.enter === true
+    )
+    expect(programCall).toBeDefined()
+    expect(programCall![1]).toContain('unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION')
+    expect(programCall![1]).not.toContain('EXPERIMENTAL_AGENT_TEAMS')
+  })
+
   it('does NOT send --permission-mode flag when permissionMode is supervised', async () => {
     const agent = makeAgent({ id: 'agent-1', name: 'my-agent', program: 'claude code', permissionMode: 'supervised' })
     mockAgentRegistry.getAgent.mockReturnValue(agent)

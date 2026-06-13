@@ -11,7 +11,7 @@
  *     openclaw is discover-and-attach, the create primitive has no -S socket)
  */
 import { describe, it, expect } from 'vitest'
-import { resolveBinary, resolveKind, type AgentKind } from '@/lib/program-resolver'
+import { resolveBinary, resolveKind, LAUNCH_ENV_SCRUB, type AgentKind } from '@/lib/program-resolver'
 
 describe('resolveBinary (program → launch command)', () => {
   it.each([
@@ -92,5 +92,28 @@ describe('resolveKind (program → classification)', () => {
   it('defaults to unknown when no opts provided', () => {
     expect(resolveKind('vim')).toBe('unknown')
     expect(resolveKind(undefined)).toBe('unknown')
+  })
+})
+
+describe('LAUNCH_ENV_SCRUB (pre-launch leaked-env scrub)', () => {
+  // Centralized so the three launch sites (agents-core-service, sessions-service,
+  // help-service) can't drift. A revert of one copy fails loudly HERE.
+  it('unsets CLAUDECODE (long-standing nested-session marker)', () => {
+    expect(LAUNCH_ENV_SCRUB).toContain('CLAUDECODE')
+  })
+
+  it('unsets CLAUDE_CODE_CHILD_SESSION (transcript suppressor, #196)', () => {
+    // ai-maestro agents inherit this from the agent-teams pm2 parent; left set,
+    // claude writes no per-project transcript → breaks chat history + token spend.
+    expect(LAUNCH_ENV_SCRUB).toContain('CLAUDE_CODE_CHILD_SESSION')
+  })
+
+  it('does NOT unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS (Desktop relies on it)', () => {
+    // Empirically NOT the cause; scrubbing it would break Claude Desktop.
+    expect(LAUNCH_ENV_SCRUB).not.toContain('EXPERIMENTAL_AGENT_TEAMS')
+  })
+
+  it('is a single `unset` shell statement (no stray separators)', () => {
+    expect(LAUNCH_ENV_SCRUB).toMatch(/^unset (CLAUDECODE|CLAUDE_CODE_CHILD_SESSION)( (CLAUDECODE|CLAUDE_CODE_CHILD_SESSION))*$/)
   })
 })
