@@ -62,6 +62,10 @@ import {
   buildCloudTransportRepoMount,
   buildCloudCommonMounts,
   buildCloudCommonPrecreateDirs,
+  cloudInstructionsContainerPath,
+  cloudInstructionsSourcePath,
+  provisionCloudInstructions,
+  buildCloudInstructionsMount,
 } from '@/services/agents-docker-service'
 import type { Agent, SandboxMount } from '@/types/agent'
 
@@ -2651,5 +2655,148 @@ describe('OPERATOR_RESERVED_CONTAINER_PATH_ROOTS — §11.1 additions', () => {
   it('validateMounts rejects an operator mount that shadows /ai-team', () => {
     const err = validateMounts([{ hostPath: '/tmp/evil', containerPath: '/ai-team' }], 'operator')
     expect(err).toMatch(/reserved by AI Maestro/)
+  })
+})
+
+// ── #191 — per-agent durable instruction mount (WS2 follow-up) ──────────────
+
+describe('cloudInstructionsContainerPath (provider-aware discovery path)', () => {
+  it('maps each provider to its native instruction discovery path', () => {
+    expect(cloudInstructionsContainerPath('claude')).toBe('/home/claude/.claude/CLAUDE.md')
+    expect(cloudInstructionsContainerPath('claude-code')).toBe('/home/claude/.claude/CLAUDE.md')
+    expect(cloudInstructionsContainerPath('codex')).toBe('/home/claude/.codex/AGENTS.md')
+    expect(cloudInstructionsContainerPath('gemini')).toBe('/home/claude/.gemini/GEMINI.md')
+    // antigravity (agy) is gemini-based → reads the same ~/.gemini/GEMINI.md
+    expect(cloudInstructionsContainerPath('antigravity')).toBe('/home/claude/.gemini/GEMINI.md')
+  })
+  it('defaults unknown/undefined program to the claude path', () => {
+    expect(cloudInstructionsContainerPath(undefined)).toBe('/home/claude/.claude/CLAUDE.md')
+    expect(cloudInstructionsContainerPath('aider')).toBe('/home/claude/.claude/CLAUDE.md')
+  })
+})
+
+describe('cloudInstructionsSourcePath (orchestrator source, per-team)', () => {
+  const HOME = '/home/tester'
+  it('resolves <Label>_INSTRUCTIONS.md under the per-team /ai-team dir', () => {
+    expect(cloudInstructionsSourcePath('Crease', 'sneakers', HOME))
+      .toBe('/home/tester/.aimaestro/ai-team/sneakers/Crease_INSTRUCTIONS.md')
+  })
+  it('falls back to the host-default /ai-team dir when no teamId', () => {
+    expect(cloudInstructionsSourcePath('Mother', undefined, HOME))
+      .toBe('/home/tester/.aimaestro/ai-team/Mother_INSTRUCTIONS.md')
+  })
+  it('sanitizes the label to a safe basename (no path traversal)', () => {
+    const p = cloudInstructionsSourcePath('../../etc/passwd', 'team', HOME)
+    expect(p).toBe('/home/tester/.aimaestro/ai-team/team/etcpasswd_INSTRUCTIONS.md')
+    expect(p).not.toContain('..')
+  })
+  it('per-agent source isolation: different labels → different source files', () => {
+    expect(cloudInstructionsSourcePath('Crease', 'sneakers', HOME))
+      .not.toBe(cloudInstructionsSourcePath('Whistler', 'sneakers', HOME))
+  })
+})
+
+describe('provisionCloudInstructions (#191 seed-from-source)', () => {
+  let tmpHome: string
+  beforeEach(() => { tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-instr-')) })
+  afterEach(() => { fs.rmSync(tmpHome, { recursive: true, force: true }) })
+
+  const writeSource = (rel: string, content: string) => {
+    const p = path.join(tmpHome, rel)
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, content)
+    return p
+  }
+
+  it('seeds the per-agent instructions.md from the source when source exists', () => {
+    const src = writeSource('.aimaestro/ai-team/sneakers/Crease_INSTRUCTIONS.md', '# Crease §1\nbe helpful')
+    const { provisioned, instructionsPath } = provisionCloudInstructions('a1', src, tmpHome)
+    expect(provisioned).toBe(true)
+    expect(fs.readFileSync(instructionsPath, 'utf8')).toContain('# Crease §1')
+  })
+
+  it('RE-SEEDS from source on re-provision (source-of-truth — RO mount means no edits to preserve)', () => {
+    const src = writeSource('.aimaestro/ai-team/sneakers/Crease_INSTRUCTIONS.md', 'v1')
+    provisionCloudInstructions('a1', src, tmpHome)
+    fs.writeFileSync(src, 'v2-bishop-edit') // Bishop updates the source
+    const { instructionsPath } = provisionCloudInstructions('a1', src, tmpHome)
+    expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('v2-bishop-edit')
+  })
+
+  it('PRESERVES an existing per-agent copy when the source is absent (durability fallback)', () => {
+    // Simulate a migrated copy with no source present on this host
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', 'a1')
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'instructions.md'), 'migrated-copy')
+    const { provisioned, instructionsPath } = provisionCloudInstructions(
+      'a1', path.join(tmpHome, '.aimaestro', 'ai-team', 'nonexistent_INSTRUCTIONS.md'), tmpHome
+    )
+    expect(provisioned).toBe(true)
+    expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('migrated-copy')
+  })
+
+  it('no-op (provisioned=false) when neither source nor dest exists', () => {
+    const { provisioned } = provisionCloudInstructions(
+      'a1', path.join(tmpHome, '.aimaestro', 'ai-team', 'none_INSTRUCTIONS.md'), tmpHome
+    )
+    expect(provisioned).toBe(false)
+  })
+})
+
+describe('buildCloudInstructionsMount (#191)', () => {
+  let tmpHome: string
+  beforeEach(() => { tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-instr-mnt-')) })
+  afterEach(() => { fs.rmSync(tmpHome, { recursive: true, force: true }) })
+
+  const seedInstructions = (agentId: string) => {
+    const dir = path.join(tmpHome, '.aimaestro', 'agents', agentId)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'instructions.md'), '# instructions')
+  }
+
+  it('returns null when no instructions.md exists (no-op for unprofiled / no source)', () => {
+    expect(buildCloudInstructionsMount('a1', 'claude', tmpHome)).toBeNull()
+  })
+
+  it('mounts RO to the provider discovery path when instructions.md exists', () => {
+    seedInstructions('a1')
+    expect(buildCloudInstructionsMount('a1', 'claude', tmpHome)).toEqual({
+      hostPath: path.join(tmpHome, '.aimaestro', 'agents', 'a1', 'instructions.md'),
+      containerPath: '/home/claude/.claude/CLAUDE.md',
+      readOnly: true,
+    })
+    expect(buildCloudInstructionsMount('a1', 'codex', tmpHome)?.containerPath).toBe('/home/claude/.codex/AGENTS.md')
+    expect(buildCloudInstructionsMount('a1', 'antigravity', tmpHome)?.containerPath).toBe('/home/claude/.gemini/GEMINI.md')
+  })
+
+  it('codex compat: instruction mount coexists with the ~/.codex dir mount (nested file-over-dir, both per-agent durable)', () => {
+    seedInstructions('a1')
+    const mounts = buildCloudCommonMounts('a1', { program: 'codex', hostHome: tmpHome })
+    const codexDir = mounts.find(m => m.containerPath === '/home/claude/.codex')
+    const agentsMd = mounts.find(m => m.containerPath === '/home/claude/.codex/AGENTS.md')
+    expect(codexDir).toBeDefined()       // the full-dir mount is still present
+    expect(agentsMd).toBeDefined()       // the instruction file-mount overlays AGENTS.md
+    expect(agentsMd?.readOnly).toBe(true)
+  })
+
+  it('buildCloudCommonMounts omits the instruction mount when no instructions.md (shape unchanged)', () => {
+    const mounts = buildCloudCommonMounts('a1', { program: 'claude', hostHome: tmpHome })
+    expect(mounts.some(m => m.containerPath === '/home/claude/.claude/CLAUDE.md')).toBe(false)
+  })
+})
+
+describe('migrateAgentPersistence — #191 instructions.md carry-forward (preserve-on-recreate)', () => {
+  let tmpHome: string
+  beforeEach(() => { tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-instr-mig-')) })
+  afterEach(() => { fs.rmSync(tmpHome, { recursive: true, force: true }) })
+
+  it('carries instructions.md from the old UUID dir to the new one on recreate', () => {
+    const fromDir = path.join(tmpHome, '.aimaestro', 'agents', 'old-uuid')
+    fs.mkdirSync(fromDir, { recursive: true })
+    fs.writeFileSync(path.join(fromDir, 'instructions.md'), '# seeded §1')
+    migrateAgentPersistence('old-uuid', 'new-uuid', tmpHome)
+    const carried = path.join(tmpHome, '.aimaestro', 'agents', 'new-uuid', 'instructions.md')
+    expect(fs.existsSync(carried)).toBe(true)
+    expect(fs.readFileSync(carried, 'utf8')).toBe('# seeded §1')
   })
 })

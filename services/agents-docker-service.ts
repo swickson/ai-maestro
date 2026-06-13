@@ -20,7 +20,7 @@ import type { Agent, SandboxMount } from '@/types/agent'
 import { PERMISSION_MODE_TO_CLI } from '@/types/agent'
 import type { AgentPermissionMode } from '@/types/agent'
 import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
-import { resolveStartCommand } from '@/lib/agent-paths'
+import { resolveStartCommand, cloudProgram } from '@/lib/agent-paths'
 
 const execAsync = promisify(exec)
 
@@ -1247,6 +1247,11 @@ export function migrateAgentPersistence(
     // — survive recreate so gemini stays logged in across UUID rotation.
     // Mirrors codex-auth.json + claude-credentials.json carry-forward shape.
     'gemini-oauth-creds.json',
+    // Per-agent instruction file (#191) — carry forward so /recreate's UUID
+    // rotation doesn't drop the agent's seeded §1 instructions. The durability
+    // fallback when the orchestrator source isn't present on the rebuild host;
+    // when it IS present, provisionCloudInstructions re-seeds from source anyway.
+    'instructions.md',
   ]
   for (const name of fileAssets) {
     const src = path.join(fromDir, name)
@@ -1514,6 +1519,98 @@ export function buildCloudTransportRepoMount(
   }
 }
 
+// ── Per-agent instruction file (issue #191, WS2 follow-up) ───────────────────
+//
+// Seed each agent's slim §1 instruction file from the orchestrator-owned source
+// into the running container at the provider's NATIVE discovery path so it loads
+// as the agent's behavior on every wake AND survives a rebuild (the durability
+// gap Watson found: codex's ~/.codex is a full-dir mount so AGENTS.md is durable,
+// but ~/.claude + ~/.gemini are subpath-mounted, so CLAUDE.md/GEMINI.md would
+// live container-layer-only = lost on rebuild). A dedicated file-mount fixes all
+// three uniformly. Source-of-truth = the per-team /ai-team dir (Bishop-maintained
+// <Label>_INSTRUCTIONS.md), the SAME host dir buildCloudAiTeamMount points at.
+
+// Map the agent's program → its in-container instruction discovery path.
+// claude→CLAUDE.md, codex→AGENTS.md, gemini+antigravity→GEMINI.md (antigravity
+// is gemini-based and reads the same ~/.gemini/GEMINI.md). cloudProgram()
+// normalizes every program identifier (incl. claude-code, agy) to one of these.
+export function cloudInstructionsContainerPath(program: string | undefined): string {
+  switch (cloudProgram({ program } as Parameters<typeof cloudProgram>[0])) {
+    case 'codex':
+      return path.posix.join(CONTAINER_HOME, '.codex', 'AGENTS.md')
+    case 'gemini':
+    case 'antigravity':
+      return path.posix.join(CONTAINER_HOME, '.gemini', 'GEMINI.md')
+    case 'claude':
+    default:
+      return path.posix.join(CONTAINER_HOME, '.claude', 'CLAUDE.md')
+  }
+}
+
+// Resolve the host-side source instruction file for an agent: the per-team
+// /ai-team dir (matches buildCloudAiTeamMount's source) holding the
+// Bishop-maintained <Label>_INSTRUCTIONS.md. Label is sanitized to a safe
+// basename (no separators / traversal) since it indexes a filesystem path.
+export function cloudInstructionsSourcePath(
+  label: string | undefined,
+  teamId: string | undefined,
+  hostHome: string = os.homedir()
+): string {
+  const base = path.join(hostHome, '.aimaestro', 'ai-team')
+  const dir = teamId ? path.join(base, teamId) : base
+  const safeLabel = (label || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'AGENT'
+  return path.join(dir, `${safeLabel}_INSTRUCTIONS.md`)
+}
+
+// Provision the per-agent instruction file. SEED-FROM-SOURCE-IS-TRUTH: when the
+// orchestrator source exists, (re)seed the per-agent copy from it on every
+// provision — the mount is RO into the container so the agent can never edit it,
+// which means there is no in-container hand-edit to preserve, and re-seeding lets
+// Bishop's source-of-truth edits reach the agent on the next rebuild. When the
+// source is ABSENT (e.g. moved, or a cross-host rebuild where the source isn't
+// present), KEEP the existing per-agent copy untouched — that copy is the
+// durability fallback (migrateAgentPersistence carries instructions.md across
+// /recreate UUID rotation). Returns whether a per-agent file now exists.
+export function provisionCloudInstructions(
+  agentId: string,
+  sourcePath: string,
+  hostHome: string = os.homedir()
+): { provisioned: boolean; instructionsPath: string } {
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  const instructionsPath = path.join(agentDir, 'instructions.md')
+  if (fs.existsSync(sourcePath)) {
+    try {
+      fs.mkdirSync(agentDir, { recursive: true })
+      fs.copyFileSync(sourcePath, instructionsPath)
+      fs.chmodSync(instructionsPath, 0o644)
+    } catch (err) {
+      console.warn(`[provisionCloudInstructions] seed ${sourcePath} -> ${instructionsPath}:`, err instanceof Error ? err.message : err)
+    }
+  }
+  return { provisioned: fs.existsSync(instructionsPath), instructionsPath }
+}
+
+// File-level RO mount of the per-agent instructions.md onto the program's native
+// discovery path. Gated on the file existing on host (existsSync) — so it's a
+// no-op when no source was ever seeded (unprofiled / no <Label>_INSTRUCTIONS.md),
+// keeping the mount-set shape unchanged for those agents. For codex this overlays
+// a single file inside the already-mounted ~/.codex dir (nested file-over-dir
+// bind — durable, both sources per-agent). Providers MERGE/STACK global + repo
+// instruction files, so this never hijacks a repo-canonical AGENTS.md/GEMINI.md.
+export function buildCloudInstructionsMount(
+  agentId: string,
+  program: string | undefined,
+  hostHome: string = os.homedir()
+): SandboxMount | null {
+  const instructionsPath = path.join(hostHome, '.aimaestro', 'agents', agentId, 'instructions.md')
+  if (!fs.existsSync(instructionsPath)) return null
+  return {
+    hostPath: instructionsPath,
+    containerPath: cloudInstructionsContainerPath(program),
+    readOnly: true,
+  }
+}
+
 // ── Shared cloud mount assembly (parity guarantee) ──────────────────────────
 //
 // THE single source of truth for the system mount set, called by BOTH
@@ -1529,6 +1626,7 @@ export function buildCloudCommonMounts(
   opts: {
     useZiggy?: boolean
     name?: string
+    program?: string
     profile?: 'worker' | 'orchestrator'
     teamId?: string
     transportRepo?: string
@@ -1539,6 +1637,7 @@ export function buildCloudCommonMounts(
   const {
     useZiggy = false,
     name = '',
+    program,
     profile,
     teamId,
     transportRepo,
@@ -1547,6 +1646,7 @@ export function buildCloudCommonMounts(
   } = opts
   const aiTeamMount = buildCloudAiTeamMount(profile, teamId, hostHome)
   const transportMount = buildCloudTransportRepoMount(transportRepo)
+  const instructionsMount = buildCloudInstructionsMount(agentId, program, hostHome)
   return [
     ...buildAmpCommonMounts(agentId, hostHome, repoRoot),
     buildCloudClaudeSettingsMount(agentId, hostHome),
@@ -1563,6 +1663,9 @@ export function buildCloudCommonMounts(
     ...(profile ? [buildCloudGitConfigMount(agentId, hostHome)] : []),
     ...(aiTeamMount ? [aiTeamMount] : []),
     ...(transportMount ? [transportMount] : []),
+    // #191 instruction mount — gated on instructions.md existing on host
+    // (provisionCloudInstructions seeds it from the orchestrator source)
+    ...(instructionsMount ? [instructionsMount] : []),
   ]
 }
 
@@ -2215,8 +2318,17 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       return invalidRequest(err instanceof Error ? err.message : 'git identity provisioning failed')
     }
   }
+  // Seed the per-agent instruction file from the orchestrator source (#191).
+  // No-op when the source <Label>_INSTRUCTIONS.md doesn't exist (non-team /
+  // not-yet-authored). Non-fatal — a missing instruction file shouldn't block
+  // create; the gated mount simply won't be added.
+  try {
+    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(body.label || name, teamId))
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud instructions:', err instanceof Error ? err.message : err)
+  }
   const mergedMounts = mergeMounts(
-    buildCloudCommonMounts(agentId, { useZiggy, name, profile, teamId, transportRepo }),
+    buildCloudCommonMounts(agentId, { useZiggy, name, program, profile, teamId, transportRepo }),
     body.mounts
   )
 
@@ -2826,9 +2938,18 @@ export async function updateContainerMountsAndExtraEnv(
       console.warn('[update-runtime] Could not provision cloud codex ziggy MCP entry:', err instanceof Error ? err.message : err)
     }
   }
+  // (Re-)seed the per-agent instruction file from the orchestrator source (#191).
+  // This is the identity-preserving migration path for an EXISTING agent onto
+  // instructions: an agent created before #191 has no instructions.md; on
+  // update-runtime it seeds from the source. No-op when the source is absent.
+  try {
+    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(agent.label || agent.name, teamId))
+  } catch (err) {
+    console.warn('[update-runtime] Could not provision cloud instructions:', err instanceof Error ? err.message : err)
+  }
 
   const mergedMounts = mergeMounts(
-    buildCloudCommonMounts(agentId, { useZiggy, name: agent.name, profile, teamId, transportRepo }),
+    buildCloudCommonMounts(agentId, { useZiggy, name: agent.name, program, profile, teamId, transportRepo }),
     newMounts
   )
 
