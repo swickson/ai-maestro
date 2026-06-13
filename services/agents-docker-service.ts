@@ -2576,6 +2576,102 @@ export const RECREATE_PRESERVED_FIELDS = [
   'owner',
 ] as const
 
+// ── On-wake staleness lint (issue #198) ──────────────────────────────────────
+//
+// `hooks['on-wake']` rides VERBATIM through /recreate (RECREATE_PRESERVED_FIELDS
+// includes 'hooks') and /update-runtime — so a prompt written for the old layout
+// keeps pointing at retired paths/files after a migration, silently. Maestro
+// doesn't own the prompt semantics, so this is a NON-DESTRUCTIVE lint: it WARNs
+// (response payload + server log) on known-stale tokens for profiled agents and
+// lets the operator decide. NO auto-rewrite (canonical per-(profile,harness)
+// templates are deferred to the Ziggy build). Sibling of the field-DROP class
+// (#187) — same migration-time validation discipline, inverse failure.
+
+export type OnWakeLintCheck = 'retired-worktree-path' | 'stale-instructions-ref' | 'missing-imperative-follow'
+
+export interface OnWakeLintWarning {
+  check: OnWakeLintCheck
+  message: string
+}
+
+/**
+ * Lint an agent's carried-forward on-wake prompt for migration staleness.
+ * Pure + exported for unit testing. Returns [] for non-profiled agents or an
+ * empty/absent prompt (the carry-verbatim hazard only applies to the profiled
+ * wave-agent migration path). Three checks per #198 (scope locked w/ Shane):
+ *  1. retired shared-worktree path (`*.wt/`) — dead in the /workspace/repo layout
+ *  2. reading `ai-team/<Name>_INSTRUCTIONS.md` — instructions now ship via the
+ *     mounted per-harness file; deliberately NOT flagging a bare `/ai-team/`
+ *     plan ref nor the sentinel filename `# <Name>_INSTRUCTIONS.md`
+ *  3. non-Claude harness (codex/gemini/antigravity) missing the imperative-
+ *     follow clause — those load AGENTS.md/GEMINI.md as context, not commands
+ *     (Claude treats CLAUDE.md as instructions natively → omit by design).
+ */
+export function lintOnWakePrompt(
+  onWake: string | undefined,
+  program: string | undefined,
+  profile: 'worker' | 'orchestrator' | undefined
+): OnWakeLintWarning[] {
+  const warnings: OnWakeLintWarning[] = []
+  if (!profile || !onWake || !onWake.trim()) return warnings
+
+  // (1) retired shared-worktree path glob.
+  if (/[^\s'"]*\.wt[/\\]/.test(onWake)) {
+    warnings.push({
+      check: 'retired-worktree-path',
+      message:
+        'on-wake references a retired worktree path (`*.wt/`) — the migrated container layout has the code at /workspace/repo. Update the prompt path.',
+    })
+  }
+
+  // (2) reading an instructions file FROM the ai-team dir (retired location).
+  // Requires an `ai-team/`-pathed `_INSTRUCTIONS.md` — so the canonical sentinel
+  // `# <Name>_INSTRUCTIONS.md` (no path prefix) and a bare `/ai-team/` plan ref
+  // don't false-positive.
+  if (/ai-team[/\\][^\s'"]*_INSTRUCTIONS\.md/i.test(onWake)) {
+    warnings.push({
+      check: 'stale-instructions-ref',
+      message:
+        'on-wake reads `ai-team/<Name>_INSTRUCTIONS.md` — instructions now ship via the mounted per-harness file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, or ~/.gemini/GEMINI.md). Point the prompt at that instead.',
+    })
+  }
+
+  // (3) non-Claude harness missing the imperative-follow clause.
+  const kind = cloudProgram({ program } as Parameters<typeof cloudProgram>[0])
+  if (kind !== 'claude') {
+    const hasImperative = /imperative|follow it exactly|follow them exactly|not as commands|treat it as/i.test(onWake)
+    if (!hasImperative) {
+      const file = kind === 'codex' ? 'AGENTS.md' : 'GEMINI.md'
+      warnings.push({
+        check: 'missing-imperative-follow',
+        message:
+          `on-wake for a ${kind} agent is missing an imperative-follow clause — ${kind} loads ${file} as context, not commands. Add an explicit "treat your ${file} as imperative: open it and follow it exactly" line.`,
+      })
+    }
+  }
+
+  return warnings
+}
+
+/**
+ * Run the on-wake lint and emit warnings to the server log. Returns the
+ * warnings so the caller can attach them to the response payload. `route` is a
+ * short tag for the log line ('Recreate' | 'update-runtime').
+ */
+function emitOnWakeLint(
+  onWake: string | undefined,
+  program: string | undefined,
+  profile: 'worker' | 'orchestrator' | undefined,
+  agentId: string,
+  route: string
+): OnWakeLintWarning[] {
+  const warnings = lintOnWakePrompt(onWake, program, profile)
+  for (const w of warnings) {
+    console.warn(`[${route}] on-wake staleness (${w.check}) for ${agentId}: ${w.message}`)
+  }
+  return warnings
+}
+
 /**
  * Recreate an existing cloud agent: stop+remove its container, soft-delete
  * the old registry entry, and provision a new container with all originally-
@@ -2698,12 +2794,23 @@ export async function recreateDockerAgent(
     }
   }
 
+  // #198: lint the carried-forward on-wake prompt for migration staleness
+  // (profiled agents only). Non-destructive — WARN in payload + server log.
+  const onWakeLint = emitOnWakeLint(
+    oldAgent.hooks?.['on-wake'],
+    oldAgent.program,
+    oldAgent.deployment?.sandbox?.profile,
+    agentId,
+    'Recreate'
+  )
+
   return {
     data: {
       ...result.data,
       recreatedFromAgentId: agentId,
       recreatedFromContainerName: oldContainerName,
       preservedFields: RECREATE_PRESERVED_FIELDS.filter(f => (oldAgent as unknown as Record<string, unknown>)[f] !== undefined),
+      ...(onWakeLint.length > 0 ? { onWakeLint } : {}),
     },
     status: result.status,
   }
@@ -3070,6 +3177,10 @@ export async function updateContainerMountsAndExtraEnv(
   // blocked on its 10s timeout, then it proceeds with a warning.
   writeRestorationSentinel(agentId)
 
+  // #198: lint the carried-forward on-wake prompt for migration staleness
+  // (profiled agents only). Non-destructive — WARN in payload + server log.
+  const onWakeLint = emitOnWakeLint(agent.hooks?.['on-wake'], program, profile, agentId, 'update-runtime')
+
   return {
     data: {
       success: true,
@@ -3077,6 +3188,7 @@ export async function updateContainerMountsAndExtraEnv(
       containerId,
       port,
       containerName,
+      ...(onWakeLint.length > 0 ? { onWakeLint } : {}),
     },
     status: 200,
   }
