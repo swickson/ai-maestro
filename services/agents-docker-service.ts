@@ -2418,6 +2418,13 @@ export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
     workingDirectory: oldAgent.workingDirectory,
     mounts: oldAgent.deployment?.sandbox?.mounts,
     ziggy: oldAgent.deployment?.sandbox?.ziggy,
+    // §11.1 profile + scoping — without these, /recreate silently un-profiles
+    // the agent: it loses /ai-team + /transport.git + its per-agent git identity
+    // and falls back to the generic image-baked identity (the exact
+    // mis-attribution provisionCloudGitIdentity's fail-loud exists to prevent).
+    profile: oldAgent.deployment?.sandbox?.profile,
+    teamId: oldAgent.deployment?.sandbox?.teamId,
+    transportRepo: oldAgent.deployment?.sandbox?.transportRepo,
     cpus: runtime?.cpus,
     memory: runtime?.memory,
     autoRemove: runtime?.autoRemove,

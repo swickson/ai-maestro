@@ -1999,6 +1999,24 @@ describe('buildRecreateBody', () => {
     expect(buildRecreateBody(agent).ziggy).toBe(true)
   })
 
+  it('preserves sandbox.profile/teamId/transportRepo through recreate (§11.1 — recreate must NOT silently un-profile)', () => {
+    // Without this, /recreate drops the profile → the recreated agent loses
+    // /ai-team + /transport.git + its per-agent git identity and falls back to
+    // the generic image-baked identity (the exact mis-attribution the §11.6
+    // fail-loud exists to prevent). Watson catch on PR #187.
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        sandbox: { profile: 'worker', teamId: 'alpha', transportRepo: '/srv/transport/alpha/wave-1.git' },
+      },
+    })
+    const body = buildRecreateBody(agent)
+    expect(body.profile).toBe('worker')
+    expect(body.teamId).toBe('alpha')
+    expect(body.transportRepo).toBe('/srv/transport/alpha/wave-1.git')
+  })
+
   it('maps deployment.cloud.runtime fields back into the create body', () => {
     // Closes kanban 105b82a0 — without persisting runtime config on the agent
     // record, recreate fell back to createDockerAgent's hard-coded defaults
