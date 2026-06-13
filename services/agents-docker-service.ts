@@ -1596,6 +1596,172 @@ export async function bootstrapAmpIdentity(
   console.log(`[Docker Service] Bootstrapped AMP identity for ${agentName} (${agentId.substring(0, 8)}...)`)
 }
 
+// ── Cloud-agent port allocation (WS1, kanban 58c49a6e) ───────────────────────
+//
+// PROBLEM: the previous allocator listed only RUNNING containers (`docker ps`)
+// to find used ports, so a hibernated/stopped agent's port looked free and got
+// reissued onto a live agent (the Crease→Columbo 23003 collision). It also fell
+// back to a silent hardcoded 23001 on any error — the exact silent reuse that
+// caused the collision.
+//
+// FIX: the registry IS the reservation ledger. The reserved set is the union of
+// every port held by an agent record that still EXISTS in registry.json
+// (regardless of online/offline/hibernated status, INCLUDING soft-deleted
+// records), plus a defensive host-bound-port backstop. A port is released ONLY
+// when its record physically leaves registry.json — which happens exclusively on
+// HARD delete (deleteAgent(id, true)); hibernate / stop / soft-delete all keep
+// the record and therefore keep the reservation. Allocation + persistence run
+// under a per-host advisory file lock so parallel creates/recreates cannot pick
+// the same port (subsumes the abcd6147 parallel-recreate race). Exhaustion fails
+// LOUD — no wrap-around onto a live port, no silent fallback.
+
+const CLOUD_PORT_LOCK_FILE = path.join(os.homedir(), '.aimaestro', '.cloud-port-alloc.lock')
+const CLOUD_PORT_LOCK_STALE_MS = 180_000 // reclaim a lock whose holder died or held it longer than this (> docker-run 30s timeout + margin)
+const CLOUD_PORT_LOCK_WAIT_MS = 120_000  // fail loud if the lock can't be acquired within this window
+const CLOUD_PORT_LOCK_RETRY_MS = 100
+
+/**
+ * Resolve the configurable cloud-agent host-port range. Defaults preserve the
+ * historical 23001-23100 window; override per host with the env vars.
+ */
+export function getCloudPortRange(): { start: number; end: number } {
+  const start = parseInt(process.env.CLOUD_AGENT_PORT_RANGE_START || '23001', 10)
+  const end = parseInt(process.env.CLOUD_AGENT_PORT_RANGE_END || '23100', 10)
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end > 65535 || start > end) {
+    throw new Error(
+      `Invalid cloud-agent port range (start=${process.env.CLOUD_AGENT_PORT_RANGE_START ?? '23001'}, ` +
+      `end=${process.env.CLOUD_AGENT_PORT_RANGE_END ?? '23100'}): require integers with 1 <= start <= end <= 65535.`
+    )
+  }
+  return { start, end }
+}
+
+/**
+ * Reserved-port set = union of every port recorded on an existing registry agent
+ * (any status, incl hibernated + soft-deleted — released only on hard-delete) and
+ * the host-bound-port backstop. Pure + exported for unit testing.
+ *
+ * Pass the UNFILTERED registry (loadAgents() includes soft-deleted records) so a
+ * soft-deleted-but-not-hard-purged agent keeps holding its port.
+ */
+export function computeReservedCloudPorts(agents: Agent[], hostBoundPorts: Iterable<number>): Set<number> {
+  const reserved = new Set<number>()
+  for (const a of agents) {
+    const p = parsePortFromWebsocketUrl(a.deployment?.cloud?.websocketUrl)
+    if (p !== null) reserved.add(p)
+  }
+  for (const p of hostBoundPorts) reserved.add(p)
+  return reserved
+}
+
+/**
+ * First free port in [start, end] not in `reserved`. Throws (fail-loud) on
+ * exhaustion — never wraps around or falls back onto a possibly-live port. Pure
+ * + exported for unit testing.
+ */
+export function pickFirstFreeCloudPort(reserved: Set<number>, start: number, end: number): number {
+  for (let p = start; p <= end; p++) {
+    if (!reserved.has(p)) return p
+  }
+  throw new Error(
+    `No free cloud-agent port in range ${start}-${end}: all ${end - start + 1} ports are reserved by ` +
+    `existing agents or bound on the host. Hard-delete a retired agent or widen ` +
+    `CLOUD_AGENT_PORT_RANGE_START/END.`
+  )
+}
+
+/**
+ * Best-effort set of ports currently bound on the host — a defensive backstop on
+ * top of the registry ledger that also catches orphaned containers and the brief
+ * window between `docker run` and the registry write. Unions actual TCP listeners
+ * (`ss`, Linux) with docker's published-port map; returns whatever it can and
+ * never throws (the registry union is the primary protection).
+ */
+async function getHostBoundPorts(): Promise<Set<number>> {
+  const bound = new Set<number>()
+  try {
+    const { stdout } = await execAsync('ss -ltnH', { timeout: 5000 })
+    for (const line of stdout.split('\n')) {
+      const cols = line.trim().split(/\s+/)
+      const local = cols[3] // columns: State Recv-Q Send-Q Local-Address:Port Peer-Address:Port
+      const m = local?.match(/:(\d+)$/)
+      if (m) bound.add(parseInt(m[1], 10))
+    }
+  } catch {
+    // ss unavailable (e.g. macOS) — the docker ps pass below still covers published ports
+  }
+  try {
+    const { stdout } = await execAsync("docker ps --format '{{.Ports}}' 2>/dev/null || echo ''", { timeout: 5000 })
+    const re = /(\d+)->23000/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(stdout)) !== null) bound.add(parseInt(m[1], 10))
+  } catch {
+    // best-effort
+  }
+  return bound
+}
+
+interface CloudPortLock { fd: number }
+
+/** Reclaim the lock file if its holder is dead or it has gone stale. Returns true if the caller should retry the openSync. */
+function reclaimStaleCloudPortLock(): boolean {
+  try {
+    const raw = fs.readFileSync(CLOUD_PORT_LOCK_FILE, 'utf-8')
+    const st = fs.statSync(CLOUD_PORT_LOCK_FILE)
+    let holderPid: number | undefined
+    let holderHost: string | undefined
+    try { const j = JSON.parse(raw); holderPid = j.pid; holderHost = j.host } catch { /* malformed → age-based reclaim only */ }
+    const ageMs = Date.now() - st.mtimeMs
+    let holderDead = false
+    if (holderHost === os.hostname() && typeof holderPid === 'number') {
+      try { process.kill(holderPid, 0) } catch { holderDead = true } // ESRCH → process gone
+    }
+    if (holderDead || ageMs > CLOUD_PORT_LOCK_STALE_MS) {
+      fs.unlinkSync(CLOUD_PORT_LOCK_FILE)
+      console.warn(`[Docker Service] Reclaimed stale cloud-port lock (pid=${holderPid ?? '?'} ageMs=${Math.round(ageMs)})`)
+      return true
+    }
+  } catch {
+    return true // file vanished between EEXIST and read → it's free now, retry
+  }
+  return false
+}
+
+/**
+ * Acquire the per-host cloud-port allocation lock — a portable O_EXCL advisory
+ * lock (Node has no flock() binding and the `flock` binary is absent on macOS).
+ * Serializes the pick→persist critical section across both concurrent in-process
+ * creates and separate processes. Fails loud if it can't acquire within the wait
+ * window. Always pair with releaseCloudPortLock in a finally / on every exit.
+ */
+async function acquireCloudPortLock(): Promise<CloudPortLock> {
+  try { fs.mkdirSync(path.dirname(CLOUD_PORT_LOCK_FILE), { recursive: true }) } catch { /* ignore */ }
+  const deadline = Date.now() + CLOUD_PORT_LOCK_WAIT_MS
+  for (;;) {
+    try {
+      const fd = fs.openSync(CLOUD_PORT_LOCK_FILE, 'wx') // O_CREAT | O_EXCL | O_WRONLY
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), ts: new Date().toISOString() }))
+      return { fd }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      if (reclaimStaleCloudPortLock()) continue
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Could not acquire the cloud-port allocation lock (${CLOUD_PORT_LOCK_FILE}) within ${CLOUD_PORT_LOCK_WAIT_MS}ms — ` +
+          `another create is in progress or a stale lock could not be reclaimed.`
+        )
+      }
+      await new Promise(r => setTimeout(r, CLOUD_PORT_LOCK_RETRY_MS))
+    }
+  }
+}
+
+/** Release the cloud-port allocation lock. Idempotent + never throws. */
+function releaseCloudPortLock(lock: CloudPortLock): void {
+  try { fs.closeSync(lock.fd) } catch { /* ignore */ }
+  try { fs.unlinkSync(CLOUD_PORT_LOCK_FILE) } catch { /* ignore */ }
+}
+
 // ── Public Functions ────────────────────────────────────────────────────────
 
 
@@ -1646,32 +1812,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return invalidRequest('Docker is not available on this host')
   }
 
-  // Find an available port in 23001-23100 range
-  let port: number | null = null
-  try {
-    const { stdout: portsOutput } = await execAsync(
-      "docker ps --format '{{.Ports}}' 2>/dev/null || echo ''"
-    )
-    const usedPorts = new Set<number>()
-    const portRegex = /(\d+)->23000/g
-    let match
-    while ((match = portRegex.exec(portsOutput)) !== null) {
-      usedPorts.add(parseInt(match[1], 10))
-    }
-
-    for (let p = 23001; p <= 23100; p++) {
-      if (!usedPorts.has(p)) {
-        port = p
-        break
-      }
-    }
-  } catch {
-    port = 23001
-  }
-
-  if (!port) {
-    return serviceError('operation_failed', 'No available ports in range 23001-23100', 503)
-  }
+  // Port is allocated later, inside a locked critical section right before the
+  // docker run (see acquireCloudPortLock below), so the pick→persist window is
+  // race-free against parallel creates/recreates. Declared here because the
+  // dockerCmd build and the registry write both reference it.
+  let port: number
 
   // Build the AI_TOOL environment variable. Resolve the program identifier
   // to its in-container binary name BEFORE composing — for most programs
@@ -1842,6 +1987,22 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     body.mounts
   )
 
+  // ── Locked port allocation → docker run → registry persist ────────────────
+  // Hold a per-host advisory lock continuously from port pick through the
+  // registry write so no concurrent create/recreate can pick the same port
+  // (no TOCTOU). The lock is released on EVERY exit path below (exhaustion,
+  // docker failure, success); a pathological uncaught throw is backstopped by
+  // the lock's stale-reclaim timeout.
+  const portLock = await acquireCloudPortLock()
+  try {
+    const reserved = computeReservedCloudPorts(loadAgents(), await getHostBoundPorts())
+    const { start, end } = getCloudPortRange()
+    port = pickFirstFreeCloudPort(reserved, start, end)
+  } catch (err) {
+    releaseCloudPortLock(portLock)
+    return serviceError('operation_failed', err instanceof Error ? err.message : 'No available cloud-agent port', 503)
+  }
+
   const dockerCmd = [
     'docker run -d',
     `--name "${containerName}"`,
@@ -1889,6 +2050,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     containerId = stdout.trim().slice(0, 12)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
+    releaseCloudPortLock(portLock)
     return operationFailed('start container', message)
   }
 
@@ -1954,6 +2116,10 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   } catch (err) {
     console.error('[Docker Service] Registry error:', err)
   }
+
+  // Reservation is now durable in the registry ledger (port persisted in
+  // websocketUrl) — release the allocation lock so the next create can proceed.
+  releaseCloudPortLock(portLock)
 
   // Bootstrap AMP identity server-side so the per-UUID bind mount lands
   // populated with keys + registration. Non-fatal — container is already up.
