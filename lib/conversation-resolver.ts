@@ -42,10 +42,17 @@ const EMPTY: TranscriptResolution = { dir: null, path: null, mtime: null, exists
 // is comfortably larger, so larger files are trusted without a read.
 const STUB_MAX_BYTES = 4096
 
+// Line types that carry NO conversation on their own — the title-only stub
+// failure mode (#195) is a file containing only these. Everything else
+// (claude user/assistant, tool results, summaries, and any gemini/codex/
+// antigravity-shaped line) counts as real content.
+const STUB_ONLY_LINE_TYPES = new Set(['ai-title'])
+
 /**
- * Does the file contain at least one real conversational message
- * (user/assistant)? Title/summary/metadata-only files return false.
- * Short-circuits on the first real line.
+ * Does the file contain at least one real content line (i.e. anything that
+ * isn't purely a title marker)? Title-only files return false. Short-circuits
+ * on the first real line. Format-agnostic: a parseable non-title line OR any
+ * non-empty non-JSON line counts (covers gemini/codex/antigravity formats).
  */
 function hasRealMessages(filePath: string): boolean {
   let content: string
@@ -59,12 +66,11 @@ function hasRealMessages(filePath: string): boolean {
     if (!trimmed) continue
     try {
       const obj = JSON.parse(trimmed)
-      if (obj && (obj.type === 'user' || obj.type === 'assistant')) return true
+      // Any line that isn't purely a title marker is real content.
+      if (!obj || typeof obj.type !== 'string' || !STUB_ONLY_LINE_TYPES.has(obj.type)) return true
     } catch {
-      // Non-Claude formats (gemini/codex/antigravity rollout files) aren't
-      // title-stubs and don't carry the title-only failure mode; treat any
-      // parseable line in a non-trivial file as real content.
-      if (trimmed.length > 0) return true
+      // Non-JSON but non-empty line — treat as real content.
+      return true
     }
   }
   return false

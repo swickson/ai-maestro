@@ -59,6 +59,15 @@ describe('selectTranscriptFile', () => {
     expect(path.basename(selectTranscriptFile(dir).path!)).toBe('big.jsonl')
   })
 
+  it('does NOT mis-flag a small non-Claude file (gemini/codex-shaped) as a stub', () => {
+    // Valid JSON, parses fine, but type is not user/assistant and not a title.
+    const gemini = JSON.stringify({ type: 'message', role: 'model', text: 'hi' }) + '\n'
+    expect(gemini.length).toBeLessThan(4096)
+    write('stub.jsonl', STUB, 2_000_000)            // newer title-only stub
+    write('gemini.jsonl', gemini, 1_000_000)        // older, small, real non-Claude
+    expect(path.basename(selectTranscriptFile(dir).path!)).toBe('gemini.jsonl')
+  })
+
   it('prefers the hook transcriptPath when it exists in the dir, over a newer file', () => {
     const hook = write('session-abc.jsonl', REAL, 1_000_000)   // older
     write('newer.jsonl', REAL, 5_000_000)                       // newer
