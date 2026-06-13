@@ -49,6 +49,9 @@ import {
   buildRecreateBody,
   RECREATE_PRESERVED_FIELDS,
   parsePortFromWebsocketUrl,
+  computeReservedCloudPorts,
+  pickFirstFreeCloudPort,
+  getCloudPortRange,
   ALWAYS_RESERVED_CONTAINER_PATH_ROOTS,
   OPERATOR_RESERVED_CONTAINER_PATH_ROOTS,
   OPERATOR_RESERVED_ENV_KEYS,
@@ -2342,5 +2345,101 @@ describe('buildAiToolCommand', () => {
   it('treats claude-code program name as claude-compatible (receives permission flags)', () => {
     const result = buildAiToolCommand({ program: 'claude-code', permissionMode: 'trustEdits' })
     expect(result).toBe('claude-code --permission-mode acceptEdits')
+  })
+})
+
+// ── WS1: cloud-agent port allocation (kanban 58c49a6e) ───────────────────────
+
+function cloudAgent(port: number | null, opts: Partial<Agent> = {}): Agent {
+  return {
+    deployment: port === null
+      ? { type: 'cloud', cloud: { provider: 'local-container' } }
+      : { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: `ws://localhost:${port}/term` } },
+    ...opts,
+  } as unknown as Agent
+}
+
+describe('computeReservedCloudPorts', () => {
+  it('unions every agent port regardless of online/offline status', () => {
+    const reserved = computeReservedCloudPorts(
+      [cloudAgent(23001, { status: 'online' } as Partial<Agent>), cloudAgent(23002, { status: 'offline' } as Partial<Agent>)],
+      []
+    )
+    expect([...reserved].sort()).toEqual([23001, 23002])
+  })
+
+  it('reserves a HIBERNATED (offline, not deleted) agent port — the Crease→Columbo fix', () => {
+    // Hibernated Crease still owns 23003; allocator must not hand it to a live agent.
+    const reserved = computeReservedCloudPorts([cloudAgent(23003, { status: 'offline' } as Partial<Agent>)], [])
+    expect(reserved.has(23003)).toBe(true)
+  })
+
+  it('reserves a SOFT-DELETED agent port (released only on hard-delete / record removal)', () => {
+    // loadAgents() returns soft-deleted records; a soft-deleted agent keeps its reservation.
+    const softDeleted = cloudAgent(23004, { deletedAt: new Date().toISOString(), status: 'deleted' } as Partial<Agent>)
+    const reserved = computeReservedCloudPorts([softDeleted], [])
+    expect(reserved.has(23004)).toBe(true)
+  })
+
+  it('unions host-bound ports as a backstop', () => {
+    const reserved = computeReservedCloudPorts([cloudAgent(23001)], [23050, 23051])
+    expect([...reserved].sort()).toEqual([23001, 23050, 23051])
+  })
+
+  it('ignores agents with no parseable port and non-cloud records', () => {
+    const reserved = computeReservedCloudPorts(
+      [cloudAgent(null), { deployment: { type: 'local' } } as unknown as Agent, cloudAgent(23001)],
+      []
+    )
+    expect([...reserved]).toEqual([23001])
+  })
+})
+
+describe('pickFirstFreeCloudPort', () => {
+  it('returns the first free port in range', () => {
+    expect(pickFirstFreeCloudPort(new Set([23001, 23002]), 23001, 23100)).toBe(23003)
+  })
+
+  it('skips a gap and returns the lowest free port', () => {
+    expect(pickFirstFreeCloudPort(new Set([23002, 23003]), 23001, 23100)).toBe(23001)
+  })
+
+  it('FAILS LOUD when the range is exhausted — no wrap-around, no silent fallback', () => {
+    const full = new Set([23001, 23002, 23003])
+    expect(() => pickFirstFreeCloudPort(full, 23001, 23003)).toThrow(/No free cloud-agent port/)
+  })
+})
+
+describe('getCloudPortRange', () => {
+  const saved = { start: process.env.CLOUD_AGENT_PORT_RANGE_START, end: process.env.CLOUD_AGENT_PORT_RANGE_END }
+  afterEach(() => {
+    if (saved.start === undefined) delete process.env.CLOUD_AGENT_PORT_RANGE_START
+    else process.env.CLOUD_AGENT_PORT_RANGE_START = saved.start
+    if (saved.end === undefined) delete process.env.CLOUD_AGENT_PORT_RANGE_END
+    else process.env.CLOUD_AGENT_PORT_RANGE_END = saved.end
+  })
+
+  it('defaults to the historical 23001-23100 window', () => {
+    delete process.env.CLOUD_AGENT_PORT_RANGE_START
+    delete process.env.CLOUD_AGENT_PORT_RANGE_END
+    expect(getCloudPortRange()).toEqual({ start: 23001, end: 23100 })
+  })
+
+  it('honors env overrides', () => {
+    process.env.CLOUD_AGENT_PORT_RANGE_START = '24000'
+    process.env.CLOUD_AGENT_PORT_RANGE_END = '24010'
+    expect(getCloudPortRange()).toEqual({ start: 24000, end: 24010 })
+  })
+
+  it('rejects an inverted range (fail loud)', () => {
+    process.env.CLOUD_AGENT_PORT_RANGE_START = '24010'
+    process.env.CLOUD_AGENT_PORT_RANGE_END = '24000'
+    expect(() => getCloudPortRange()).toThrow(/Invalid cloud-agent port range/)
+  })
+
+  it('rejects a non-numeric bound (fail loud)', () => {
+    process.env.CLOUD_AGENT_PORT_RANGE_START = 'abc'
+    process.env.CLOUD_AGENT_PORT_RANGE_END = '24000'
+    expect(() => getCloudPortRange()).toThrow(/Invalid cloud-agent port range/)
   })
 })
