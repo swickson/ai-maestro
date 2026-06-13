@@ -315,6 +315,32 @@ export interface SandboxConfig {
   // into the env. Use for cloud agents that need to reach the Ziggy MCP server
   // via docker DNS rather than via Tailscale-IP/host-port. Default: false.
   ziggy?: boolean
+  // Wave-based dev-team container profile (runbook §11.1). Drives the §11.1
+  // three-path layout: a profiled agent gets the shared /ai-team mount (RO for
+  // workers, RW for the orchestrator that owns the plan) on top of its private
+  // $HOME + /workspace. Undefined = a plain cloud agent (today's behavior,
+  // backward-compatible — no /ai-team mount, no per-agent git identity).
+  //
+  // Orthogonal to the AMP messaging `role` (manager|chief-of-staff|member):
+  // profile is a CONTAINER mount-shape, role is a MESSAGING relationship. Do
+  // not derive one from the other (hidden coupling) — though orchestrator and
+  // an AMP `manager` role are adjacent in practice.
+  profile?: 'worker' | 'orchestrator'
+  // Scopes the shared /ai-team mount source so multiple dev-teams on one host
+  // don't leak instructions into each other's containers (§11.2). Source =
+  // ~/.aimaestro/ai-team/<teamId> when present, else the host-default
+  // ~/.aimaestro/ai-team. Only consulted when `profile` is set.
+  teamId?: string
+  // Absolute HOST path to the per-wave bare git repo (§11.4 credential-less
+  // transport hub). When set AND the path exists on the host, it is bind-
+  // mounted RW at /transport.git in both worker and orchestrator containers
+  // (workers push their task branch, the orchestrator pushes the wave branch —
+  // both write, so both RW; a bare repo has no working tree so the #184
+  // tree/HEAD collision cannot occur there). Absent/missing → not mounted
+  // (no-op for non-wave agents and before the host-side volume exists). The
+  // host-side bare-repo lifecycle is owned by the transport workstream, not
+  // this provisioning path.
+  transportRepo?: string
 }
 
 export interface AgentDeployment {

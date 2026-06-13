@@ -2574,6 +2574,14 @@ export function updateAgentRuntimeConfig(
     // attach + Ziggy MCP overlay mounts on the next container redeploy. Omit
     // to leave untouched; true to set; false to clear.
     ziggy?: boolean
+    // §11.1 wave-based dev-team container profile + its scoping fields. Omit to
+    // leave the persisted value untouched (same semantics as ziggy). Set on
+    // sandbox so update-runtime/recreate rebuild the /ai-team + transport +
+    // git-identity mounts deterministically. There is no "clear" sentinel for
+    // profile — un-profiling an agent is not a supported flow.
+    profile?: 'worker' | 'orchestrator'
+    teamId?: string
+    transportRepo?: string
   }
 ): Agent | null {
   const agents = loadAgents()
@@ -2609,6 +2617,29 @@ export function updateAgentRuntimeConfig(
       // doesn't carry an explicit `ziggy: false` (matches mounts semantics).
       const { ziggy: _drop, ...rest } = deployment.sandbox ?? {}
       deployment.sandbox = rest
+    }
+  }
+
+  // §11.1 profile + scoping fields. Set-only (no clear sentinel) — omitted =
+  // leave persisted value untouched. teamId/transportRepo are cleared by an
+  // explicit empty string so a reassignment can drop them.
+  if (config.profile !== undefined) {
+    deployment.sandbox = { ...(deployment.sandbox ?? {}), profile: config.profile }
+  }
+  if (config.teamId !== undefined) {
+    if (config.teamId === '') {
+      const { teamId: _drop, ...rest } = deployment.sandbox ?? {}
+      deployment.sandbox = rest
+    } else {
+      deployment.sandbox = { ...(deployment.sandbox ?? {}), teamId: config.teamId }
+    }
+  }
+  if (config.transportRepo !== undefined) {
+    if (config.transportRepo === '') {
+      const { transportRepo: _drop, ...rest } = deployment.sandbox ?? {}
+      deployment.sandbox = rest
+    } else {
+      deployment.sandbox = { ...(deployment.sandbox ?? {}), transportRepo: config.transportRepo }
     }
   }
 

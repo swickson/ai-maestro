@@ -52,6 +52,17 @@ export interface DockerCreateRequest {
   // ZIGGY_PROFILE + DATABASE_URL set; createDockerAgent fails loudly if
   // missing. See sandbox.ziggy on the persisted agent record.
   ziggy?: boolean
+  // Wave-based dev-team container profile (runbook §11.1). When set, the agent
+  // gets the §11.1 three-path layout: shared /ai-team mount (RO worker / RW
+  // orchestrator) + per-agent git identity. Undefined = plain cloud agent
+  // (backward-compatible). See SandboxConfig.profile.
+  profile?: 'worker' | 'orchestrator'
+  // Scopes the shared /ai-team mount source (~/.aimaestro/ai-team/<teamId>).
+  // Only consulted when profile is set. See SandboxConfig.teamId.
+  teamId?: string
+  // Absolute host path to the per-wave bare git repo, mounted RW at
+  // /transport.git when present + existing. See SandboxConfig.transportRepo.
+  transportRepo?: string
   // Internal — set by recreateDockerAgent to migrate persisted claude/gh state
   // from the soft-deleted predecessor's per-UUID dir into the new agent's dir
   // BEFORE the container starts. Without this, /recreate's UUID rotation
@@ -77,6 +88,12 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // Used to compute container-side paths for AMP common mounts. If the image's
 // USER ever changes, update this and the Dockerfile together.
 const CONTAINER_HOME = '/home/claude'
+
+// Wave-based dev-team container paths (runbook §11.1). Top-level (NOT under
+// $HOME) by design: the shared plan + transport hub must sit outside the
+// per-agent identity tree so they don't re-pollute it.
+const CONTAINER_AITEAM = '/ai-team'              // shared orchestrator-owned plan (RO workers / RW orchestrator)
+const CONTAINER_TRANSPORT_REPO = '/transport.git' // per-wave bare git repo, credential-less push hub
 
 /**
  * Build the AI_TOOL command string for a Docker agent (permission-mode aware).
@@ -138,6 +155,9 @@ export const OPERATOR_RESERVED_CONTAINER_PATH_ROOTS: readonly string[] = [
   `${CONTAINER_HOME}/.gemini`,           // settings, oauth, tmp/<project>
   `${CONTAINER_HOME}/.codex`,            // config.toml, version.json, auth.json
   `${CONTAINER_HOME}/.config/gh`,        // gh credentials
+  `${CONTAINER_HOME}/.gitconfig`,        // per-agent git identity (buildCloudGitConfigMount, §11.6)
+  CONTAINER_AITEAM,                      // shared orchestrator-owned plan (buildCloudAiTeamMount, §11.1)
+  CONTAINER_TRANSPORT_REPO,              // per-wave bare transport repo (buildCloudTransportRepoMount, §11.4)
 ]
 
 // Env keys AI Maestro itself sets per-container via baseEnv (createDockerAgent
@@ -235,6 +255,20 @@ export function validateExtraEnv(
     if (source === 'operator' && OPERATOR_RESERVED_ENV_KEYS.includes(key)) {
       return `extraEnv["${key}"]: key is reserved by AI Maestro — operator-declared extraEnv cannot shadow agent identity (AGENT_ID, TMUX_SESSION_NAME, AI_TOOL, AIMAESTRO_HOST_URL) or AMP routing (AMP_*, CLAUDE_AGENT_*, PATH, GEMINI_CLI_TRUST_WORKSPACE)`
     }
+  }
+  return null
+}
+
+// Validate the §11.1 container profile from untyped request JSON. Returns an
+// error string (for invalidRequest) or null. An invalid value must not flow
+// into buildCloudAiTeamMount, where a truthy non-'worker' string would silently
+// be treated as an orchestrator (RW /ai-team) — a privilege the operator never
+// asked for.
+const VALID_PROFILES: readonly string[] = ['worker', 'orchestrator']
+export function validateProfile(profile: unknown): string | null {
+  if (profile === undefined || profile === null) return null
+  if (typeof profile !== 'string' || !VALID_PROFILES.includes(profile)) {
+    return `profile must be one of ${VALID_PROFILES.join(' | ')} (got ${JSON.stringify(profile)})`
   }
   return null
 }
@@ -1369,6 +1403,198 @@ export function buildCloudGeminiReadthroughMounts(
   ]
 }
 
+// ── Wave-based dev-team container profile (runbook §11.1/§11.4/§11.6) ────────
+//
+// A "profiled" cloud agent (worker | orchestrator) gets the §11.1 three-path
+// layout: its private $HOME + /workspace, PLUS the shared /ai-team plan mount
+// and a per-agent git identity. Unprofiled agents (profile undefined) are
+// untouched — no /ai-team, no /transport.git, no gitconfig — so this is fully
+// backward-compatible.
+
+// Per-agent git identity (§11.6). user.NAME carries cross-provider attribution
+// (which agent did task N); user.EMAIL is a SHARED deploy-sanctioned value
+// because deploy platforms (Vercel) key deploy-auth on committer EMAIL, not
+// name — a per-agent email would break the deploy (VERIFIED §11.6). Set ONCE
+// by the provisioner, never by the agent at runtime.
+//
+// FAIL-LOUD for profiled agents: a worker/orchestrator WILL push PRs, and a
+// silent mis-attribution under the generic placeholder is worse + harder to
+// detect than a provision-time stop (mirrors the WS1 fail-loud philosophy;
+// KAI+Watson call 2026-06-12). Unprofiled agents never call this — they keep
+// the image-baked generic identity. So if we're here, CLOUD_AGENT_GIT_EMAIL is
+// required: unset/invalid → throw (caller converts to a clean 4xx, before any
+// docker run / port allocation).
+const CLOUD_AGENT_GIT_EMAIL_RE = /^[^\s@"'`$\\]+@[^\s@"'`$\\]+\.[^\s@"'`$\\]+$/
+
+export function provisionCloudGitIdentity(
+  agentId: string,
+  gitName: string,
+  hostHome: string = os.homedir()
+): { gitconfigPath: string } {
+  const email = (process.env.CLOUD_AGENT_GIT_EMAIL || '').trim()
+  if (!email) {
+    throw new Error(
+      'CLOUD_AGENT_GIT_EMAIL is unset — a profiled (worker/orchestrator) cloud agent commits + ' +
+      'pushes PRs, and the deploy-sanctioned shared email is required for correct attribution ' +
+      '(deploy platforms key deploy-auth on committer EMAIL — runbook §11.6). Set ' +
+      'CLOUD_AGENT_GIT_EMAIL on the host, then retry. (Unprofiled agents are exempt.)'
+    )
+  }
+  if (!CLOUD_AGENT_GIT_EMAIL_RE.test(email)) {
+    throw new Error(
+      `CLOUD_AGENT_GIT_EMAIL "${email}" is not a valid email address — refusing to write a ` +
+      'malformed/injectable gitconfig.'
+    )
+  }
+  // The name lands in a git CONFIG FILE (not a shell), so the injection risk is
+  // config-section smuggling via newlines/brackets, not shell metachars. Strip
+  // CR/LF + section brackets and collapse whitespace; fall back to the generic
+  // name if sanitization empties it.
+  const safeName = gitName.replace(/[\r\n[\]]/g, ' ').replace(/\s+/g, ' ').trim() || 'AI Maestro Agent'
+  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
+  fs.mkdirSync(agentDir, { recursive: true })
+  const gitconfigPath = path.join(agentDir, 'gitconfig')
+  // System-derived (name from registry, email from host env) — regenerated each
+  // provision so a relabel / email rotation is picked up on the next redeploy.
+  const content = `[user]\n\tname = ${safeName}\n\temail = ${email}\n`
+  fs.writeFileSync(gitconfigPath, content, { mode: 0o644 })
+  return { gitconfigPath }
+}
+
+// File-level RO mount of the per-agent gitconfig onto /home/claude/.gitconfig.
+// Provisioned by provisionCloudGitIdentity. Only added for profiled agents.
+export function buildCloudGitConfigMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, 'gitconfig'),
+    containerPath: path.posix.join(CONTAINER_HOME, '.gitconfig'),
+    readOnly: true,
+  }
+}
+
+// Shared /ai-team plan mount (§11.1/§11.2). Source is per-team
+// (~/.aimaestro/ai-team/<teamId>) so multiple dev-teams on one host don't leak
+// instructions into each other's containers; falls back to the host-default
+// ~/.aimaestro/ai-team when no teamId. RO for workers, RW for the orchestrator
+// that owns the plan (single-writer — §11.2). Returns null for unprofiled
+// agents (no /ai-team mount). Host source is pre-created by the caller's mkdir
+// loop (see buildCloudCommonPrecreateDirs).
+export function buildCloudAiTeamMount(
+  profile: 'worker' | 'orchestrator' | undefined,
+  teamId: string | undefined,
+  hostHome: string = os.homedir()
+): SandboxMount | null {
+  if (!profile) return null
+  const base = path.join(hostHome, '.aimaestro', 'ai-team')
+  return {
+    hostPath: teamId ? path.join(base, teamId) : base,
+    containerPath: CONTAINER_AITEAM,
+    readOnly: profile === 'worker',
+  }
+}
+
+// Per-wave bare-repo transport mount (§11.4). RW for BOTH profiles: workers
+// push their task branch and the orchestrator pushes the wave branch to this
+// shared credential-less hub. A bare repo has no working tree, so the #184
+// tree/HEAD collision cannot occur here. Returns null when transportRepo is
+// unset OR not yet present on the host — the host-side bare-repo lifecycle
+// (git init --bare + chown to uid 1000 for the container's claude user) is
+// owned by the transport workstream (§11.4 [TO-BUILD]), so the gated mount is
+// a safe no-op until that target exists.
+export function buildCloudTransportRepoMount(
+  transportRepo: string | undefined
+): SandboxMount | null {
+  if (!transportRepo) return null
+  if (!fs.existsSync(transportRepo)) return null
+  return {
+    hostPath: transportRepo,
+    containerPath: CONTAINER_TRANSPORT_REPO,
+  }
+}
+
+// ── Shared cloud mount assembly (parity guarantee) ──────────────────────────
+//
+// THE single source of truth for the system mount set, called by BOTH
+// createDockerAgent and updateContainerMountsAndExtraEnv. These were previously
+// two hand-maintained byte-identical array literals — the exact parity-drift
+// class that has bitten us before (AI_TOOL env, the \n->\r\n terminal shim).
+// Extracting one builder both call converts a latent drift bug into a
+// compile/test-time guarantee (see the create==update parity unit test). The
+// operator's body.mounts / config.mounts are merged on top by the caller via
+// mergeMounts (operator-wins on containerPath).
+export function buildCloudCommonMounts(
+  agentId: string,
+  opts: {
+    useZiggy?: boolean
+    name?: string
+    profile?: 'worker' | 'orchestrator'
+    teamId?: string
+    transportRepo?: string
+    hostHome?: string
+    repoRoot?: string
+  } = {}
+): SandboxMount[] {
+  const {
+    useZiggy = false,
+    name = '',
+    profile,
+    teamId,
+    transportRepo,
+    hostHome = os.homedir(),
+    repoRoot = process.cwd(),
+  } = opts
+  const aiTeamMount = buildCloudAiTeamMount(profile, teamId, hostHome)
+  const transportMount = buildCloudTransportRepoMount(transportRepo)
+  return [
+    ...buildAmpCommonMounts(agentId, hostHome, repoRoot),
+    buildCloudClaudeSettingsMount(agentId, hostHome),
+    ...buildCloudClaudePersistMounts(agentId, hostHome),
+    ...buildCloudClaudeReadthroughMounts(agentId, hostHome),
+    buildCloudGeminiSettingsMount(agentId, hostHome),
+    buildCloudGeminiOAuthMount(agentId, hostHome),
+    ...buildCloudGeminiReadthroughMounts(agentId, hostHome),
+    buildCloudAntigravityAppDataMount(agentId, hostHome),
+    buildCloudCodexAppDataMount(agentId, hostHome),
+    ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(name)] : []),
+    buildCloudRestorationSentinelMount(agentId, hostHome),
+    // §11.1 profiled-agent mounts (gated; absent for unprofiled = today's shape)
+    ...(profile ? [buildCloudGitConfigMount(agentId, hostHome)] : []),
+    ...(aiTeamMount ? [aiTeamMount] : []),
+    ...(transportMount ? [transportMount] : []),
+  ]
+}
+
+// The subset of common mounts whose host SOURCE is a directory that must
+// pre-exist (owned by the server uid, which matches the container's claude
+// uid 1000 by convention) BEFORE docker run — else docker materializes it
+// root-owned and the container can't write. File-level mounts are excluded
+// (provisioning writes those files first). Shared by both create + update so
+// the two pre-create loops cannot drift. /ai-team is included for profiled
+// agents; /transport.git + the gitconfig file are NOT (the bare repo is
+// host-provisioned; the gitconfig is written by provisionCloudGitIdentity).
+export function buildCloudCommonPrecreateDirs(
+  agentId: string,
+  opts: {
+    profile?: 'worker' | 'orchestrator'
+    teamId?: string
+    hostHome?: string
+    repoRoot?: string
+  } = {}
+): SandboxMount[] {
+  const { profile, teamId, hostHome = os.homedir(), repoRoot = process.cwd() } = opts
+  const aiTeamMount = buildCloudAiTeamMount(profile, teamId, hostHome)
+  return [
+    ...buildAmpCommonMounts(agentId, hostHome, repoRoot),
+    ...buildCloudClaudeReadthroughMounts(agentId, hostHome),
+    ...buildCloudGeminiReadthroughMounts(agentId, hostHome),
+    buildCloudAntigravityAppDataMount(agentId, hostHome),
+    buildCloudRestorationSentinelMount(agentId, hostHome),
+    ...(aiTeamMount ? [aiTeamMount] : []),
+  ]
+}
+
 // Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
 // + the repo-script CLI dir (meeting-send / meeting-task / meeting-read,
 // mounted at /home/claude/.local/share/aimaestro/cli) ahead of the standard
@@ -1783,6 +2009,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     return invalidRequest(envError)
   }
 
+  const profileError = validateProfile(body.profile)
+  if (profileError) {
+    return invalidRequest(profileError)
+  }
+
   const name = body.name.trim().toLowerCase()
 
   // If targeting a remote host, forward the request
@@ -1846,6 +2077,12 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const cpus = body.cpus || 2
   const memory = body.memory || '4g'
   const useZiggy = body.ziggy === true
+  // Wave-based dev-team container profile (§11.1). Undefined = plain cloud
+  // agent (today's shape). When set, drives the /ai-team mount + per-agent git
+  // identity below.
+  const profile = body.profile
+  const teamId = body.teamId
+  const transportRepo = body.transportRepo
 
   // Validate the operator pre-flight for Ziggy MCP integration BEFORE doing
   // any destructive docker work or registry writes. The per-agent .env at
@@ -1896,18 +2133,14 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   const ampEnv = buildAmpCommonEnv(agentId, name, hostInternalUrl)
   const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, body.extraEnv)
 
-  const ampMounts = buildAmpCommonMounts(agentId)
-  const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
-  const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
-  const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
-  const restorationSentinelMount = buildCloudRestorationSentinelMount(agentId)
-
   // Pre-create host-side dirs that are about to be bind-mounted. If the host
   // path doesn't exist, docker creates it as a root-owned empty directory,
   // which (a) leaves the container's claude (uid 1000) unable to write keys
   // and (b) silently masks the missing-identity failure. We create them as the
   // server process user (uid matches the container's claude user by convention).
-  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount, restorationSentinelMount]) {
+  // buildCloudCommonPrecreateDirs is shared with update-runtime so the two
+  // pre-create loops cannot drift; includes /ai-team for profiled agents.
+  for (const m of buildCloudCommonPrecreateDirs(agentId, { profile, teamId })) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -1970,20 +2203,20 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       console.warn('[Docker Service] Could not provision cloud codex ziggy MCP entry:', err instanceof Error ? err.message : err)
     }
   }
+  // Per-agent git identity for profiled (worker/orchestrator) agents (§11.6).
+  // FAIL-LOUD (not warn-and-continue like the program configs above): a profiled
+  // agent pushes PRs, and a silent mis-attribution is worse than a hard stop.
+  // Runs before the port lock / docker run so we fail cheap. Unprofiled agents
+  // skip this entirely and keep the image-baked generic identity.
+  if (profile) {
+    try {
+      provisionCloudGitIdentity(agentId, body.label || name)
+    } catch (err) {
+      return invalidRequest(err instanceof Error ? err.message : 'git identity provisioning failed')
+    }
+  }
   const mergedMounts = mergeMounts(
-    [
-      ...ampMounts,
-      buildCloudClaudeSettingsMount(agentId),
-      ...buildCloudClaudePersistMounts(agentId),
-      ...claudeReadthroughMounts,
-      buildCloudGeminiSettingsMount(agentId),
-      buildCloudGeminiOAuthMount(agentId),
-      ...geminiReadthroughMounts,
-      buildCloudAntigravityAppDataMount(agentId),
-      buildCloudCodexAppDataMount(agentId),
-      ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(name)] : []),
-      restorationSentinelMount,
-    ],
+    buildCloudCommonMounts(agentId, { useZiggy, name, profile, teamId, transportRepo }),
     body.mounts
   )
 
@@ -2105,6 +2338,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       const sandboxBlock: NonNullable<Agent['deployment']>['sandbox'] = {}
       if (body.mounts && body.mounts.length > 0) sandboxBlock.mounts = body.mounts
       if (useZiggy) sandboxBlock.ziggy = true
+      // §11.1 profile + its scoping fields — persisted so update-runtime/recreate
+      // rebuild the /ai-team + transport + git-identity mounts deterministically.
+      if (profile) sandboxBlock.profile = profile
+      if (teamId) sandboxBlock.teamId = teamId
+      if (transportRepo) sandboxBlock.transportRepo = transportRepo
       const hasSandbox = Object.keys(sandboxBlock).length > 0
 
       agents[idx].deployment = {
@@ -2362,6 +2600,19 @@ export interface UpdateRuntimeConfig {
   // false clears the flag; true sets it and requires the per-agent env file
   // at /opt/stacks/ai-maestro/agent-envs/<name>.env to exist on host.
   ziggy?: boolean
+  // Wave-based dev-team container profile (runbook §11.1). This is the
+  // identity-preserving migration path for an EXISTING agent onto the §11.1
+  // three-path layout: set it here and update-runtime rebuilds the container
+  // with the /ai-team mount + per-agent git identity, UUID/keypair/state
+  // intact. Omit to leave the persisted sandbox.profile untouched. (There is
+  // no "clear" sentinel — un-profiling an agent is not a supported flow;
+  // recreate it plain instead.)
+  profile?: 'worker' | 'orchestrator'
+  // Scopes the shared /ai-team mount source. Omit to keep persisted teamId.
+  teamId?: string
+  // Absolute host path to the per-wave bare git repo. Omit to keep persisted
+  // transportRepo. See SandboxConfig.transportRepo.
+  transportRepo?: string
 }
 
 /**
@@ -2423,6 +2674,8 @@ export async function updateContainerMountsAndExtraEnv(
     const envError = validateExtraEnv(config.extraEnv, 'operator')
     if (envError) return invalidRequest(envError)
   }
+  const profileError = validateProfile(config.profile)
+  if (profileError) return invalidRequest(profileError)
 
   try {
     await execAsync("docker version --format '{{.Server.Version}}'", { timeout: 5000 })
@@ -2447,6 +2700,25 @@ export async function updateContainerMountsAndExtraEnv(
   const existingRuntime = agent.deployment.cloud.runtime ?? {}
   const newExtraEnv = config.extraEnv !== undefined ? config.extraEnv : existingRuntime.extraEnv
   const useZiggy = config.ziggy !== undefined ? config.ziggy : (agent.deployment.sandbox?.ziggy === true)
+  // §11.1 profile + scoping — explicit config override or fall back to the
+  // persisted sandbox. This is the identity-preserving migration path: set
+  // profile here and update-runtime rebuilds with the /ai-team + git-identity
+  // mounts, UUID/keypair/state intact.
+  const profile = config.profile !== undefined ? config.profile : agent.deployment.sandbox?.profile
+  const teamId = config.teamId !== undefined ? config.teamId : agent.deployment.sandbox?.teamId
+  const transportRepo = config.transportRepo !== undefined ? config.transportRepo : agent.deployment.sandbox?.transportRepo
+
+  // Per-agent git identity for profiled agents (§11.6) — FAIL-LOUD before the
+  // destructive docker stop+rm, same pre-flight discipline as the ziggy env
+  // check below. A profiled agent with CLOUD_AGENT_GIT_EMAIL unset must not
+  // silently rebuild onto a mis-attributing identity.
+  if (profile) {
+    try {
+      provisionCloudGitIdentity(agentId, agent.label || agent.name)
+    } catch (err) {
+      return invalidRequest(err instanceof Error ? err.message : 'git identity provisioning failed')
+    }
+  }
 
   // Validate the operator pre-flight for Ziggy MCP integration BEFORE docker
   // stop+rm. Same loud-fail-on-missing-env-file contract as createDockerAgent.
@@ -2500,15 +2772,10 @@ export async function updateContainerMountsAndExtraEnv(
   const ampEnv = buildAmpCommonEnv(agentId, agent.name, hostInternalUrl)
   const mergedEnv = mergeEnv({ ...baseEnv, ...ampEnv }, newExtraEnv)
 
-  const ampMounts = buildAmpCommonMounts(agentId)
-  const claudeReadthroughMounts = buildCloudClaudeReadthroughMounts(agentId)
-  const geminiReadthroughMounts = buildCloudGeminiReadthroughMounts(agentId)
-  const antigravityMount = buildCloudAntigravityAppDataMount(agentId)
-  const restorationSentinelMount = buildCloudRestorationSentinelMount(agentId)
-
   // Pre-create host-side mount sources so docker doesn't materialize them as
-  // root-owned dirs at run time. Same pattern as createDockerAgent.
-  for (const m of [...ampMounts, ...claudeReadthroughMounts, ...geminiReadthroughMounts, antigravityMount, restorationSentinelMount]) {
+  // root-owned dirs at run time. Shared with createDockerAgent via
+  // buildCloudCommonPrecreateDirs so the two loops cannot drift.
+  for (const m of buildCloudCommonPrecreateDirs(agentId, { profile, teamId })) {
     try {
       fs.mkdirSync(m.hostPath, { recursive: true })
     } catch (err) {
@@ -2554,19 +2821,7 @@ export async function updateContainerMountsAndExtraEnv(
   }
 
   const mergedMounts = mergeMounts(
-    [
-      ...ampMounts,
-      buildCloudClaudeSettingsMount(agentId),
-      ...buildCloudClaudePersistMounts(agentId),
-      ...claudeReadthroughMounts,
-      buildCloudGeminiSettingsMount(agentId),
-      buildCloudGeminiOAuthMount(agentId),
-      ...geminiReadthroughMounts,
-      buildCloudAntigravityAppDataMount(agentId),
-      buildCloudCodexAppDataMount(agentId),
-      ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(agent.name)] : []),
-      restorationSentinelMount,
-    ],
+    buildCloudCommonMounts(agentId, { useZiggy, name: agent.name, profile, teamId, transportRepo }),
     newMounts
   )
 
@@ -2647,6 +2902,9 @@ export async function updateContainerMountsAndExtraEnv(
       mounts: config.mounts,
       extraEnv: config.extraEnv,
       ziggy: config.ziggy,
+      profile: config.profile,
+      teamId: config.teamId,
+      transportRepo: config.transportRepo,
     })
   } catch (err) {
     console.warn(
