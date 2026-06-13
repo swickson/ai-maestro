@@ -1,8 +1,12 @@
 # Runbook: Standing Up a Cloud Coding Agent (Separate Homedir + Coding Repo)
 
-> **Status:** Co-authored by Watson (Maestro-side provisioning: §1 pattern, §2–6, §8–9) + Bishop (§1 rationale, §7 orchestration). Reviewed end-to-end; all mechanics verified against the 2026-06-08/09 gateways dev-team standup (Crease/Whistler/Mother) + the worktree-collision incident.
+> **Status:** Authored by the ai-maestro dev team (provisioning mechanics: §1 pattern, §2–6, §8–10; orchestration: §1 rationale, §7; wave architecture: §11). Reviewed end-to-end; all mechanics verified against a multi-provider dev-team standup + a worktree-collision incident.
 >
-> **Pattern scope:** how to stand up a sandboxed cloud (local-container) coding agent whose **home directory and the code repo it works on are separate mounts** — the agent has a stable scratch/identity home, and edits code in a distinct repo mount. This generalizes the gateways dev-team standup; it intentionally does NOT prescribe a specific bind-mount topology (e.g. worktree-over-shared-.git) — that's a project choice layered on top.
+> **§11 — Wave-based dev-team architecture** is the converged target model from a team design session: a **three-path / two-profile** container layout, per-agent code copies (the durable fix for the shared-cwd chat-state + git-tree collisions), `ai-team/` as its own orchestrator-owned repo, the **wave = one PR** human-gate model, a credential-less **bare-repo transport**, event-driven drift-merge, per-agent git identity (deploy-safe), the **port-reservation** allocator fix, and the corrected `recreate`-vs-`update-runtime` doctrine. §11 SUPERSEDES the shared-worktree topology in §7.6 for cloud dev-teams; §1/§6/§7.2/§7.6 carry forward-pointers to it.
+>
+> **Pattern scope:** how to stand up a sandboxed cloud (local-container) coding agent whose **home directory and the code repo it works on are separate mounts** — the agent has a stable scratch/identity home, and edits code in a distinct repo mount. It intentionally does NOT prescribe a specific bind-mount topology (e.g. worktree-over-shared-.git) — that's a project choice layered on top (the converged team topology is §11).
+>
+> **Conventions:** examples use placeholders — `<operator>` for the host user, `/home/<operator>/…` for host paths, `<host-id>` for a host, `<mesh-domain>` for the mesh address suffix, `<agent-id>` for a UUID, and `<owner>/<repo>` for a GitHub repo. Substitute your own values.
 
 ---
 
@@ -13,13 +17,15 @@ A cloud coding agent gets **two distinct rw mounts** (plus whatever the project 
 1. **Home dir** — a small per-agent dir for the agent's own scratch/context (e.g. a provider context file). Mounted at an **identical host=container path**, NOT over the container's system home.
 2. **Coding repo** — the code the agent edits, a separate mount at an **identical host=container path** so absolute paths and git resolve in-container.
 
+> **For a wave-based dev-team (§11)** this generalizes to **three** paths per container — `$HOME` (identity), `/workspace` (a **per-agent** code copy, not a shared mount), and `/ai-team` (a shared orchestrator-owned repo, read-only for workers) — in two profiles (worker vs orchestrator). Per-agent code copies are what dissolve the shared-cwd chat-state and git-tree collisions; see §11.1.
+
 Why separate (vs. agent-home == workspace):
 - **Scratch/identity isolation.** The home holds the agent's provider creds, context file, and working scratch (review clones, `/tmp` artifacts, build logs). Keeping that out of the code repo means agent churn never pollutes the working tree or `git status` — the repo stays a clean, reviewable surface, and the home stays disposable/rebuildable.
 - **Multi-agent collision avoidance.** N agents can share **one** code-repo mount (or per-agent worktrees of it) while each keeps a **private** home, so their scratch and identity never collide even when they edit the same codebase. Agent-home == workspace makes every agent's scratch a change in everyone's tree.
 - **Fresh-reviewer story.** Review runs out of the reviewer's **own** home (an isolated clone or read-only inspection), so a reviewer can hibernate→wake with flushed context and judge the builder's work without their own working state bleeding in (see §7's no-self-verification rule).
 - **Identity survives image/toolchain swaps.** The home (and the per-agent AMP/cred mounts under it) persists across `update-runtime` recreate, so the agent's mesh identity + auth survive a node/image migration while the code repo is independently swappable.
 
-**Hard rule — never mount over `/home/claude`.** The container's home (`CONTAINER_HOME=/home/claude`) is system-owned: Maestro bind-mounts 8 reserved subpaths there for AMP identity + provider credentials (`.agent-messaging`, `.aimaestro`, `.local`, `.claude`, `.claude.json`, `.gemini`, `.codex`, `.config/gh`). Operator mounts that collide are rejected by `validateMounts`; mounting over the whole home shadows baked state. Use an **identical-path dir of your own** (e.g. `/home/gosub/agents/<name>`), matching the proven baseline (Hale: `/mnt/agents/hale -> /mnt/agents/hale`).
+**Hard rule — never mount over `/home/claude`.** The container's home (`CONTAINER_HOME=/home/claude`) is system-owned: Maestro bind-mounts 8 reserved subpaths there for AMP identity + provider credentials (`.agent-messaging`, `.aimaestro`, `.local`, `.claude`, `.claude.json`, `.gemini`, `.codex`, `.config/gh`). Operator mounts that collide are rejected by `validateMounts`; mounting over the whole home shadows baked state. Use an **identical-path dir of your own** (e.g. `/home/<operator>/agents/<name>`), matching the proven baseline (`/mnt/agents/<name> -> /mnt/agents/<name>`).
 
 ---
 
@@ -41,12 +47,12 @@ Why separate (vs. agent-home == workspace):
   "name": "dev-team-myagent",            // becomes session name; mesh identity slug
   "label": "MyAgent",
   "program": "claude",                    // claude | codex | gemini | antigravity
-  "hostId": "holmes",                     // MUST be the canonical self host id (lowercase)
+  "hostId": "<host-id>",                  // MUST be the canonical self host id (lowercase)
   "programArgs": "--dangerously-skip-permissions",  // PER-PROVIDER autonomy flag — see §4
-  "workingDirectory": "/home/gosub/projects/myrepo",  // bound to /workspace; agent's cwd
+  "workingDirectory": "/home/<operator>/projects/myrepo",  // bound to /workspace; agent's cwd
   "mounts": [                             // operator SandboxMount[] — identical paths
-    { "hostPath": "/home/gosub/agents/myagent", "containerPath": "/home/gosub/agents/myagent", "readOnly": false },
-    { "hostPath": "/home/gosub/projects/myrepo", "containerPath": "/home/gosub/projects/myrepo", "readOnly": false }
+    { "hostPath": "/home/<operator>/agents/myagent", "containerPath": "/home/<operator>/agents/myagent", "readOnly": false },
+    { "hostPath": "/home/<operator>/projects/myrepo", "containerPath": "/home/<operator>/projects/myrepo", "readOnly": false }
   ]
 }
 ```
@@ -58,7 +64,7 @@ Returns `{ agentId, containerId, port, containerName }`. AMP identity is **auto-
 
 ```bash
 curl -X PATCH http://localhost:23000/api/agents/<agentId> -H 'Content-Type: application/json' \
-  --data '{"hooks":{"on-wake":"You are dev-team-myagent, display name MyAgent. cd /home/gosub/projects/myrepo and read ai-team/MyAgent_INSTRUCTIONS.md, then follow it."}}'
+  --data '{"hooks":{"on-wake":"You are dev-team-myagent, display name MyAgent. cd /home/<operator>/projects/myrepo and read ai-team/MyAgent_INSTRUCTIONS.md, then follow it."}}'
 ```
 For **Gemini/antigravity** agents, add reinforcement ("…then re-read and follow it exactly") — Gemini reads loosely without it.
 
@@ -69,7 +75,7 @@ For **Gemini/antigravity** agents, add reinforcement ("…then re-read and follo
 
 ---
 
-## 4. Per-provider reference (VERIFIED 2026-06-08)
+## 4. Per-provider reference
 
 | Provider | `program` | In-container binary | Autonomy flag (put in `programArgs`) | Auth |
 |----------|-----------|--------------------|--------------------------------------|------|
@@ -82,7 +88,7 @@ For **Gemini/antigravity** agents, add reinforcement ("…then re-read and follo
 
 **Autonomy is per-provider** — `--dangerously-skip-permissions` is CLAUDE-ONLY; baking it into codex/gemini breaks launch (unrecognized flag). Use the table.
 
-**AMP-scripts PATH gotcha (non-Claude agents).** The AMP CLI lives at `/home/claude/.local/bin/` and **is** on the container shell PATH (default `sh` and login shell both resolve `amp-send`) — so a human in tmux or a `docker exec` probe finds it fine. But **Codex's command-execution environment doesn't surface that PATH** (observed standing up Columbo, 2026-06-11: it couldn't invoke `amp-send` by bare name until steered). Claude agents inherit it and don't hit this. **Fix: in any non-Claude agent's instructions, reference AMP by absolute path** (`/home/claude/.local/bin/amp-send`) or have it `export PATH=/home/claude/.local/bin:$PATH` first — and verify by what the *harness* sees, not what `docker exec`/tmux shows (they mislead here).
+**AMP-scripts PATH gotcha (non-Claude agents).** The AMP CLI lives at `/home/claude/.local/bin/` and **is** on the container shell PATH (default `sh` and login shell both resolve `amp-send`) — so a human in tmux or a `docker exec` probe finds it fine. But **Codex's command-execution environment doesn't surface that PATH** (observed standing up a Codex review agent: it couldn't invoke `amp-send` by bare name until steered). Claude agents inherit it and don't hit this. **Fix: in any non-Claude agent's instructions, reference AMP by absolute path** (`/home/claude/.local/bin/amp-send`) or have it `export PATH=/home/claude/.local/bin:$PATH` first — and verify by what the *harness* sees, not what `docker exec`/tmux shows (they mislead here).
 
 ---
 
@@ -98,7 +104,7 @@ For **Gemini/antigravity** agents, add reinforcement ("…then re-read and follo
 
 - **wake** (`POST …/wake`) = `docker start` of the **existing** container → relaunches the **baked** `AI_TOOL` env. It does **NOT** pick up a new image or re-read the registry.
 - **hibernate** (`POST …/hibernate`) = `docker stop` (clean SIGTERM, exit 0). Cloud containers are `docker run -d` + `--restart unless-stopped`; a host `pm2 restart` does **not** stop them (only an explicit hibernate does).
-- **recreate to change image or programArgs** — a wake won't do it. Use `POST …/update-runtime` with `{}` (rebuilds the container on `ai-maestro-agent:latest`, **preserves** UUID + AMP keypair + mounts + on-wake hook + programArgs). `/recreate` ROTATES the UUID (breaks AMP/mesh refs) — avoid unless you intend identity churn.
+- **recreate to change image or programArgs** — a wake won't do it. Use `POST …/update-runtime` with `{}` (rebuilds the container on the pinned-tag image, normally `ai-maestro-agent:latest`). **`update-runtime` is the identity-preserving primitive** (the default for almost everything — see §11.8): it **preserves** UUID + AMP keypair + per-agent state dir + message history + mounts + on-wake hook + programArgs, **AND re-runs the update-runtime provisioning path** (config + auth + mounts — verified: a prior change made it re-provision codex config/auth; confirmed in a production identity-preserving migration). Because it rebuilds from the **current** image tag, an offline container that was frozen on an older created-from image **catches up** on image-level fixes too. It does **NOT** pull a fix that only runs in a create-only or recreate-only path. `/recreate` ROTATES the UUID **by design** → forces a new AMP keypair, a fresh state dir, and breaks long-lived refs (peer caches, kanban assignments, dashboards, message history) — **avoid for any agent with history; use it only when you deliberately want a fresh identity** (see `agents-docker-service.ts`).
 - **`AI_TOOL` composition** honors `body.yolo` and `body.programArgs`, **NOT** `body.permissionMode` (permissionMode is the host-tmux wake path only). So put autonomy in `programArgs` (it survives recreate; `yolo` does not).
 - **on-wake hook fires on wake**, NOT on `update-runtime`. So after a recreate the session is fresh + unprimed → **hibernate then wake** to fire the hook and prime it. Migration pattern: **recreate → hibernate → dispatch-then-wake**.
 
@@ -106,7 +112,7 @@ For **Gemini/antigravity** agents, add reinforcement ("…then re-read and follo
 
 ## 7. Orchestration & multi-agent coordination
 
-The §1–§6 mechanics stand up **one** agent. This section is the layer on top: running a **team** of them to build + review software. Pattern proven on the 2026-06-08/09 gateways dev-team standup (one orchestrator + Crease/Whistler/Mother).
+The §1–§6 mechanics stand up **one** agent. This section is the layer on top: running a **team** of them to build + review software. Pattern proven on a multi-provider dev-team standup (one orchestrator + several workers).
 
 ### 7.1 Team shape
 - **One orchestrator** (typically a host agent with full repo access + the only push/PR credentials) + **N workers** (containerized, one `program` each). Picking workers across providers (e.g. Claude / Codex / Antigravity) makes cross-provider review **automatic** — see 7.5. Roles (e.g. "security", "architecture") are lenses, not walls.
@@ -115,6 +121,8 @@ The §1–§6 mechanics stand up **one** agent. This section is the layer on top
 ### 7.2 Coordination-dir pattern
 - A shared **coordination dir** (e.g. `ai-team/`) is mounted into — or nested inside — **every** agent's repo path, so the orchestrator's living plan, per-agent `*_INSTRUCTIONS.md`, and protocol docs are visible to all agents on the **same path, instantly**.
 - It is **gitignored** (keeps team operational state out of the shipped branch) **but shared** (same physical mount). Gitignored ≠ private within the team.
+
+> **§11 refinement:** for the wave-based team, `ai-team/` becomes **its own orchestrator-owned git repo** (versioned + orchestrator-managed), mounted **read-only for workers** and read-write for the orchestrator — NOT a gitignored dir *inside* the coding repo. Keeping it a separate repo gets both goals at once: it is git-versioned/managed AND it never lands in the shared coding repo that non-maestro devs clone. The single-writer (orchestrator) / read-only-workers rule is what keeps the one remaining shared mount from re-introducing a collision. See §11.2.
 - The per-agent `<Name>_INSTRUCTIONS.md` is the **real instruction channel** (the on-wake hook points at it — §3b). The orchestrator **owns** the living plan doc and refreshes it every dispatch/completion/hibernate so it never diverges from reality; workers read it.
 - **Mirror caveat:** to surface a doc that lives **outside** the agents' mounts (e.g. another repo's `docs/`), **copy** it into the coordination dir — a symlink to an unmounted target dangles in-container.
 
@@ -133,6 +141,9 @@ The §1–§6 mechanics stand up **one** agent. This section is the layer on top
 - Multi-provider lenses are **complementary in practice** — each provider repeatedly caught defects the others missed (e.g. a correctness gap vs. a crash-on-multibyte-input vs. a boundary issue).
 
 ### 7.6 Code-isolation topology (worktree-over-shared-`.git`) — a project choice, and its failure mode
+
+> ⚠️ **SUPERSEDED for cloud dev-teams by §11.1 (per-agent code copies).** The shared-`.git` worktree topology below caused a live working-tree/HEAD collision (a worker's `git checkout` detached the orchestrator's host HEAD mid-task) — that is exactly the class the wave architecture removes by giving **each agent its own full `/workspace` checkout**. Keep §7.6 only for the narrow case where you deliberately want a shared object store and accept the read-only-discipline rule below; for a wave-based team, use §11.
+
 One way to let N workers edit the same codebase without trampling each other: give each worker its **own git worktree** over a **shared canonical `.git`**, every worktree at an **identical host=container absolute path**. Workers see each other's commits (shared object store) with no working-tree edit collision. **Requires** the shared `.git` mounted at an identical path so each worktree's `gitdir:` pointer resolves in-container.
 
 > ⚠️ **Failure mode — put this front and center.** A reviewer's container mounts only **its own** worktree, not the builder's. If a reviewer runs `git worktree add` / `git checkout <other-branch>` against the **shared bind-mounted `.git`** to reach the builder's branch, it **re-registers that worktree to the reviewer's container path** and **detaches the host's checkout/HEAD** — silently orphaning the builder's host worktree. (It bit us. Nothing was lost — branch + commits live in the shared object store — but the pipeline stalls until recovery: `git worktree prune` → restore the detached host HEAD → re-attach the orphaned worktree.)
@@ -161,7 +172,7 @@ After create (+ PATCH hook, + auth):
 
 ---
 
-## 10. Review-only variant (Columbo) — multi-repo reviewer + issue triager
+## 10. Review-only variant — multi-repo reviewer + issue triager
 
 A cloud agent that **reads many repos** and **never builds/commits/pushes** — it reviews PRs and triages issues, then returns to idle. It inherits §1–§6 (mounts, prerequisites, create/hook/lifecycle) and overrides only the role-specific parts below. Full design record + decision ledger: [`docs/PR-REVIEW-AGENT-SPEC.md`](./PR-REVIEW-AGENT-SPEC.md).
 
@@ -170,21 +181,20 @@ A cloud agent that **reads many repos** and **never builds/commits/pushes** — 
 **Mounts (override §1's "coding repo"):**
 | Mount | Lifecycle | Holds |
 |---|---|---|
-| **Home** `/home/gosub/agents/columbo` (identical path) | precious, survives recreate | GitHub App creds (`.pem` + Client ID), AMP identity, review log (dedup), on-wake instructions file |
+| **Home** `/home/<operator>/agents/<name>` (identical path) | precious, survives recreate | GitHub App creds (`.pem` + Client ID), AMP identity, review log (dedup), on-wake instructions file |
 | **Repo library** `/srv/review-repos` (identical path) | **disposable** — `rm -rf` + re-clone freely | warm working copies of allowlisted repos + graphify graphs + caches |
 
 Cleaving precious-home from disposable-cache means disk reclaim / repo reset never risks identity (the §1 reason, sharpened for an always-on reviewer).
 
 **Program:** `codex` (autonomy flag `--dangerously-bypass-approvals-and-sandbox`, per §4). Codex graphify skill installs to `~/.codex/skills`; invocation is `$graphify` (not `/graphify`); set `multi_agent = true` under `[features]` in `~/.codex/config.toml`.
 
-**Auth (overrides §5's interactive OAuth) — GitHub App, not a PAT.** *Why not a PAT:* the watched repos are owned by the `swickson` **personal account** where the reviewer is only a collaborator; personal-repo collaborators get only the **write** role (triage is org-only) AND fine-grained PATs **cannot scope another personal account's repos** (verified — GitHub docs). So no PAT can enforce least-privilege here. A **GitHub App installation token is scoped to exactly the App's permissions regardless of collaborator role → the agent physically cannot push/merge.** App `n4x-columbo`: `pull_requests:write` + `issues:write` + `contents:read` + `metadata:read`; comments sign `n4x-columbo[bot]`.
-- **Token-minter** (in home, openssl+curl+jq — no image bake needed): JWT signed RS256 with `iss`=**Client ID** (`Iv23…`, GitHub-recommended over numeric App ID), `iat`=now-60, `exp`=now+540; `POST /app/installations/<id>/access_tokens` → short-lived (`≤1h`) `ghs_…` token used as `Authorization: token`.
-- **Verified 2026-06-11 (Holmes):** Client ID `Iv23li40UW1VO1FpVPAz`; installs `139685565` (swickson → 5 repos) + `139704047` (SEACWORX → `allianceos` only). Full chain (JWT→install-token→scoped-repo) proven, no push.
-- **Creds staging:** `.pem` + Client ID live in the home mount `/home/gosub/agents/columbo/` (move them there at build, never leave in the host homedir). Container runs as `claude`; ensure the files are readable by it.
+**Auth (overrides §5's interactive OAuth) — GitHub App, not a PAT.** *Why not a PAT:* when the watched repos are owned by a **personal account** where the reviewer is only a collaborator, personal-repo collaborators get only the **write** role (triage is org-only) AND fine-grained PATs **cannot scope another personal account's repos** (verified — GitHub docs). So no PAT can enforce least-privilege there. A **GitHub App installation token is scoped to exactly the App's permissions regardless of collaborator role → the agent physically cannot push/merge.** Example App perms: `pull_requests:write` + `issues:write` + `contents:read` + `metadata:read`; comments sign `<app>[bot]`.
+- **Token-minter** (in home, openssl+curl+jq — no image bake needed): JWT signed RS256 with `iss`=**Client ID** (`Iv23…`, GitHub-recommended over numeric App ID), `iat`=now-60, `exp`=now+540; `POST /app/installations/<install-id>/access_tokens` → short-lived (`≤1h`) `ghs_…` token used as `Authorization: token`. Full chain (JWT→install-token→scoped-repo) proven, no push.
+- **Creds staging:** `.pem` + Client ID live in the home mount `/home/<operator>/agents/<name>/` (move them there at build, never leave in the host homedir). Container runs as `claude`; ensure the files are readable by it.
 
-**Allowlist (load-bearing — bounds what a forged trigger can clone):** `swickson/{ziggy, n4safety-app, aimaestro-gateways, ai-maestro-plugins, ai-maestro}` + `SEACWORX/allianceos`.
+**Allowlist (load-bearing — bounds what a forged trigger can clone):** an explicit list of `<owner>/<repo>` entries the reviewer may clone.
 
-**Trigger — Discord doorbell (no open port):** GitHub's native Discord webhook → the GitHub-alerts channel → `discord-gateway` `WATCH_WEBHOOKS` match → AMP to Columbo. Append a triple `channelId:webhookId:columbo@<addr>` to the existing `WATCH_WEBHOOKS` env (format proven in prod; one entry already routes a channel → Hale) and restart `discord-gateway`. Discord is only the *doorbell* — the embed carries the PR/issue URL; `gh`/the API supplies structured data. Poll (`gh pr list`) is the degraded-mode backstop only.
+**Trigger — Discord doorbell (no open port):** GitHub's native Discord webhook → a GitHub-alerts channel → a `discord-gateway` `WATCH_WEBHOOKS` match → AMP to the reviewer. Append a triple `channelId:webhookId:<reviewer>@<mesh-domain>` to the existing `WATCH_WEBHOOKS` env (format proven in prod) and restart `discord-gateway`. Discord is only the *doorbell* — the embed carries the PR/issue URL; `gh`/the API supplies structured data. Poll (`gh pr list`) is the degraded-mode backstop only.
 
 **Review + triage loop:** resolve repo+# from the AMP trigger → check it's on the allowlist → `cd` the library copy → `git fetch` → `gh pr checkout` (PR) → review (read diff + cross-ref live code, optional tests in a throwaway worktree, removed after) → `gh pr comment`/`--request-changes` (never `--approve`); for issues → classify + label/comment/route via AMP. Append `(repo, #, head SHA, verdict)` to the home review log; idle.
 
@@ -194,8 +204,77 @@ Cleaving precious-home from disposable-cache means disk reclaim / repo reset nev
 
 **Concurrency:** serialize for v1 (drain the AMP inbox after each review); fan-out is a v2 concern.
 
-**Fleet direction:** Columbo is the pilot for per-agent GitHub identities (attribution + least-privilege vs. every agent sharing the operator's `gh` auth). When templatizing for the orchestrators, a **GitHub App per role** (reviewer-App, builder-App) scales cleaner than N machine-user PATs — short-lived tokens, no per-account 2FA/PAT sprawl, and it sidesteps the personal-repo resource-owner limitation entirely.
+**Fleet direction:** this is the pilot for per-agent GitHub identities (attribution + least-privilege vs. every agent sharing the operator's `gh` auth). When templatizing for the orchestrators, a **GitHub App per role** (reviewer-App, builder-App) scales cleaner than N machine-user PATs — short-lived tokens, no per-account 2FA/PAT sprawl, and it sidesteps the personal-repo resource-owner limitation entirely.
 
 ---
 
-_Watson sections (§1 pattern, §2–6, §8–10) reflect mechanics verified during the 2026-06-08 gateways dev-team standup (Crease/Whistler/Mother) + the 2026-06-11 Columbo GitHub-App provisioning. Bishop's §1 rationale + §7 orchestration reflect the same standup's orchestration + the worktree-collision incident and its fix (2026-06-08/09)._
+## 11. Wave-based dev-team architecture (converged target model)
+
+The §7 orchestration mechanics are proven, but two shared-state defects surfaced under load: agents co-located in **one on-disk working directory** share (a) one git working tree + HEAD (a worker checkout moves the orchestrator's HEAD mid-task — issue #184), and (b) chat-state keyed by `hashCwd(workingDirectory)` so two agents in the same cwd cross-render (issue #182). Both are symptoms of a **shared cwd**, and both dissolve when each agent gets its own container filesystem. This section is the converged design for migrating dev agents to that model. Status tags: **[LANDED]** in place today · **[TO-BUILD]** designed, not yet built · **[VERIFIED]** empirically confirmed.
+
+### 11.1 Container layout — three paths, two profiles
+Each agent container has **three** distinct paths (NOT homedir == workspace — that would drop the identity dotfiles into the code tree and re-pollute it):
+
+| Path | Holds | Worker | Orchestrator |
+|---|---|---|---|
+| **`$HOME`** (`/home/claude`, the system home — do NOT repoint) | identity + behavior: `CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `<Name>_INSTRUCTIONS.md`, AMP keypair, provider auth | per-agent, private | per-agent, private |
+| **`/workspace`** | the code checkout (own branch) | **ephemeral** per-task checkout (branch off the wave tip, one task, push, hibernate) | **persistent** checkout holding the integration **wave branch** |
+| **`/ai-team`** | shared orchestrator plan + per-agent `*_INSTRUCTIONS.md` + protocol docs | **READ-ONLY** | **READ-WRITE** (owns the plan) |
+
+- **`$HOME` ≠ `/workspace`.** The Codex/Gemini global instruction files resolve off `$HOME` (`$CODEX_HOME/AGENTS.md` defaults to `~/.codex/AGENTS.md`; Gemini `~/.gemini/GEMINI.md` — **[VERIFIED]** from the installed binaries). Both providers **merge/stack** global + repo-tree instruction files (they do NOT override), so homedir instructions load alongside any repo-canonical `AGENTS.md`/`GEMINI.md` with **zero hijack** of the shared repo's files. Keeping `$HOME` distinct from `/workspace` is also the **zero-churn** path: it is already `/home/claude` where the per-agent AMP/auth mounts live (§1's hard rule), so nothing restructures.
+- **Worker `/workspace` is ephemeral.** A fresh checkout every wake means a stale long-lived worker checkout can't happen — workers branch off the current wave tip, do one task, push, hibernate.
+- **Placement is necessary but not sufficient for the wanderers.** Correct file location only gets the instructions *discovered*; Gemini (and likely Codex) still need the on-wake hook's explicit "re-read and follow exactly" reinforcement to *comply* (§3b). So instruction delivery is two parts: **homedir placement + on-wake injection**.
+
+### 11.2 `/ai-team` as its own orchestrator-owned repo
+`/ai-team` is the **one** deliberately-shared mount, so it needs guardrails or it re-introduces the collision the migration removes:
+1. **Its own git repo**, separate from the coding repo — NOT a gitignored dir inside `/workspace`. Un-gitignoring it *inside* the coding repo would re-commit it into the repo non-maestro devs clone (the original clutter problem). A standalone repo is git-versioned + orchestrator-managed AND stays out of the coding repo.
+2. **Single-writer.** The **orchestrator writes** `/ai-team`; workers mount it **read-only**. Otherwise two workers committing to the shared `ai-team` repo just move the #184 HEAD collision from the code repo to the `ai-team` repo. Read-only mount enforces it. (Chat-state keys on the per-agent `/workspace`, so a shared `/ai-team` does NOT bring #182 back.)
+
+### 11.3 The wave = one PR model (human gate at wave granularity)
+The per-task individual-PR flow does not fit long autonomous waves — the human can't gate 30–50 micro-PRs/day (and on shared repos, the no-self-approve rule forbids flooding co-devs). So:
+- A **wave** = a coherent unit of 15–20 tasks (a bug class, a whole API, a feature) = **one branch** = **ONE human PR to main**, human-reviewed + e2e-tested + merged. One meaningful review satisfies both human-in-the-loop AND no-self-approve/no-flood.
+- **Inside** the wave, the per-task quality gate is **cross-provider agent review** (author → a different-provider reviewer authors tests **from the spec, not the code** — §7.5), which replaces per-task human review.
+- **Commit granularity** is set at **integration time**: the orchestrator squashes each task's noisy WIP commits into **one clean commit per task** as it merges into the wave branch, so the PR shows ~15–20 meaningful, bisectable commits — not 200 WIP commits, not one opaque giant commit. The **final main-merge method** is a separate per-repo policy toggle (squash-merge → one commit/wave on main; merge-commit → per-task history on main).
+
+### 11.4 Bare-repo transport (credential-less workers)
+Only the **orchestrator** holds a git token, so workers cannot (and must not) push to GitHub. Transport is a **per-wave bare git repo on a persistent host volume** that both worker and orchestrator containers mount:
+- **Bare repo** (`git init --bare`) = the `.git` database only, **no working tree** — so the #184 working-tree/HEAD collision *cannot occur there* (that bug needs a working tree; a bare repo has none). It's a handoff hub, not a second codebase.
+- **Persistent VOLUME, per-wave REPO:** the volume survives container recreation (it lives on the host, not inside any ephemeral container); the bare repo on it is created at wave start and discarded at close, so no stale wave state carries forward.
+- **Flow:** orchestrator clones origin once, pushes the wave branch to the bare repo → workers fetch the wave tip + push their task branch to the bare repo over **local filesystem transport, zero GitHub creds** → orchestrator fetches task branches, merges into the wave branch, and is the **only** identity that pushes the wave branch to GitHub for the single PR.
+- **Co-location assumption:** workers + orchestrator on one host (the norm). Cross-host waves swap the shared volume for a network git endpoint, same roles. **[TO-BUILD]** — host-side volume + bare repo + reachability, plus wiring the mount into the container profiles.
+
+### 11.5 Drift management (event-driven, boundary-applied)
+A long-lived wave branch drifts from `main` while other devs land commits — left unmanaged, the wave→main PR becomes an end-of-wave conflict pileup at review time. The orchestrator runs **two merge jobs**: (1) task-branch → wave on each reviewed task; (2) **`main` → wave periodically**. The trigger is **event-driven, not a timer:** a repo-watcher AMPs the orchestrator on PR-close for the repo → the orchestrator sets a **main-moved flag** and drains it at the **task-dispatch boundary** (right before waking the next worker), merges `main` → wave, **and re-runs the accumulated wave test suite** (a `main` change can silently break an already-completed task — the drift-merge needs its own regression check). In-flight workers are untouched; the next worker always branches off an up-to-date, still-green tip. Reuses the existing AMP wake/notification primitive — no new plumbing. **[TO-BUILD]**
+
+### 11.6 Git identity & commit attribution (deploy-safe)
+- **The rule:** `user.NAME` per-agent (carries the cross-provider attribution — which agent did task N, which provider wrote the spec-tests); `user.EMAIL` a **shared, deploy-sanctioned value**. Set **once at provision by the provisioner**, never by the agent at runtime, in the same `$HOME` the identity files live in.
+- **Why email is shared:** some deploy platforms (e.g. Vercel) key deploy-auth on the **committer EMAIL**, not the name. **[VERIFIED]** on a throwaway Vercel project: a commit with author NAME = a non-owner per-agent value + author EMAIL = the deploy-sanctioned shared address deployed **clean**. So per-agent name is safe; a per-agent email would break the deploy (observed). **Caveat to write down:** the GitHub avatar follows the **email**, so it renders as the shared identity — the per-agent NAME is the attribution, the avatar is shared.
+- Default cloud containers today commit as a **generic** shared identity (`AI Maestro Agent <agent@example.com>`, **[VERIFIED]**), so attribution is currently invisible — the per-agent `user.name` provisioning is what makes it real. If a repo's deploy tooling ever keys on name too, fall back to author = the shared identity + `Co-authored-by:` trailers (the safe superset). **[TO-BUILD]**
+
+### 11.7 Port reservation — the allocator fix (gating prerequisite)
+Migrating all dev agents to cloud multiplies containers, which makes the **port double-assignment** bug load-bearing. Root cause: the allocator builds its used-ports set from `docker ps` (**running** containers only) — a hibernated agent's container is `Exited` and **releases its host port**, so its port looks free and gets reissued (an active agent's port being handed to a newly-provisioned one). `docker ps -a` does NOT help — a stopped container shows empty `.Ports`. The registry (`deployment.cloud`) is the only reliable hibernated-port source; the agent-first doctrine already says the registry is the source of truth.
+
+**The fix [TO-BUILD, GATING]:** per-host **flock** around the **existing registry** (NOT a new sqlite/reservations file — a second store re-creates the two-sources-disagree problem that *is* the status-lies defect). Critical section: take per-host lock → read registry → `reserved = {all agents' recorded ports} ∪ {bound host ports backstop}` → pick first free → **persist the reservation, THEN `docker run`** (a failed bind reuses the same reserved port on retry — idempotent, no leak) → release lock.
+- **Decouple reservation from status:** a port is reserved by the agent **existing** in the registry (created, not hard-deleted), NOT by `status == active` — so the allocator is robust even while the status field lies, and the durable fix does NOT block on the (sibling) status-accuracy fix.
+- **Scope per-host** (ports are host-local). **Fail loud** on both range exhaustion AND the error path (a `catch` block that silently defaults to a hardcoded port with no free-check is the exact silent-collision mode — the rewrite kills it). **Size the range configurable** for peak concurrent per-host agents with multi-team headroom. Subsumes the parallel-`/recreate` port race. **The fix prevents NEW reissues; it does NOT re-home a port already baked into an existing record** — pre-existing collisions need the manual sweep below.
+
+### 11.8 `recreate` vs `update-runtime` — and the identity-preserving port move
+**Doctrine (write it once so no agent churns an identity by reaching for the wrong verb):** **`update-runtime` is the identity-preserving default** for anything that should keep its identity (UUID + AMP keypair + state + history all survive, and it re-runs the update-runtime provisioning path — see §6); **`/recreate` rotates the UUID by design** (new keypair, fresh state dir, orphaned message history under the old per-UUID dir, broken kanban/dashboard/peer-cache refs) — use it **only** when you deliberately want a fresh identity.
+
+**Identity-preserving port reassignment** (the right unblock for a colliding agent that has prior work — **[VERIFIED]** zero churn on a live agent with real history):
+1. Patch `deployment.cloud.websocketUrl` + `healthCheckUrl` → a port verified-free in **both** `docker ps` AND the registry, **targeted by id** so co-assigned agents are untouched.
+2. `update-runtime` rebuilds on the new port — it re-reads the patched port (`parsePortFromWebsocketUrl` → flows straight into `docker run -p`, not overridden), UUID + keypair + history intact; the stale `Created` container is replaced in the same step. Take a registry backup first.
+3. Verify three ways: host-side `/health` 200 on the new port; **mesh-side** name-addressed AMP **delivers** (proves the directory resolved name→UUID and the keypair survived); user-side wake + task. AMP routes by **name**, never UUID, so senders are unaffected by the port move.
+- **Watch-out:** the post-rebuild runtime auto-launch can RACE to a stale-crash screen — restart the runtime if it hangs.
+- **Sweeping an intentionally-hibernated agent is safe — because the container starts but the agent does not act.** `update-runtime` rebuilds **and starts** the container (there is **no** non-starting reassignment path: a plain `wake` is just `docker start` of the existing container on its **old baked port**, so patching the registry port *without* `update-runtime` would **desync** — registry says the new port, the container is still bound to the old one. Only the `update-runtime` rebuild re-bakes the new port, and it always brings the process up). BUT it does **NOT** fire the **on-wake hook** (the hook fires on the `wake` route only — §6). So the agent comes up **idle and unprimed**: with no on-wake prompt injected it does **not** tear off on stale instructions, and any queued AMPs simply sit in its inbox until an **intentional** `wake` fires the hook. Net: an `update-runtime` on a hibernated agent **parks it safely** on its new port and it is woken deliberately when its next role opens — the port-sweep restarts the container without disturbing a parked agent's behavior. Heads-up the owner first (identity is preserved, but the port moves).
+
+### 11.9 Workstreams & status
+1. **Port-reservation** — flock + registry-as-reservation, fail-loud, configurable range, parallel-recreate race folded in. **GATING** (the migration multiplies cloud agents). **[TO-BUILD]**
+2. **Cloud-migrate dev agents** — the §11.1 profiles + the §11.4 bare-repo transport + the §11.3 wave loop (host-side volume/transport + container-profile provisioning in `agents-docker-service`). **[TO-BUILD]**
+3. **Instruction relocation + on-wake reinforcement** — `$HOME` global-path placement (`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) + per-agent `user.name` git identity + the reinforcement hook. **[TO-BUILD]**
+
+**Operational (separate from the durable fixes):** existing fleet-wide port collisions are pre-existing baked dupes the allocator fix will NOT auto-fix — they need the §11.8 manual identity-preserving sweep (reassign each OFFLINE victim, never the live holder) before they wake-fail.
+
+---
+
+_§1–§10 reflect provisioning + orchestration mechanics verified during a multi-provider dev-team standup, a review-only-agent GitHub-App provisioning, and a worktree-collision incident + its fix. §11 is the converged wave-based architecture from a team design session; per-section status tags mark LANDED vs TO-BUILD vs VERIFIED._
