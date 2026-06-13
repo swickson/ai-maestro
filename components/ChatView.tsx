@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, type KeyboardEvent, 
 import { User, Bot, Wrench, Loader2, Send, RefreshCw, AlertCircle, ChevronDown, ChevronRight, Copy, Check, MessageSquare, ScanEye, Brain, X, Pause } from 'lucide-react'
 import { MarkdownContent } from '@/components/chat/MarkdownRenderer'
 import ToolBurstGroup from '@/components/chat/ToolBurstGroup'
-import { groupMessages, getToolPreview, type ToolBurst } from '@/lib/chat-utils'
+import { groupMessages, getToolPreview, chatReconnectDelay, type ToolBurst } from '@/lib/chat-utils'
 import { agentIsOnline } from '@/lib/agent-utils'
 import type { Agent } from '@/types/agent'
 
@@ -131,6 +131,10 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
   const reconnectAttemptsRef = useRef(0)
+  // Stable handle to the active effect's connect() so recovery paths
+  // (visibility/focus/online, manual send) can force a reconnect even when
+  // the socket is null or already CLOSED — see onclose backoff below.
+  const connectRef = useRef<() => void>(() => {})
 
   // Track if we've done initial load
   const hasLoadedRef = useRef(false)
@@ -182,8 +186,13 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
     if (!isActive || !agent?.id) return
 
     const sessionName = agent.name || agent.alias || agent.id
+    // Guards against reconnect storms after the effect tears down
+    // (agent switch / isActive flip / unmount): any in-flight onclose or
+    // scheduled retry from this effect becomes a no-op once cancelled.
+    let cancelled = false
 
     const connect = () => {
+      if (cancelled) return
       if (wsRef.current?.readyState === WebSocket.OPEN) return
       // Close zombie sockets stuck in CONNECTING
       if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
@@ -302,12 +311,14 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
         // Guard against stale closures
         if (wsRef.current !== ws) return
         wsRef.current = null
+        if (cancelled) return
 
-        // Auto-reconnect with backoff (up to 5 attempts)
-        if (reconnectAttemptsRef.current < 5) {
-          reconnectAttemptsRef.current++
-          reconnectTimeoutRef.current = setTimeout(connect, 3000)
-        }
+        // Auto-reconnect with capped exponential backoff. Never permanently
+        // give up while the view is active — a fixed attempt cap left the chat
+        // dead forever (e.g. after a server restart burned the budget before
+        // it finished binding), with the banner falsely claiming "reconnecting".
+        const delay = chatReconnectDelay(reconnectAttemptsRef.current++)
+        reconnectTimeoutRef.current = setTimeout(connect, delay)
       }
 
       ws.onerror = () => {
@@ -317,9 +328,11 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
       wsRef.current = ws
     }
 
+    connectRef.current = connect
     connect()
 
     return () => {
+      cancelled = true
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
@@ -331,29 +344,38 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
     }
   }, [agent.id, isActive, getChatWsUrl])
 
-  // Reconnect chat WS when page becomes visible (mobile background recovery)
+  // Reconnect chat WS on recovery signals (tab visible / window focus / network
+  // back online). Must call connect() directly: the old code only closed an
+  // existing non-CLOSED socket, so after a give-up (socket null/CLOSED) it reset
+  // the counter but never actually reconnected — the chat stayed dead.
   useEffect(() => {
     if (!isActive) return
 
+    const tryReconnect = () => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        reconnectAttemptsRef.current = 0 // fresh backoff budget
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+        connectRef.current()
+      }
+    }
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-          reconnectAttemptsRef.current = 0 // Reset for fresh retries
-          // Trigger reconnect by closing any zombie socket
-          if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-            wsRef.current.close()
-          }
-        }
-      } else {
+        tryReconnect()
+      } else if (reconnectTimeoutRef.current) {
         // Page hidden — cancel pending reconnects
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current)
-        }
+        clearTimeout(reconnectTimeoutRef.current)
       }
     }
 
     document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', tryReconnect)
+    window.addEventListener('online', tryReconnect)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', tryReconnect)
+      window.removeEventListener('online', tryReconnect)
+    }
   }, [isActive])
 
   // Heartbeat: send ping every 15s, force reconnect if no pong for 45s
@@ -362,8 +384,12 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
 
     const interval = setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        // If no pong received in 45s, connection is dead — force reconnect
-        if (Date.now() - lastPongRef.current > 45000) {
+        // If no pong received in 45s, connection is dead — force reconnect.
+        // Skip while the tab is hidden: background-tab timer throttling stalls
+        // our own ping/pong loop, producing a false "dead" verdict and a
+        // self-inflicted disconnect flap. Recovery handlers reconnect on
+        // visibility/focus return.
+        if (!document.hidden && Date.now() - lastPongRef.current > 45000) {
           console.log('[ChatView] No pong in 45s — forcing reconnect')
           wsRef.current.close() // triggers onclose → reconnect
           return
@@ -428,9 +454,8 @@ export default function ChatView({ agent, isActive = false }: ChatViewProps) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setError('Not connected — reconnecting...')
       reconnectAttemptsRef.current = 0
-      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-        wsRef.current.close()
-      }
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+      connectRef.current()
       return
     }
 

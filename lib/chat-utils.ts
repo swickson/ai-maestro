@@ -45,6 +45,19 @@ export type GroupedItem = Message | ToolBurst
 
 // ── Helpers ───────────────────────────────────────────────────────
 
+/**
+ * Capped exponential backoff for chat WebSocket reconnection.
+ * Returns the delay (ms) before the Nth reconnect attempt (0-indexed):
+ * 1s, 2s, 4s, 8s, 16s, then 30s (the 2^5=32s step is capped) for all further attempts.
+ * The reconnect loop never permanently gives up while the view is active —
+ * a fixed attempt cap previously left the chat dead forever after a transient
+ * outage (e.g. a server restart that outlasted the retry budget).
+ */
+export function chatReconnectDelay(attempt: number): number {
+  const n = Math.max(0, Math.floor(attempt))
+  return Math.min(30000, 1000 * 2 ** Math.min(n, 5))
+}
+
 /** Shorten a file path to last 3 segments */
 export function shortenPath(p: string): string {
   const parts = p.split('/')

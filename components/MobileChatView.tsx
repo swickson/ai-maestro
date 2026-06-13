@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { SendHorizontal, ChevronDown, ChevronRight, Loader2, Wrench, Copy, Check } from 'lucide-react'
 import MobileToolBurstGroup from '@/components/chat/MobileToolBurstGroup'
-import { groupMessages, getToolPreviewText, type ToolBurst } from '@/lib/chat-utils'
+import { groupMessages, getToolPreviewText, chatReconnectDelay, type ToolBurst } from '@/lib/chat-utils'
 
 interface MobileChatViewProps {
   agentId: string
@@ -281,6 +281,9 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
   const reconnectAttemptsRef = useRef(0)
+  // Stable handle to the active effect's connect() so the send path can force a
+  // reconnect even when the socket is null/CLOSED (mirrors desktop ChatView).
+  const connectRef = useRef<() => void>(() => {})
 
   // The session name to use for the WebSocket URL
   const wsSessionName = sessionNameProp || agentName
@@ -307,8 +310,11 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
   // Connect WebSocket on mount
   useEffect(() => {
     if (!agentId) return
+    // Guards against reconnect storms after teardown (see desktop ChatView).
+    let cancelled = false
 
     const connect = () => {
+      if (cancelled) return
       if (wsRef.current?.readyState === WebSocket.OPEN) return
       // Close zombie sockets stuck in CONNECTING
       if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
@@ -405,12 +411,12 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
         // Guard against stale closures
         if (wsRef.current !== ws) return
         wsRef.current = null
+        if (cancelled) return
 
-        // Auto-reconnect with backoff
-        if (reconnectAttemptsRef.current < 5) {
-          reconnectAttemptsRef.current++
-          reconnectTimeoutRef.current = setTimeout(connect, 3000)
-        }
+        // Capped exponential backoff — never permanently give up while mounted
+        // (a fixed 5-attempt cap left mobile/tablet chat dead forever).
+        const delay = chatReconnectDelay(reconnectAttemptsRef.current++)
+        reconnectTimeoutRef.current = setTimeout(connect, delay)
       }
 
       ws.onerror = () => {
@@ -420,27 +426,35 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
       wsRef.current = ws
     }
 
+    connectRef.current = connect
     connect()
 
-    // Reconnect on visibility change (mobile tab switching / background recovery)
+    // Reconnect on recovery signals (tab visible / focus / network online).
+    // Must call connect() directly: closing an already-null/CLOSED socket is a
+    // no-op, so the old code reset the counter but never actually reconnected.
+    const tryReconnect = () => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        reconnectAttemptsRef.current = 0
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+        connect()
+      }
+    }
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-          reconnectAttemptsRef.current = 0
-          if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-            wsRef.current.close()
-          }
-        }
-      } else {
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current)
-        }
+        tryReconnect()
+      } else if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
       }
     }
     document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('focus', tryReconnect)
+    window.addEventListener('online', tryReconnect)
 
     return () => {
+      cancelled = true
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('focus', tryReconnect)
+      window.removeEventListener('online', tryReconnect)
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
@@ -456,7 +470,9 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
   useEffect(() => {
     const interval = setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        if (Date.now() - lastPongRef.current > 45000) {
+        // Skip the no-pong force-close while hidden: background-tab timer
+        // throttling stalls our own ping loop → false "dead" verdict → flap.
+        if (!document.hidden && Date.now() - lastPongRef.current > 45000) {
           console.log('[MobileChatView] No pong in 45s — forcing reconnect')
           wsRef.current.close()
           return
@@ -488,9 +504,8 @@ export default function MobileChatView({ agentId, agentName, sessionName: sessio
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setError('Not connected — reconnecting...')
       reconnectAttemptsRef.current = 0
-      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-        wsRef.current.close()
-      }
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+      connectRef.current()
       return
     }
 
