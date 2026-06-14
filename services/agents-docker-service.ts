@@ -305,6 +305,28 @@ export function validateZiggyCodePath(ziggyCodePath: unknown, ctx: string): stri
   return null
 }
 
+// kanban 10f07858 (M2 follow-up, guard B): the per-agent .env overlay
+// (buildZiggyEnvOverlayMount) bind-mounts a host file onto <resolvedSource>/.env
+// INSIDE the read-only ziggy code mount. A FILE bind-mount requires its target
+// (the mountpoint) to already exist in the source — docker/OCI will not create a
+// file inside a read-only mount, so if the resolved ziggy checkout has no `.env`
+// at its root, the container fails to start with an OCI mount error (Hutch's real
+// M3-Nodie symptom). WARN (not hard-fail): the default dev-tree source has one,
+// the operator can drop a placeholder, and docker-run surfaces the hard failure
+// anyway — this is the durable, discoverable pre-flight signal for the class.
+// `resolvedSource` is the EFFECTIVE bind source (sandbox.ziggyCodePath or the
+// ZIGGY_CODE_PATH default), i.e. what buildZiggyCodeMount() actually uses.
+export function warnIfMissingZiggyEnvMountpoint(resolvedSource: string, ctx: string): void {
+  if (!fs.existsSync(path.join(resolvedSource, '.env'))) {
+    console.warn(
+      `[${ctx}] ziggy source ${resolvedSource} has no .env at its root — the per-agent ` +
+        '.env overlay binds onto <source>/.env inside the read-only ziggy mount, and a ' +
+        'file bind-mount needs that mountpoint to pre-exist or the container fails to ' +
+        'start (OCI mount error). Place a placeholder .env in the checkout.',
+    )
+  }
+}
+
 export function buildMountFlags(mounts: SandboxMount[] | undefined): string[] {
   if (!mounts || mounts.length === 0) return []
   return mounts.map(m => {
@@ -2266,6 +2288,10 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     // silently-broken bind. Loud fail here, same discipline as the .env guard.
     const ziggyPathError = validateZiggyCodePath(body.ziggyCodePath, 'Docker Service')
     if (ziggyPathError) return invalidRequest(ziggyPathError)
+    // 10f07858 guard B: warn if the resolved source lacks a .env mountpoint for
+    // the per-agent overlay bind (OCI start-fail class). Resolved source mirrors
+    // buildZiggyCodeMount's `sourcePath || ZIGGY_CODE_PATH`.
+    warnIfMissingZiggyEnvMountpoint(body.ziggyCodePath || ZIGGY_CODE_PATH, 'Docker Service')
   }
 
   // Pre-generate the agent UUID so AMP common mounts and CLAUDE_AGENT_ID can
@@ -2969,10 +2995,9 @@ export async function updateContainerMountsAndExtraEnv(
   }
   const profileError = validateProfile(config.profile)
   if (profileError) return invalidRequest(profileError)
-  // M2: validate an explicit Ziggy source override before destructive docker
-  // work (mirrors the create-path guard). Empty string = clear-sentinel.
-  const ziggyPathError = validateZiggyCodePath(config.ziggyCodePath, 'update-runtime')
-  if (ziggyPathError) return invalidRequest(ziggyPathError)
+  // NOTE: ziggy source validation happens below against the RESOLVED path
+  // (config override OR persisted value), not just the incoming config — see
+  // the 10f07858 guard after useZiggy/ziggyCodePath resolve.
 
   try {
     await execAsync("docker version --format '{{.Server.Version}}'", { timeout: 5000 })
@@ -3041,6 +3066,16 @@ export async function updateContainerMountsAndExtraEnv(
           'then retry.',
       )
     }
+    // 10f07858 guard A: validate the RESOLVED ziggy source (config override OR
+    // persisted value), not just the incoming config. This catches the empty-body
+    // {} rebuild where the persisted checkout was deleted from disk after it was
+    // first set — without this it would silently rebuild a broken bind.
+    const resolvedZiggyError = validateZiggyCodePath(ziggyCodePath, 'update-runtime')
+    if (resolvedZiggyError) return invalidRequest(resolvedZiggyError)
+    // 10f07858 guard B: warn if the resolved source lacks the .env mountpoint for
+    // the per-agent overlay bind (OCI start-fail class). Resolved source mirrors
+    // buildZiggyCodeMount's `sourcePath || ZIGGY_CODE_PATH`.
+    warnIfMissingZiggyEnvMountpoint(ziggyCodePath || ZIGGY_CODE_PATH, 'update-runtime')
   }
 
   // Rebuild AI_TOOL from persisted fields. Matches recreate semantics — yolo,

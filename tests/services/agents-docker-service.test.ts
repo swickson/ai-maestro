@@ -57,6 +57,7 @@ import {
   OPERATOR_RESERVED_ENV_KEYS,
   validateProfile,
   validateZiggyCodePath,
+  warnIfMissingZiggyEnvMountpoint,
   provisionCloudGitIdentity,
   buildCloudGitConfigMount,
   buildCloudAiTeamMount,
@@ -1222,6 +1223,34 @@ describe('Ziggy MCP integration helpers', () => {
       try {
         expect(validateZiggyCodePath(dir, 'test')).toBeNull()
         expect(warn).toHaveBeenCalled()
+      } finally {
+        warn.mockRestore()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('warnIfMissingZiggyEnvMountpoint (10f07858 guard B)', () => {
+    it('warns when the resolved source has no .env mountpoint at its root', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ziggy-envmp-'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        warnIfMissingZiggyEnvMountpoint(dir, 'test')
+        expect(warn).toHaveBeenCalled()
+        expect(warn.mock.calls[0][0]).toMatch(/no \.env at its root/)
+      } finally {
+        warn.mockRestore()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('is silent when the resolved source has a .env mountpoint', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ziggy-envmp-'))
+      fs.writeFileSync(path.join(dir, '.env'), 'ZIGGY_PROFILE=default\n')
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        warnIfMissingZiggyEnvMountpoint(dir, 'test')
+        expect(warn).not.toHaveBeenCalled()
       } finally {
         warn.mockRestore()
         fs.rmSync(dir, { recursive: true, force: true })
