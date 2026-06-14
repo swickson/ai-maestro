@@ -56,6 +56,7 @@ import {
   OPERATOR_RESERVED_CONTAINER_PATH_ROOTS,
   OPERATOR_RESERVED_ENV_KEYS,
   validateProfile,
+  validateZiggyCodePath,
   provisionCloudGitIdentity,
   buildCloudGitConfigMount,
   buildCloudAiTeamMount,
@@ -1170,6 +1171,62 @@ describe('Ziggy MCP integration helpers', () => {
     it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
       expect(validateMounts([buildZiggyCodeMount()], 'system')).toBeNull()
     })
+
+    it('overrides the host SOURCE when given, keeping the container TARGET fixed (M2)', () => {
+      const m = buildZiggyCodeMount('/srv/ziggy-stable')
+      expect(m.hostPath).toBe('/srv/ziggy-stable')
+      expect(m.containerPath).toBe('/home/gosub/code/ziggy')
+      expect(m.readOnly).toBe(true)
+    })
+
+    it('falls back to the default source for empty/undefined override (clear-sentinel safe)', () => {
+      expect(buildZiggyCodeMount('').hostPath).toBe('/home/gosub/code/ziggy')
+      expect(buildZiggyCodeMount(undefined).hostPath).toBe('/home/gosub/code/ziggy')
+    })
+  })
+
+  describe('validateZiggyCodePath (M2)', () => {
+    it('passes for undefined / empty (omit = keep, "" = clear-sentinel → default source)', () => {
+      expect(validateZiggyCodePath(undefined, 'test')).toBeNull()
+      expect(validateZiggyCodePath('', 'test')).toBeNull()
+    })
+
+    it('rejects a non-absolute path', () => {
+      expect(validateZiggyCodePath('relative/ziggy', 'test')).toMatch(/absolute path/)
+    })
+
+    it('rejects a non-string path', () => {
+      expect(validateZiggyCodePath(42, 'test')).toMatch(/absolute path/)
+    })
+
+    it('loud-fails when the absolute source does not exist on host', () => {
+      expect(validateZiggyCodePath('/nonexistent/ziggy-xyz-12345', 'test')).toMatch(/does not exist on host/)
+    })
+
+    it('passes for an absolute, existing source with apps/mcp-server (no warn)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ziggy-m2-'))
+      fs.mkdirSync(path.join(dir, 'apps', 'mcp-server'), { recursive: true })
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        expect(validateZiggyCodePath(dir, 'test')).toBeNull()
+        expect(warn).not.toHaveBeenCalled()
+      } finally {
+        warn.mockRestore()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('passes (null) but WARNS when an existing source lacks apps/mcp-server', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ziggy-m2-'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        expect(validateZiggyCodePath(dir, 'test')).toBeNull()
+        expect(warn).toHaveBeenCalled()
+      } finally {
+        warn.mockRestore()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('buildZiggyEnvOverlayMount', () => {
@@ -1950,6 +2007,23 @@ describe('buildRecreateBody', () => {
     expect(buildRecreateBody(agent).mounts).toEqual(mounts)
   })
 
+  it('carries sandbox.ziggyCodePath forward so /recreate keeps the pinned source (M2)', () => {
+    const agent = makeCloudAgent({
+      deployment: {
+        type: 'cloud',
+        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        sandbox: { ziggy: true, ziggyCodePath: '/srv/ziggy-stable' },
+      },
+    })
+    const body = buildRecreateBody(agent)
+    expect(body.ziggy).toBe(true)
+    expect(body.ziggyCodePath).toBe('/srv/ziggy-stable')
+  })
+
+  it('leaves ziggyCodePath undefined when not set (default-source agents unaffected)', () => {
+    expect(buildRecreateBody(makeCloudAgent()).ziggyCodePath).toBeUndefined()
+  })
+
   it('preserves identity fields (name, label, avatar, hostId, program)', () => {
     const agent = makeCloudAgent()
     const body = buildRecreateBody(agent)
@@ -2627,6 +2701,20 @@ describe('buildCloudCommonMounts (§11.1 + create/update parity)', () => {
     const withZiggy = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'celestia' })
     const without = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: false, name: 'celestia' })
     expect(withZiggy.length).toBeGreaterThan(without.length)
+  })
+
+  it('threads ziggyCodePath through to the ziggy code-mount SOURCE, target unchanged (M2)', () => {
+    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'celestia', ziggyCodePath: '/srv/ziggy-stable' })
+    const codeMount = mounts.find(m => m.containerPath === '/home/gosub/code/ziggy')
+    expect(codeMount).toBeDefined()
+    expect(codeMount!.hostPath).toBe('/srv/ziggy-stable')   // SOURCE overridden
+    expect(codeMount!.containerPath).toBe('/home/gosub/code/ziggy')  // TARGET fixed
+  })
+
+  it('defaults the ziggy code-mount SOURCE to ZIGGY_CODE_PATH when ziggyCodePath is absent (M2)', () => {
+    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'celestia' })
+    const codeMount = mounts.find(m => m.containerPath === '/home/gosub/code/ziggy')
+    expect(codeMount!.hostPath).toBe('/home/gosub/code/ziggy')
   })
 })
 

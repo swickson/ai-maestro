@@ -41,7 +41,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params
-    let body: { mounts?: unknown; extraEnv?: unknown; ziggy?: unknown; profile?: unknown; teamId?: unknown; transportRepo?: unknown } = {}
+    let body: { mounts?: unknown; extraEnv?: unknown; ziggy?: unknown; ziggyCodePath?: unknown; profile?: unknown; teamId?: unknown; transportRepo?: unknown } = {}
     try {
       body = await request.json()
     } catch {
@@ -54,6 +54,8 @@ export async function POST(
       mounts: body.mounts as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['mounts'],
       extraEnv: body.extraEnv as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['extraEnv'],
       ziggy: typeof body.ziggy === 'boolean' ? body.ziggy : undefined,
+      // M2: accept string (set/repoint) or '' (clear → default source); anything else omitted.
+      ziggyCodePath: typeof body.ziggyCodePath === 'string' ? body.ziggyCodePath : undefined,
       profile: body.profile as Parameters<typeof updateContainerMountsAndExtraEnv>[1]['profile'],
       teamId: typeof body.teamId === 'string' ? body.teamId : undefined,
       transportRepo: typeof body.transportRepo === 'string' ? body.transportRepo : undefined,
