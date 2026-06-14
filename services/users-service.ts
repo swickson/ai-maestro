@@ -208,16 +208,58 @@ export function autoCreateExternalUser(params: AutoCreateParams): ServiceResult<
 // ─── Last Seen ─────────────────────────────────────────────────────────────
 
 /**
- * Update the lastSeenPerPlatform timestamp for a user on a specific platform.
+ * Touch a user's platform presence on inbound.
+ *
+ * Bumps lastSeenPerPlatform[platform] (merge-safe — preserves every other
+ * platform's timestamp), and, when a context patch is supplied, DEEP-MERGES it
+ * into the matching platform mapping's `context`. The mapping is matched by
+ * `type === platform` (and `platformUserId` when given), and only that entry is
+ * rewritten — all other mappings and the matched mapping's other fields are
+ * preserved. updateUser() is a shallow top-level spread, so we hand it the full
+ * platforms array with just the one entry merged.
+ *
+ * Used by gateways on every inbound message. Teams (multi-bot on one port) sends
+ * `{ platform:'teams', platformUserId:<aad>, context:{ botSlug } }` so the stored
+ * context.botSlug refreshes to the latest bot each contact — this is what makes
+ * "most-recently-inbound bot wins" work for proactive DMs (see notifyUser).
  */
-export function updateLastSeen(userId: string, platform: string): ServiceResult<{ success: boolean }> {
+export function updateLastSeen(
+  userId: string,
+  platform: string,
+  options?: { platformUserId?: string; context?: Record<string, unknown> }
+): ServiceResult<{ success: boolean }> {
+  if (!platform) {
+    return { error: 'platform is required', status: 400 }
+  }
   const user = getUser(userId)
   if (!user) {
     return { error: 'User not found', status: 404 }
   }
 
   const lastSeenPerPlatform = { ...user.lastSeenPerPlatform, [platform]: new Date().toISOString() }
-  const updated = updateUser(userId, { lastSeenPerPlatform })
+  const updates: UpdateUserParams = { lastSeenPerPlatform }
+
+  // Optional targeted context merge (e.g. Teams botSlug refresh).
+  if (options?.context && user.platforms?.length) {
+    const matchIdx = user.platforms.findIndex(p =>
+      p.type === platform &&
+      (!options.platformUserId || p.platformUserId === options.platformUserId)
+    )
+    if (matchIdx !== -1) {
+      const existing = user.platforms[matchIdx]
+      const merged: UserPlatformMapping = {
+        ...existing,
+        context: { ...(existing.context || {}), ...options.context },
+      }
+      updates.platforms = [
+        ...user.platforms.slice(0, matchIdx),
+        merged,
+        ...user.platforms.slice(matchIdx + 1),
+      ]
+    }
+  }
+
+  const updated = updateUser(userId, updates)
   if (!updated) {
     return { error: 'Failed to update user', status: 500 }
   }
@@ -226,9 +268,15 @@ export function updateLastSeen(userId: string, platform: string): ServiceResult<
 
 // ─── Outbound Notify ───────────────────────────────────────────────────────
 
-/** Gateway DM endpoint mapping by platform type */
-const GATEWAY_DM_ENDPOINTS: Record<string, string> = {
-  discord: '/api/gateway/dm',
+/**
+ * Gateway DM endpoint by platform type — where to POST a proactive DM.
+ * Each platform's gateway runs on its own port on the same host (discord 3023,
+ * teams 3024). The bot identity for multi-bot platforms is NOT encoded here
+ * (it's per-user) — it travels in the request body as botSlug.
+ */
+const GATEWAY_DM_ENDPOINTS: Record<string, { port: string; path: string }> = {
+  discord: { port: process.env.DISCORD_GATEWAY_PORT || process.env.GATEWAY_PORT || '3023', path: '/api/gateway/dm' },
+  teams: { port: process.env.TEAMS_GATEWAY_PORT || '3024', path: '/api/gateway/dm' },
 }
 
 /**
@@ -263,13 +311,17 @@ export async function notifyUser(
     targetMapping = user.platforms[0]
   }
 
-  const dmPath = GATEWAY_DM_ENDPOINTS[targetMapping.type]
-  if (!dmPath) {
+  const endpoint = GATEWAY_DM_ENDPOINTS[targetMapping.type]
+  if (!endpoint) {
     return { error: `No gateway DM endpoint configured for platform: ${targetMapping.type}`, status: 422 }
   }
 
-  // Gateway runs on same host as Maestro (port 3023 for discord-gateway)
-  const gatewayUrl = `http://localhost:${process.env.GATEWAY_PORT || '3023'}${dmPath}`
+  // Gateway runs on the same host as Maestro, on its per-platform port.
+  const gatewayUrl = `http://localhost:${endpoint.port}${endpoint.path}`
+  // Multi-bot platforms (Teams) need to know which bot to deliver as; the bot
+  // identity is stored per-user on the mapping context. undefined for single-bot
+  // platforms (Discord) and dropped by JSON.stringify, preserving its body shape.
+  const botSlug = (targetMapping.context as { botSlug?: string } | undefined)?.botSlug
 
   try {
     const controller = new AbortController()
@@ -283,6 +335,7 @@ export async function notifyUser(
       },
       body: JSON.stringify({
         platformUserId: targetMapping.platformUserId,
+        botSlug,
         message,
         subject: options?.subject,
       }),
