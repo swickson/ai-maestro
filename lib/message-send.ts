@@ -55,7 +55,10 @@ function parseQualifiedName(qualifiedName: string): { identifier: string; hostId
  */
 function generateMessageId(): string {
   const timestamp = Date.now()
-  const random = Math.random().toString(36).substring(2, 9)
+  // crypto-strong, fixed-length suffix — replaces Math.random().toString(36)
+  // (non-crypto, variable-length). Hyphen separators retained; still passes
+  // validate_message_id (^msg[_-][0-9]+[_-][a-zA-Z0-9]+$). (kanban 4bee9be0)
+  const random = crypto.randomBytes(8).toString('hex')
   return `msg-${timestamp}-${random}`
 }
 
