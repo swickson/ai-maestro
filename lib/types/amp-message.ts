@@ -9,6 +9,8 @@
  * - External: agent@tenant.crabmail.ai (or any other AMP provider)
  */
 
+import crypto from 'crypto'
+
 // =============================================================================
 // Core AMP Types (Protocol Spec)
 // =============================================================================
@@ -277,7 +279,10 @@ export function createAMPMessage(
  */
 export function generateMessageId(): string {
   const timestamp = Date.now();
-  const random = Math.random().toString(36).substring(2, 9);
+  // crypto-strong, fixed-length suffix — replaces Math.random().toString(36)
+  // which was non-crypto and variable-length (could yield <7 chars when low
+  // base36 digits were zero), raising silent collision risk. (kanban 4bee9be0)
+  const random = crypto.randomBytes(8).toString('hex');
   return `msg_${timestamp}_${random}`;
 }
 
