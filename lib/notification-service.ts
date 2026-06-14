@@ -18,6 +18,34 @@ const NOTIFICATIONS_ENABLED = process.env.NOTIFICATIONS_ENABLED !== 'false'
 const NOTIFICATION_FORMAT = process.env.NOTIFICATION_FORMAT || '[MESSAGE] From: {from} - {subject} - check your inbox'
 const NOTIFICATION_SKIP_TYPES = (process.env.NOTIFICATION_SKIP_TYPES || 'system,heartbeat').split(',')
 
+// When enabled (default), the composed notification is normalized to plain
+// ASCII before it is injected into the agent's terminal. The wake line is sent
+// verbatim via `echo '<msg>'` send-keys, so any non-ASCII in the priority
+// prefix (🟠/🔴) or the sender's raw subject (em-dashes, smart quotes, emoji)
+// rides straight into the model's context on the turn it generates its first
+// tool call. Multi-byte tokens at that think→tool-call seam are a suspected
+// trigger for a Claude Code harness tool-call-serialization stall (the "court"
+// / literal-<invoke> malformation seen across hosts). Normalizing is cheap,
+// reversible (NOTIFICATION_ASCII_NORMALIZE=false), and good hygiene regardless.
+const NOTIFICATION_ASCII_NORMALIZE = process.env.NOTIFICATION_ASCII_NORMALIZE !== 'false'
+
+/**
+ * Normalize a notification string to plain printable ASCII.
+ * Maps common Unicode punctuation to ASCII equivalents, strips everything else
+ * non-ASCII (emoji, etc.), and collapses whitespace left behind.
+ */
+export function asciiNormalizeNotification(text: string): string {
+  return text
+    .replace(/[—–]/g, '-')        // em/en dash → hyphen
+    .replace(/[‘’‛]/g, "'")  // smart single quotes → apostrophe
+    .replace(/[“”]/g, '"')        // smart double quotes → quote
+    .replace(/…/g, '...')              // ellipsis → three dots
+    .replace(/ /g, ' ')                // non-breaking space → space
+    .replace(/[^\x20-\x7E]/g, '')           // strip remaining non-printable-ASCII (emoji, etc.)
+    .replace(/[ \t]{2,}/g, ' ')             // collapse runs left by stripped chars
+    .trim()
+}
+
 export interface NotificationOptions {
   // Target agent identification
   agentId?: string        // Agent UUID (if known)
@@ -100,7 +128,8 @@ function formatNotification(options: NotificationOptions): string {
     .replace('{from}', senderWithHost)
     .replace('{subject}', subject)
 
-  return priorityPrefix + message
+  const composed = priorityPrefix + message
+  return NOTIFICATION_ASCII_NORMALIZE ? asciiNormalizeNotification(composed) : composed
 }
 
 /**
