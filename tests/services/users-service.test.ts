@@ -13,9 +13,11 @@ vi.mock('@/lib/user-directory', () => {
       aliases: ['gosub', 'shane'],
       platforms: [
         { type: 'discord', platformUserId: '123', handle: 'gosub' },
+        { type: 'teams', platformUserId: 'aad-xyz', handle: 'Shane', context: { tenantId: 't1', botSlug: 'bot-alpha' } },
       ],
       role: 'operator',
       trustLevel: 'full',
+      lastSeenPerPlatform: { discord: '2026-01-01T00:00:00Z' },
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
     },
@@ -74,7 +76,10 @@ import {
   updateUserById,
   deleteUserById,
   resolveUser,
+  updateLastSeen,
+  notifyUser,
 } from '@/services/users-service'
+import * as directory from '@/lib/user-directory'
 
 describe('users-service', () => {
   describe('listAllUsers', () => {
@@ -182,6 +187,90 @@ describe('users-service', () => {
     it('returns 400 when no params provided', () => {
       const result = resolveUser({})
       expect(result.status).toBe(400)
+    })
+  })
+
+  describe('updateLastSeen', () => {
+    beforeEach(() => vi.clearAllMocks())
+
+    it('rejects missing platform', () => {
+      const result = updateLastSeen('user-1', '')
+      expect(result.status).toBe(400)
+    })
+
+    it('returns 404 for unknown user', () => {
+      const result = updateLastSeen('nonexistent', 'teams')
+      expect(result.status).toBe(404)
+    })
+
+    it('bumps lastSeen merge-safe, preserving other platforms timestamps', () => {
+      const result = updateLastSeen('user-1', 'teams')
+      expect(result.status).toBe(200)
+      const updates = vi.mocked(directory.updateUser).mock.calls[0][1]
+      // existing discord timestamp preserved + teams freshly stamped
+      expect(updates.lastSeenPerPlatform).toHaveProperty('discord', '2026-01-01T00:00:00Z')
+      expect(updates.lastSeenPerPlatform).toHaveProperty('teams')
+      // no context patch => platforms array untouched
+      expect(updates.platforms).toBeUndefined()
+    })
+
+    it('deep-merges context into the matching mapping, preserving its other fields and other mappings', () => {
+      const result = updateLastSeen('user-1', 'teams', {
+        platformUserId: 'aad-xyz',
+        context: { botSlug: 'bot-beta' },
+      })
+      expect(result.status).toBe(200)
+      const updates = vi.mocked(directory.updateUser).mock.calls[0][1]
+      const teams = updates.platforms!.find(p => p.type === 'teams')!
+      // botSlug refreshed to latest bot, tenantId preserved
+      expect(teams.context).toEqual({ tenantId: 't1', botSlug: 'bot-beta' })
+      expect(teams.platformUserId).toBe('aad-xyz')
+      expect(teams.handle).toBe('Shane')
+      // discord mapping untouched
+      const discord = updates.platforms!.find(p => p.type === 'discord')!
+      expect(discord.platformUserId).toBe('123')
+      expect(discord.context).toBeUndefined()
+    })
+
+    it('still bumps lastSeen when context has no matching mapping (no platforms rewrite)', () => {
+      const result = updateLastSeen('user-1', 'teams', {
+        platformUserId: 'aad-DIFFERENT',
+        context: { botSlug: 'bot-beta' },
+      })
+      expect(result.status).toBe(200)
+      const updates = vi.mocked(directory.updateUser).mock.calls[0][1]
+      expect(updates.lastSeenPerPlatform).toHaveProperty('teams')
+      expect(updates.platforms).toBeUndefined()
+    })
+  })
+
+  describe('notifyUser gateway routing', () => {
+    let fetchMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+      fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }))
+      vi.stubGlobal('fetch', fetchMock)
+    })
+
+    it('routes teams to port 3024 and carries botSlug from mapping context', async () => {
+      const result = await notifyUser('user-1', 'hi', { platform: 'teams' })
+      expect(result.status).toBe(200)
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toBe('http://localhost:3024/api/gateway/dm')
+      const body = JSON.parse(init.body)
+      expect(body.platformUserId).toBe('aad-xyz')
+      expect(body.botSlug).toBe('bot-alpha')
+    })
+
+    it('routes discord to port 3023 and omits botSlug (single-bot platform)', async () => {
+      const result = await notifyUser('user-1', 'hi', { platform: 'discord' })
+      expect(result.status).toBe(200)
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toBe('http://localhost:3023/api/gateway/dm')
+      const body = JSON.parse(init.body)
+      expect(body.platformUserId).toBe('123')
+      expect('botSlug' in body).toBe(false)
     })
   })
 })

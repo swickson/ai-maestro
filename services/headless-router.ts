@@ -1433,7 +1433,7 @@ const routes: Route[] = [
   }},
   { method: 'PATCH', pattern: /^\/api\/users\/([^/]+)\/last-seen$/, paramNames: ['id'], handler: async (req, res, params) => {
     const body = await readJsonBody(req)
-    sendServiceResult(res, updateLastSeen(params.id, body.platform))
+    sendServiceResult(res, updateLastSeen(params.id, body.platform, { platformUserId: body.platformUserId, context: body.context }))
   }},
   { method: 'GET', pattern: /^\/api\/users\/([^/]+)$/, paramNames: ['id'], handler: async (_req, res, params) => {
     sendServiceResult(res, findUserById(params.id))
