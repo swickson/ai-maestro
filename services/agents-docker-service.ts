@@ -52,6 +52,10 @@ export interface DockerCreateRequest {
   // ZIGGY_PROFILE + DATABASE_URL set; createDockerAgent fails loudly if
   // missing. See sandbox.ziggy on the persisted agent record.
   ziggy?: boolean
+  // Override the Ziggy code bind-mount SOURCE (absolute host path), e.g. a
+  // pinned checkout. Must exist on host. Only meaningful with ziggy=true. Absent
+  // → default ZIGGY_CODE_PATH. See SandboxConfig.ziggyCodePath. kanban: Ziggy M2.
+  ziggyCodePath?: string
   // Wave-based dev-team container profile (runbook §11.1). When set, the agent
   // gets the §11.1 three-path layout: shared /ai-team mount (RO worker / RW
   // orchestrator) + per-agent git identity. Undefined = plain cloud agent
@@ -269,6 +273,34 @@ export function validateProfile(profile: unknown): string | null {
   if (profile === undefined || profile === null) return null
   if (typeof profile !== 'string' || !VALID_PROFILES.includes(profile)) {
     return `profile must be one of ${VALID_PROFILES.join(' | ')} (got ${JSON.stringify(profile)})`
+  }
+  return null
+}
+
+// Validate an explicit sandbox.ziggyCodePath override (M2). Returns an error
+// string (for invalidRequest) or null. Shared by the create and update-runtime
+// paths so both reject the same way. Empty string is the update-runtime
+// clear-sentinel (→ default source) and passes. A relative or non-existent
+// source is a hard fail: docker would auto-create a root-owned empty dir at the
+// path, yielding a silently-broken bind. A valid-but-non-Ziggy checkout (no
+// apps/mcp-server) only warns — an unusual layout shouldn't block.
+export function validateZiggyCodePath(ziggyCodePath: unknown, ctx: string): string | null {
+  if (ziggyCodePath === undefined || ziggyCodePath === null || ziggyCodePath === '') return null
+  if (typeof ziggyCodePath !== 'string' || !path.isAbsolute(ziggyCodePath)) {
+    return `sandbox.ziggyCodePath must be an absolute path, got: ${JSON.stringify(ziggyCodePath)}`
+  }
+  if (!fs.existsSync(ziggyCodePath)) {
+    return (
+      `sandbox.ziggyCodePath ${ziggyCodePath} does not exist on host — create the ` +
+      'checkout or fix the path before retrying (a missing bind source makes docker ' +
+      'auto-create a root-owned empty dir, breaking the mount).'
+    )
+  }
+  if (!fs.existsSync(path.join(ziggyCodePath, 'apps', 'mcp-server'))) {
+    console.warn(
+      `[${ctx}] sandbox.ziggyCodePath ${ziggyCodePath} exists but has no apps/mcp-server ` +
+        '— is this a Ziggy checkout? The MCP server may fail to start.',
+    )
   }
   return null
 }
@@ -1051,13 +1083,17 @@ export const ZIGGY_CODE_PATH = '/home/gosub/code/ziggy'
 // overlay. Per Hutch ops review PR #157.
 export const ZIGGY_AGENT_ENVS_DIR = '/opt/stacks/ai-maestro/agent-envs'
 
-// Read-only bind of the Ziggy repo into the container at the same absolute
-// path as on host. start.sh expects to find apps/mcp-server siblings (..bin,
-// ../src, ../node_modules, ../../.env). Read-only: agents never mutate the
-// shared Ziggy source.
-export function buildZiggyCodeMount(): SandboxMount {
+// Read-only bind of the Ziggy repo into the container. The in-container TARGET
+// is always ZIGGY_CODE_PATH (start.sh expects to find apps/mcp-server siblings
+// ../bin, ../src, ../node_modules, ../../.env and derives ZIGGY_ROOT relative to
+// its own location, so the target must not move). The host SOURCE defaults to
+// ZIGGY_CODE_PATH but can be overridden per-agent via sandbox.ziggyCodePath to
+// mount a pinned checkout instead of the live dev tree (M2). Empty/undefined
+// override → default source (so the update-runtime '' clear-sentinel falls back
+// cleanly). Read-only: agents never mutate the shared Ziggy source.
+export function buildZiggyCodeMount(sourcePath?: string): SandboxMount {
   return {
-    hostPath: ZIGGY_CODE_PATH,
+    hostPath: sourcePath || ZIGGY_CODE_PATH,
     containerPath: ZIGGY_CODE_PATH,
     readOnly: true,
   }
@@ -1637,6 +1673,7 @@ export function buildCloudCommonMounts(
     useZiggy?: boolean
     name?: string
     program?: string
+    ziggyCodePath?: string
     profile?: 'worker' | 'orchestrator'
     teamId?: string
     transportRepo?: string
@@ -1648,6 +1685,7 @@ export function buildCloudCommonMounts(
     useZiggy = false,
     name = '',
     program,
+    ziggyCodePath,
     profile,
     teamId,
     transportRepo,
@@ -1667,7 +1705,7 @@ export function buildCloudCommonMounts(
     ...buildCloudGeminiReadthroughMounts(agentId, hostHome),
     buildCloudAntigravityAppDataMount(agentId, hostHome),
     buildCloudCodexAppDataMount(agentId, hostHome),
-    ...(useZiggy ? [buildZiggyCodeMount(), buildZiggyEnvOverlayMount(name)] : []),
+    ...(useZiggy ? [buildZiggyCodeMount(ziggyCodePath), buildZiggyEnvOverlayMount(name)] : []),
     buildCloudRestorationSentinelMount(agentId, hostHome),
     // §11.1 profiled-agent mounts (gated; absent for unprofiled = today's shape)
     ...(profile ? [buildCloudGitConfigMount(agentId, hostHome)] : []),
@@ -2223,6 +2261,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
           'then retry. See services/agents-docker-service.ts ZIGGY_AGENT_ENVS_DIR comment for the design.',
       )
     }
+    // M2: if an override bind source is given, it must be an absolute,
+    // existing host path — else docker auto-creates a root-owned empty dir →
+    // silently-broken bind. Loud fail here, same discipline as the .env guard.
+    const ziggyPathError = validateZiggyCodePath(body.ziggyCodePath, 'Docker Service')
+    if (ziggyPathError) return invalidRequest(ziggyPathError)
   }
 
   // Pre-generate the agent UUID so AMP common mounts and CLAUDE_AGENT_ID can
@@ -2338,7 +2381,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     console.warn('[Docker Service] Could not provision cloud instructions:', err instanceof Error ? err.message : err)
   }
   const mergedMounts = mergeMounts(
-    buildCloudCommonMounts(agentId, { useZiggy, name, program, profile, teamId, transportRepo }),
+    buildCloudCommonMounts(agentId, { useZiggy, name, program, ziggyCodePath: body.ziggyCodePath, profile, teamId, transportRepo }),
     body.mounts
   )
 
@@ -2460,6 +2503,10 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       const sandboxBlock: NonNullable<Agent['deployment']>['sandbox'] = {}
       if (body.mounts && body.mounts.length > 0) sandboxBlock.mounts = body.mounts
       if (useZiggy) sandboxBlock.ziggy = true
+      // M2: persist the per-agent Ziggy source override so update-runtime/recreate
+      // rebuild the bind from the same pinned checkout (else recreate reverts to
+      // the default dev-tree source — the buildRecreateBody-field-drop class).
+      if (body.ziggyCodePath) sandboxBlock.ziggyCodePath = body.ziggyCodePath
       // §11.1 profile + its scoping fields — persisted so update-runtime/recreate
       // rebuild the /ai-team + transport + git-identity mounts deterministically.
       if (profile) sandboxBlock.profile = profile
@@ -2540,6 +2587,10 @@ export function buildRecreateBody(oldAgent: Agent): DockerCreateRequest {
     workingDirectory: oldAgent.workingDirectory,
     mounts: oldAgent.deployment?.sandbox?.mounts,
     ziggy: oldAgent.deployment?.sandbox?.ziggy,
+    // M2: carry the Ziggy source override forward — without it /recreate silently
+    // drops the pinned checkout and reverts the agent to the default dev-tree
+    // mount (the exact buildRecreateBody-create-field-drop class).
+    ziggyCodePath: oldAgent.deployment?.sandbox?.ziggyCodePath,
     // §11.1 profile + scoping — without these, /recreate silently un-profiles
     // the agent: it loses /ai-team + /transport.git + its per-agent git identity
     // and falls back to the generic image-baked identity (the exact
@@ -2836,6 +2887,12 @@ export interface UpdateRuntimeConfig {
   // false clears the flag; true sets it and requires the per-agent env file
   // at /opt/stacks/ai-maestro/agent-envs/<name>.env to exist on host.
   ziggy?: boolean
+  // Override the Ziggy code bind-mount SOURCE (absolute host path). This is the
+  // M3 repoint path: set it here to move an EXISTING agent onto a pinned Ziggy
+  // checkout, container rebuilt, UUID/state intact. Omit to keep the persisted
+  // sandbox.ziggyCodePath; explicit '' clears it (back to default source).
+  // Validated absolute + must-exist when set non-empty. See SandboxConfig.ziggyCodePath.
+  ziggyCodePath?: string
   // Wave-based dev-team container profile (runbook §11.1). This is the
   // identity-preserving migration path for an EXISTING agent onto the §11.1
   // three-path layout: set it here and update-runtime rebuilds the container
@@ -2912,6 +2969,10 @@ export async function updateContainerMountsAndExtraEnv(
   }
   const profileError = validateProfile(config.profile)
   if (profileError) return invalidRequest(profileError)
+  // M2: validate an explicit Ziggy source override before destructive docker
+  // work (mirrors the create-path guard). Empty string = clear-sentinel.
+  const ziggyPathError = validateZiggyCodePath(config.ziggyCodePath, 'update-runtime')
+  if (ziggyPathError) return invalidRequest(ziggyPathError)
 
   try {
     await execAsync("docker version --format '{{.Server.Version}}'", { timeout: 5000 })
@@ -2940,6 +3001,7 @@ export async function updateContainerMountsAndExtraEnv(
   // persisted sandbox. This is the identity-preserving migration path: set
   // profile here and update-runtime rebuilds with the /ai-team + git-identity
   // mounts, UUID/keypair/state intact.
+  const ziggyCodePath = config.ziggyCodePath !== undefined ? config.ziggyCodePath : agent.deployment.sandbox?.ziggyCodePath
   const profile = config.profile !== undefined ? config.profile : agent.deployment.sandbox?.profile
   const teamId = config.teamId !== undefined ? config.teamId : agent.deployment.sandbox?.teamId
   const transportRepo = config.transportRepo !== undefined ? config.transportRepo : agent.deployment.sandbox?.transportRepo
@@ -3066,7 +3128,7 @@ export async function updateContainerMountsAndExtraEnv(
   }
 
   const mergedMounts = mergeMounts(
-    buildCloudCommonMounts(agentId, { useZiggy, name: agent.name, program, profile, teamId, transportRepo }),
+    buildCloudCommonMounts(agentId, { useZiggy, name: agent.name, program, ziggyCodePath, profile, teamId, transportRepo }),
     newMounts
   )
 
@@ -3147,6 +3209,7 @@ export async function updateContainerMountsAndExtraEnv(
       mounts: config.mounts,
       extraEnv: config.extraEnv,
       ziggy: config.ziggy,
+      ziggyCodePath: config.ziggyCodePath,
       profile: config.profile,
       teamId: config.teamId,
       transportRepo: config.transportRepo,

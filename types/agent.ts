@@ -315,6 +315,16 @@ export interface SandboxConfig {
   // into the env. Use for cloud agents that need to reach the Ziggy MCP server
   // via docker DNS rather than via Tailscale-IP/host-port. Default: false.
   ziggy?: boolean
+  // Absolute HOST path to use as the Ziggy code bind-mount SOURCE, overriding
+  // the default ZIGGY_CODE_PATH (/home/gosub/code/ziggy). Lets an agent mount a
+  // PINNED Ziggy checkout instead of the live dev tree (which becomes the shared
+  // dev tree once the team builds on it). The in-container TARGET is unchanged
+  // (always /home/gosub/code/ziggy — start.sh derives ZIGGY_ROOT relative to its
+  // own location, so only the source moves). Only consulted when `ziggy` is true.
+  // Absent → default source. Validated absolute + must-exist at create /
+  // update-runtime (a missing source makes docker auto-create a root-owned empty
+  // dir → broken bind). kanban: Ziggy M2.
+  ziggyCodePath?: string
   // Wave-based dev-team container profile (runbook §11.1). Drives the §11.1
   // three-path layout: a profiled agent gets the shared /ai-team mount (RO for
   // workers, RW for the orchestrator that owns the plan) on top of its private

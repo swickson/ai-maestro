@@ -2574,6 +2574,11 @@ export function updateAgentRuntimeConfig(
     // attach + Ziggy MCP overlay mounts on the next container redeploy. Omit
     // to leave untouched; true to set; false to clear.
     ziggy?: boolean
+    // M2: per-agent Ziggy code bind-mount SOURCE override (absolute host path).
+    // Omit to leave the persisted value untouched; set to repoint onto a pinned
+    // checkout; explicit '' clears it (back to default ZIGGY_CODE_PATH). Same
+    // set/'' -clear semantics as teamId/transportRepo.
+    ziggyCodePath?: string
     // §11.1 wave-based dev-team container profile + its scoping fields. Omit to
     // leave the persisted value untouched (same semantics as ziggy). Set on
     // sandbox so update-runtime/recreate rebuild the /ai-team + transport +
@@ -2617,6 +2622,17 @@ export function updateAgentRuntimeConfig(
       // doesn't carry an explicit `ziggy: false` (matches mounts semantics).
       const { ziggy: _drop, ...rest } = deployment.sandbox ?? {}
       deployment.sandbox = rest
+    }
+  }
+
+  // M2: Ziggy source override. Set-with-''-clear, same semantics as
+  // teamId/transportRepo below — '' drops the field (back to default source).
+  if (config.ziggyCodePath !== undefined) {
+    if (config.ziggyCodePath === '') {
+      const { ziggyCodePath: _drop, ...rest } = deployment.sandbox ?? {}
+      deployment.sandbox = rest
+    } else {
+      deployment.sandbox = { ...(deployment.sandbox ?? {}), ziggyCodePath: config.ziggyCodePath }
     }
   }
 
