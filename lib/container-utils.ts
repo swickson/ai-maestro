@@ -116,6 +116,13 @@ export async function sendKeysToContainer(
     )
   }
   if (opts.enter) {
+    // Gap between literal text and Enter so the in-container TUI (Claude Code,
+    // Codex) processes the typed text before the submit — without it the two
+    // send-keys can land in the same tmux tick and Enter fires on empty input.
+    // Mirrors the host TmuxRuntime.sendKeys 100ms gap (lib/tmux-runtime.ts).
+    if (keys.length > 0) {
+      await new Promise(r => setTimeout(r, 100))
+    }
     await execAsync(
       `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} Enter`,
       { timeout: 5000 }
