@@ -20,7 +20,7 @@
  */
 import fs from 'fs'
 import path from 'path'
-import { resolveConversationDir, resolveChatStateFile, type AgentPathInput } from '@/lib/agent-paths'
+import { resolveConversationDir, resolveChatStateFile, cloudProgram, type AgentPathInput } from '@/lib/agent-paths'
 
 export interface TranscriptResolution {
   /** Resolved conversation directory (null if it doesn't exist / can't resolve). */
@@ -83,17 +83,40 @@ function isStub(filePath: string, size: number): boolean {
 }
 
 /**
+ * Recursively collect every `.jsonl` file at or under `dir`. Used for runtimes
+ * (Codex) that nest transcripts in dated subdirs (sessions/YYYY/MM/DD/) rather
+ * than flat in the conversation dir. Non-recursive callers get a single-level
+ * scan, preserving the historical behavior for Claude/Gemini/Antigravity.
+ */
+function collectJsonlFiles(dir: string, recursive: boolean): string[] {
+  const out: string[] = []
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (recursive) out.push(...collectJsonlFiles(full, true))
+    } else if (entry.name.endsWith('.jsonl')) {
+      out.push(full)
+    }
+  }
+  return out
+}
+
+/**
  * Pure selection over a directory. Exported for unit testing.
  * @param dir conversation directory (must exist)
  * @param hookTranscriptPath the current session's transcript path from hook state, if any
+ * @param options.recursive scan nested subdirs for .jsonl (Codex sessions/YYYY/MM/DD/)
  */
 export function selectTranscriptFile(
   dir: string | null,
-  hookTranscriptPath?: string | null
+  hookTranscriptPath?: string | null,
+  options?: { recursive?: boolean }
 ): TranscriptResolution {
   if (!dir || !fs.existsSync(dir)) return { ...EMPTY, dir: dir ?? null }
 
-  // 1/2. Authoritative current-session path from the hook.
+  // 1/2. Authoritative current-session path from the hook. Codex has no hook
+  // transcriptPath today, so this never fires for it; if one ever appears
+  // nested under dir, the recursive step-3 scan below still finds it.
   if (hookTranscriptPath && path.resolve(path.dirname(hookTranscriptPath)) === path.resolve(dir)) {
     if (fs.existsSync(hookTranscriptPath)) {
       return { dir, path: hookTranscriptPath, mtime: fs.statSync(hookTranscriptPath).mtime, exists: true, pending: false }
@@ -102,13 +125,12 @@ export function selectTranscriptFile(
     return { dir, path: hookTranscriptPath, mtime: null, exists: false, pending: true }
   }
 
-  // 3. Newest substantive file (reject title-only stubs).
-  const files = fs.readdirSync(dir)
-    .filter(f => f.endsWith('.jsonl'))
-    .map(f => {
-      const p = path.join(dir, f)
+  // 3. Newest substantive file (reject title-only stubs). Recursive for nested
+  // runtimes (Codex); flat otherwise.
+  const files = collectJsonlFiles(dir, options?.recursive ?? false)
+    .map(p => {
       const st = fs.statSync(p)
-      return { name: f, path: p, mtime: st.mtime, size: st.size }
+      return { name: path.basename(p), path: p, mtime: st.mtime, size: st.size }
     })
     .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
 
@@ -136,5 +158,8 @@ function readHookTranscriptPath(agent: AgentPathInput, hostHome?: string): strin
 export function resolveActiveTranscript(agent: AgentPathInput, hostHome?: string): TranscriptResolution {
   const dir = resolveConversationDir(agent, hostHome)
   const hookPath = readHookTranscriptPath(agent, hostHome)
-  return selectTranscriptFile(dir, hookPath)
+  // Codex nests rollouts under sessions/YYYY/MM/DD/, so its conversation dir
+  // must be scanned recursively; all other runtimes keep the flat scan (#159).
+  const recursive = cloudProgram(agent) === 'codex'
+  return selectTranscriptFile(dir, hookPath, { recursive })
 }

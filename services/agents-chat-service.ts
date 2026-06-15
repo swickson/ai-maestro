@@ -19,6 +19,7 @@ import { resolveActiveTranscript } from '@/lib/conversation-resolver'
 import { capturePaneFromContainer } from '@/lib/container-utils'
 import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
 import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
+import { normalizeCodexLine } from '@/lib/codex-message-normalizer'
 import * as fs from 'fs'
 import * as path from 'path'
 import { type ServiceResult, notFound, invalidRequest, invalidField, missingField } from '@/services/service-errors'
@@ -98,6 +99,7 @@ export async function getConversationMessages(
   const program = cloudProgram(agent)
   const isGemini = program === 'gemini'
   const isAntigravity = program === 'antigravity'
+  const isCodex = program === 'codex'
 
   for (const line of lines) {
     try {
@@ -119,6 +121,14 @@ export async function getConversationMessages(
         // logged-in cloud agent generates real conversation files we can spec.
         // Follow-up PR slots a real implementation in once a sample lands.
         const normalized = normalizeAntigravityLine(raw)
+        if (normalized) messages.push(normalized)
+        continue
+      }
+
+      if (isCodex) {
+        // Codex rollout-*.jsonl: surface user/assistant message turns, skip
+        // session/turn/event metadata, reasoning, and tool-call items (#159).
+        const normalized = normalizeCodexLine(raw)
         if (normalized) messages.push(normalized)
         continue
       }
