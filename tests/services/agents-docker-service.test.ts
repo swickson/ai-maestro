@@ -61,6 +61,7 @@ import {
   provisionCloudGitIdentity,
   buildCloudGitConfigMount,
   buildCloudAiTeamMount,
+  buildCloudAiTeamSrcMount,
   buildCloudTransportRepoMount,
   buildCloudCommonMounts,
   buildCloudCommonPrecreateDirs,
@@ -2634,6 +2635,31 @@ describe('buildCloudAiTeamMount (§11.1/§11.2)', () => {
   })
 })
 
+describe('buildCloudAiTeamSrcMount (#194 — cloud-orchestrator §1 source bridge)', () => {
+  const HOME = '/home/tester'
+  it('returns null for unprofiled AND worker agents (only orchestrator gets the source dir)', () => {
+    expect(buildCloudAiTeamSrcMount(undefined, 'team-x', HOME)).toBeNull()
+    expect(buildCloudAiTeamSrcMount('worker', 'team-x', HOME)).toBeNull()
+  })
+  it('orchestrator → RW mount of the per-team ai-team-src dir at /ai-team-src', () => {
+    const orch = buildCloudAiTeamSrcMount('orchestrator', 'team-x', HOME)
+    expect(orch).toEqual({ hostPath: '/home/tester/.aimaestro/ai-team-src/team-x', containerPath: '/ai-team-src' })
+    expect(orch?.readOnly).toBeUndefined() // RW (no readOnly flag)
+  })
+  it('per-team source when teamId present, host-default when absent', () => {
+    expect(buildCloudAiTeamSrcMount('orchestrator', 'alpha', HOME)?.hostPath).toBe('/home/tester/.aimaestro/ai-team-src/alpha')
+    expect(buildCloudAiTeamSrcMount('orchestrator', undefined, HOME)?.hostPath).toBe('/home/tester/.aimaestro/ai-team-src')
+  })
+  it('mount SOURCE is the exact dir cloudInstructionsSourcePath reads (the re-seed loop hinges on this)', () => {
+    // The orchestrator writes <Label>_INSTRUCTIONS.md into /ai-team-src; the host
+    // provisioner re-seeds workers from cloudInstructionsSourcePath. Both MUST
+    // resolve to the same host dir or the loop silently breaks (#194 must-verify).
+    const mount = buildCloudAiTeamSrcMount('orchestrator', 'alpha', HOME)
+    const srcFile = cloudInstructionsSourcePath('Whistler', 'alpha', HOME)
+    expect(path.dirname(srcFile)).toBe(mount!.hostPath)
+  })
+})
+
 describe('buildCloudTransportRepoMount (§11.4)', () => {
   it('returns null when transportRepo is unset', () => {
     expect(buildCloudTransportRepoMount(undefined)).toBeNull()
@@ -2730,6 +2756,17 @@ describe('buildCloudCommonMounts (§11.1 + create/update parity)', () => {
     expect(mounts.find(m => m.containerPath === '/ai-team')?.readOnly).toBe(false)
   })
 
+  it('orchestrator gets RW /ai-team-src; worker + unprofiled do NOT (#194)', () => {
+    const orch = buildCloudCommonMounts('a1', { hostHome: HOME, profile: 'orchestrator', teamId: 'alpha' })
+    const worker = buildCloudCommonMounts('a1', { hostHome: HOME, profile: 'worker', teamId: 'alpha' })
+    const plain = buildCloudCommonMounts('a1', { hostHome: HOME })
+    const orchSrc = orch.find(m => m.containerPath === '/ai-team-src')
+    expect(orchSrc).toEqual({ hostPath: '/home/tester/.aimaestro/ai-team-src/alpha', containerPath: '/ai-team-src' })
+    expect(orchSrc?.readOnly).toBeUndefined() // RW
+    expect(worker.some(m => m.containerPath === '/ai-team-src')).toBe(false)
+    expect(plain.some(m => m.containerPath === '/ai-team-src')).toBe(false)
+  })
+
   // THE parity guard (KAI requirement): createDockerAgent + updateContainerMountsAndExtraEnv
   // now BOTH call buildCloudCommonMounts. Assert that the resolved mount set is
   // identical given the same agent inputs — full set (paths + modes), order-insensitive.
@@ -2774,6 +2811,14 @@ describe('buildCloudCommonPrecreateDirs (§11.1 — shared mkdir set)', () => {
   it('excludes /ai-team for an unprofiled agent', () => {
     const dirs = buildCloudCommonPrecreateDirs('a1', { hostHome: HOME })
     expect(dirs.some(m => m.containerPath === '/ai-team')).toBe(false)
+  })
+  it('includes /ai-team-src for an orchestrator only (RW dir must pre-exist, #194)', () => {
+    const orch = buildCloudCommonPrecreateDirs('a1', { profile: 'orchestrator', teamId: 'alpha', hostHome: HOME })
+    const worker = buildCloudCommonPrecreateDirs('a1', { profile: 'worker', teamId: 'alpha', hostHome: HOME })
+    const plain = buildCloudCommonPrecreateDirs('a1', { hostHome: HOME })
+    expect(orch.some(m => m.containerPath === '/ai-team-src')).toBe(true)
+    expect(worker.some(m => m.containerPath === '/ai-team-src')).toBe(false)
+    expect(plain.some(m => m.containerPath === '/ai-team-src')).toBe(false)
   })
   it('excludes file-level mounts (gitconfig, settings.json) — only directory sources are pre-created', () => {
     const dirs = buildCloudCommonPrecreateDirs('a1', { profile: 'worker', hostHome: HOME })
