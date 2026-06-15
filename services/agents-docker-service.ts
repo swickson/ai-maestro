@@ -880,12 +880,18 @@ export function provisionCloudCodexConfig(
 // so per-agent rotation is independent + revoke radius is per-agent.
 //
 // If the host has no auth.json yet (first-time setup) AND no migrated
-// predecessor file is present, seed empty {}. Codex will then show its
-// sign-in picker on first launch in the container, matching pre-PR
-// behavior. seedFromHostFile fully owns dest-existence semantics — see
-// the function docstring for the empty-{}-re-seed contract that lets
-// post-hoc host login propagate via /recreate (Watson Mason post-#104
-// finding, kanban 02a8ebda follow-up).
+// predecessor file is present, leave auth.json ABSENT (#158) — do NOT
+// write an empty {}, which reaches Codex inside the container as a
+// malformed credential and throws the cryptic "email and plan type are
+// required for chatgpt authentication" error (Watson, Nodie create
+// 2026-05-27), masking the real cause (no `codex login` on the host).
+// With the file absent, Codex falls through to its own first-run
+// device-code sign-in picker — the natural happy-path for a fresh host
+// (matches what Shane did manually inside Nodie's container). Post-hoc
+// host login still propagates: seedFromHostFile owns dest-existence
+// semantics and treats an absent dest the same as the old empty-{}
+// placeholder it replaces, so the next /recreate re-seeds from the host
+// (Watson Mason post-#104 finding, kanban 02a8ebda follow-up).
 export function provisionCloudCodexAuth(
   agentId: string,
   hostHome: string = os.homedir()
@@ -906,9 +912,11 @@ export function provisionCloudCodexAuth(
     path.join(hostHome, '.codex', 'auth.json'),
     authPath,
   )
-  if (!bootstrapped && !fs.existsSync(authPath)) {
-    fs.writeFileSync(authPath, '{}\n', { mode: 0o600 })
-  }
+  // #158: intentionally NO empty-{} fallback write here. When neither a host
+  // login nor a migrated predecessor seeded auth.json, leaving it absent lets
+  // Codex run its first-run device-code login instead of choking on a
+  // malformed {} credential. authPath is still returned (the dir mount carries
+  // whatever Codex writes after login back to the per-agent dir).
   return { authPath, bootstrapped }
 }
 
