@@ -25,9 +25,11 @@ describe('parseAiToolBinary (#78)', () => {
   it('returns empty string for empty / non-string input', () => {
     expect(parseAiToolBinary('')).toBe('')
     expect(parseAiToolBinary('   ')).toBe('')
-    // @ts-expect-error exercising the runtime guard against non-strings
+    // The CJS default import is typed `any`, so undefined/null pass the
+    // type-checker — these exercise the runtime guard against non-strings.
+    // (No @ts-expect-error: it would be an unused directive → TS2578 under
+    // `tsc --noEmit` in container:ci — Columbo finding on #208.)
     expect(parseAiToolBinary(undefined)).toBe('')
-    // @ts-expect-error exercising the runtime guard against non-strings
     expect(parseAiToolBinary(null)).toBe('')
   })
 })
