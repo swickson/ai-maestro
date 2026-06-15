@@ -322,6 +322,11 @@ export async function notifyUser(
   // identity is stored per-user on the mapping context. undefined for single-bot
   // platforms (Discord) and dropped by JSON.stringify, preserving its body shape.
   const botSlug = (targetMapping.context as { botSlug?: string } | undefined)?.botSlug
+  // Teams cold-start DM (#13): the gateway needs the tenant to createConversation
+  // for a user it has never DM'd. tenantId is captured per-user on the mapping
+  // context on inbound (auto-create / updateLastSeen store it). Same shape as
+  // botSlug — undefined for single-tenant platforms and dropped by JSON.stringify.
+  const tenantId = (targetMapping.context as { tenantId?: string } | undefined)?.tenantId
 
   try {
     const controller = new AbortController()
@@ -336,6 +341,7 @@ export async function notifyUser(
       body: JSON.stringify({
         platformUserId: targetMapping.platformUserId,
         botSlug,
+        tenantId,
         message,
         subject: options?.subject,
       }),

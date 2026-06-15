@@ -261,9 +261,12 @@ describe('users-service', () => {
       const body = JSON.parse(init.body)
       expect(body.platformUserId).toBe('aad-xyz')
       expect(body.botSlug).toBe('bot-alpha')
+      // #13 Teams cold-start: tenantId from mapping context reaches the gateway
+      // so it can createConversation for a never-DM'd user.
+      expect(body.tenantId).toBe('t1')
     })
 
-    it('routes discord to port 3023 and omits botSlug (single-bot platform)', async () => {
+    it('routes discord to port 3023 and omits botSlug + tenantId (single-bot/tenant platform)', async () => {
       const result = await notifyUser('user-1', 'hi', { platform: 'discord' })
       expect(result.status).toBe(200)
       const [url, init] = fetchMock.mock.calls[0]
@@ -271,6 +274,9 @@ describe('users-service', () => {
       const body = JSON.parse(init.body)
       expect(body.platformUserId).toBe('123')
       expect('botSlug' in body).toBe(false)
+      // No tenantId on the discord mapping context → dropped from the body
+      // (JSON.stringify omits undefined), preserving the single-tenant shape.
+      expect('tenantId' in body).toBe(false)
     })
   })
 })
