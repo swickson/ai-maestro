@@ -278,5 +278,22 @@ describe('users-service', () => {
       // (JSON.stringify omits undefined), preserving the single-tenant shape.
       expect('tenantId' in body).toBe(false)
     })
+
+    it('explicit options.botSlug TARGETS that bot, overriding context.botSlug (#13 cold-start)', async () => {
+      // Proactive DM that must send as a specific bot (e.g. LeoAI) rather than
+      // whichever bot last had inbound — this is what drives a gateway cold-start.
+      const result = await notifyUser('user-1', 'hi', { platform: 'teams', botSlug: 'leoai' })
+      expect(result.status).toBe(200)
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+      expect(body.botSlug).toBe('leoai')          // override, NOT 'bot-alpha'
+      expect(body.tenantId).toBe('t1')            // tenantId still carried (one per mapping)
+    })
+
+    it('falls back to context.botSlug when no override is given (backward-compatible)', async () => {
+      const result = await notifyUser('user-1', 'hi', { platform: 'teams' })
+      expect(result.status).toBe(200)
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+      expect(body.botSlug).toBe('bot-alpha')      // unchanged default behavior
+    })
   })
 })
