@@ -92,6 +92,36 @@ describe('selectTranscriptFile', () => {
     expect(path.basename(r.path!)).toBe('real.jsonl')
     expect(r.pending).toBe(false)
   })
+
+  // #159: Codex nests rollouts under sessions/YYYY/MM/DD/; the flat scan misses
+  // them, the recursive scan finds them. Default stays flat for other runtimes.
+  function writeNested(rel: string, content: string, mtimeMs: number) {
+    const p = path.join(dir, rel)
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, content)
+    fs.utimesSync(p, new Date(mtimeMs), new Date(mtimeMs))
+    return p
+  }
+
+  it('does NOT find nested transcripts with the default (flat) scan', () => {
+    writeNested('2026/06/15/rollout-a.jsonl', REAL, 1_000_000)
+    expect(selectTranscriptFile(dir)).toMatchObject({ path: null, exists: false })
+  })
+
+  it('finds a nested transcript when recursive is enabled (Codex sessions/YYYY/MM/DD/)', () => {
+    const p = writeNested('2026/06/15/rollout-a.jsonl', REAL, 1_000_000)
+    const r = selectTranscriptFile(dir, null, { recursive: true })
+    expect(r.exists).toBe(true)
+    expect(r.path).toBe(p)
+  })
+
+  it('picks the newest nested rollout across date subdirs (recursive)', () => {
+    writeNested('2026/06/14/rollout-old.jsonl', REAL, 1_000_000)
+    const newer = writeNested('2026/06/15/rollout-new.jsonl', REAL, 3_000_000)
+    const r = selectTranscriptFile(dir, null, { recursive: true })
+    expect(r.path).toBe(newer)
+    expect(path.basename(r.path!)).toBe('rollout-new.jsonl')
+  })
 })
 
 describe('resolveActiveTranscript (host-agent wrapper)', () => {
@@ -113,5 +143,24 @@ describe('resolveActiveTranscript (host-agent wrapper)', () => {
     const r = resolveActiveTranscript(agent, home)
     expect(r.exists).toBe(true)
     expect(path.basename(r.path!)).toBe('real.jsonl')
+  })
+
+  it('resolves a cloud Codex agent to its newest NESTED rollout (#159)', () => {
+    const agentId = 'codex-agent-1'
+    // Mirrors resolveConversationDir cloud-codex: <home>/.aimaestro/agents/<id>/codex-app-data/sessions
+    const sessions = path.join(home, '.aimaestro', 'agents', agentId, 'codex-app-data', 'sessions')
+    const oldDir = path.join(sessions, '2026', '06', '14')
+    const newDir = path.join(sessions, '2026', '06', '15')
+    fs.mkdirSync(oldDir, { recursive: true })
+    fs.mkdirSync(newDir, { recursive: true })
+    fs.writeFileSync(path.join(oldDir, 'rollout-old.jsonl'), REAL)
+    fs.utimesSync(path.join(oldDir, 'rollout-old.jsonl'), new Date(1_000_000), new Date(1_000_000))
+    fs.writeFileSync(path.join(newDir, 'rollout-new.jsonl'), REAL)
+    fs.utimesSync(path.join(newDir, 'rollout-new.jsonl'), new Date(3_000_000), new Date(3_000_000))
+
+    const agent = { id: agentId, program: 'codex', deployment: { type: 'cloud' } } as any
+    const r = resolveActiveTranscript(agent, home)
+    expect(r.exists).toBe(true)
+    expect(path.basename(r.path!)).toBe('rollout-new.jsonl')
   })
 })
