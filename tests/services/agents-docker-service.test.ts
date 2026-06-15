@@ -1481,13 +1481,31 @@ describe('provisionCloudCodexAuth', () => {
     expect(body.tokens.access).toBe('abc')
   })
 
-  it('seeds empty {} when host has no auth.json (first-time setup case)', () => {
+  it('leaves auth.json ABSENT when host has no auth.json so Codex shows its device-login picker (#158)', () => {
     const { authPath, bootstrapped } = provisionCloudCodexAuth(uuid, tmpHome)
     expect(bootstrapped).toBe(false)
-    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toEqual({})
+    // #158: no empty-{} placeholder — an absent file lets Codex fall through to
+    // its first-run device-code login instead of hitting a malformed cred.
+    expect(fs.existsSync(authPath)).toBe(false)
+  })
+
+  it('still re-seeds from host on a later run after the operator runs codex login (absent-dest is seedable)', () => {
+    // First provision with no host login → auth.json absent (no placeholder).
+    provisionCloudCodexAuth(uuid, tmpHome)
+    // Operator runs `codex login` on the host, then a /recreate re-provisions.
+    const hostCodexDir = path.join(tmpHome, '.codex')
+    fs.mkdirSync(hostCodexDir, { recursive: true })
+    fs.writeFileSync(path.join(hostCodexDir, 'auth.json'),
+      '{"OPENAI_API_KEY":"sk-host-after-login"}\n', { mode: 0o600 })
+    const { authPath, bootstrapped } = provisionCloudCodexAuth(uuid, tmpHome)
+    expect(bootstrapped).toBe(true)
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('sk-host-after-login')
   })
 
   it('writes the seeded file with restrictive 0600 perms', () => {
+    const hostCodexDir = path.join(tmpHome, '.codex')
+    fs.mkdirSync(hostCodexDir, { recursive: true })
+    fs.writeFileSync(path.join(hostCodexDir, 'auth.json'), '{"OPENAI_API_KEY":"sk-x"}\n', { mode: 0o600 })
     const { authPath } = provisionCloudCodexAuth(uuid, tmpHome)
     expect(fs.statSync(authPath).mode & 0o777).toBe(0o600)
   })

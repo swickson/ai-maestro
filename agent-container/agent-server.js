@@ -20,6 +20,7 @@ const { promisify } = require('util')
 const exec = promisify(require('child_process').exec)
 const { ensureClaudeHomeTheme } = require('./claude-home-merge.cjs')
 const { waitForRestorationReady } = require('./restoration-gate.cjs')
+const { parseAiToolBinary, runtimeMissingMessage } = require('./runtime-check.cjs')
 
 // Configuration from environment variables
 const PORT = process.env.AGENT_PORT || 23000
@@ -166,8 +167,31 @@ async function initializeTmuxSession() {
       // / minimal status bar. Build-time CI=true stays in the image; the AI
       // tool's invocation shell explicitly drops it.
       if (AI_TOOL) {
-        await exec(`tmux send-keys -t "${SESSION_NAME}" "unset CI && ${AI_TOOL}" C-m`)
-        console.log(`✓ Started ${AI_TOOL} in session (with CI unset)`)
+        // #78 fail-loud: validate the resolved runtime binary is on PATH
+        // BEFORE launch. A profile naming a runtime that isn't installed in
+        // the image used to drop to a bare shell (or, pre-#171, silently run
+        // claude), hiding the misconfiguration from operators. Probe the
+        // binary and, when absent, surface a clear error into the session
+        // instead of starting a broken/wrong runtime.
+        const aiBinary = parseAiToolBinary(AI_TOOL)
+        let runtimePresent = true
+        try {
+          await exec(`command -v "${aiBinary}"`)
+        } catch {
+          runtimePresent = false
+        }
+        if (!runtimePresent) {
+          const msg = runtimeMissingMessage(aiBinary)
+          console.error(`✗ ${msg}`)
+          // Echo the cause into the session (stderr) so an attaching operator
+          // sees WHY there's no agent running, rather than a silent shell.
+          // Do NOT fall back to another runtime — that is the bug being fixed.
+          const banner = `AI Maestro: ${msg}`.replace(/'/g, `'\\''`)
+          await exec(`tmux send-keys -t "${SESSION_NAME}" "echo '${banner}' >&2" C-m`)
+        } else {
+          await exec(`tmux send-keys -t "${SESSION_NAME}" "unset CI && ${AI_TOOL}" C-m`)
+          console.log(`✓ Started ${AI_TOOL} in session (with CI unset)`)
+        }
       } else {
         console.log(`ℹ No AI_TOOL specified - session starts with shell only`)
       }
