@@ -98,6 +98,7 @@ const CONTAINER_HOME = '/home/claude'
 // per-agent identity tree so they don't re-pollute it.
 const CONTAINER_AITEAM = '/ai-team'              // shared orchestrator-owned plan (RO workers / RW orchestrator)
 const CONTAINER_TRANSPORT_REPO = '/transport.git' // per-wave bare git repo, credential-less push hub
+const CONTAINER_AITEAM_SRC = '/ai-team-src'      // §1 instruction-source dir, RW orchestrator-ONLY (#194)
 
 /**
  * Build the AI_TOOL command string for a Docker agent (permission-mode aware).
@@ -162,6 +163,7 @@ export const OPERATOR_RESERVED_CONTAINER_PATH_ROOTS: readonly string[] = [
   `${CONTAINER_HOME}/.gitconfig`,        // per-agent git identity (buildCloudGitConfigMount, §11.6)
   CONTAINER_AITEAM,                      // shared orchestrator-owned plan (buildCloudAiTeamMount, §11.1)
   CONTAINER_TRANSPORT_REPO,              // per-wave bare transport repo (buildCloudTransportRepoMount, §11.4)
+  CONTAINER_AITEAM_SRC,                  // §1 instruction-source dir, orchestrator-only RW (buildCloudAiTeamSrcMount, #194)
 ]
 
 // Env keys AI Maestro itself sets per-container via baseEnv (createDockerAgent
@@ -1577,6 +1579,40 @@ export function buildCloudTransportRepoMount(
   }
 }
 
+// §1 instruction-SOURCE mount (#194) — the cloud-orchestrator bridge for the
+// durable-instructions re-seed loop (#191/#193). The re-seed model has the host
+// provisioner copy each worker's slim §1 from the orchestrator-owned source dir
+// ~/.aimaestro/ai-team-src/<teamId>/<Label>_INSTRUCTIONS.md (see
+// cloudInstructionsSourcePath). That model assumed a HOST-based orchestrator
+// (Bishop on Holmes) writing the source to the host filesystem. The Ziggy
+// 4-cloud-agent model puts the orchestrator ITSELF in a container, which can't
+// write the host source directly — so this mounts that exact host dir RW into
+// the orchestrator at /ai-team-src. The orchestrator edits §1 there → its writes
+// land on the host path the provisioner reads → a subsequent update-runtime /
+// recreate on a worker (triggered via the ai-maestro API over Tailscale)
+// re-seeds that worker from the updated source. Loop closed.
+//
+// ORCHESTRATOR-ONLY + RW: workers must NEVER see this dir (it holds every peer's
+// §1 = the cross-agent leak the #193 review specifically moved ai-team-src OUT
+// of the RO /ai-team mount to prevent). The operator never escalates to the
+// orchestrator profile (VALID_PROFILES gate + reserved containerPath), mirroring
+// the /ai-team RW guard. Source is per-team (host-default fallback when no
+// teamId), pre-created by buildCloudCommonPrecreateDirs so docker can't
+// materialize it root-owned. Returns null for worker + unprofiled agents (no
+// mount = today's shape preserved).
+export function buildCloudAiTeamSrcMount(
+  profile: 'worker' | 'orchestrator' | undefined,
+  teamId: string | undefined,
+  hostHome: string = os.homedir()
+): SandboxMount | null {
+  if (profile !== 'orchestrator') return null
+  const base = path.join(hostHome, '.aimaestro', 'ai-team-src')
+  return {
+    hostPath: teamId ? path.join(base, teamId) : base,
+    containerPath: CONTAINER_AITEAM_SRC,
+  }
+}
+
 // ── Per-agent instruction file (issue #191, WS2 follow-up) ───────────────────
 //
 // Seed each agent's slim §1 instruction file from the orchestrator-owned source
@@ -1715,6 +1751,7 @@ export function buildCloudCommonMounts(
     repoRoot = process.cwd(),
   } = opts
   const aiTeamMount = buildCloudAiTeamMount(profile, teamId, hostHome)
+  const aiTeamSrcMount = buildCloudAiTeamSrcMount(profile, teamId, hostHome)
   const transportMount = buildCloudTransportRepoMount(transportRepo)
   const instructionsMount = buildCloudInstructionsMount(agentId, program, hostHome)
   return [
@@ -1732,6 +1769,8 @@ export function buildCloudCommonMounts(
     // §11.1 profiled-agent mounts (gated; absent for unprofiled = today's shape)
     ...(profile ? [buildCloudGitConfigMount(agentId, hostHome)] : []),
     ...(aiTeamMount ? [aiTeamMount] : []),
+    // #194 orchestrator-only RW §1 instruction-source mount (null for worker/unprofiled)
+    ...(aiTeamSrcMount ? [aiTeamSrcMount] : []),
     ...(transportMount ? [transportMount] : []),
     // #191 instruction mount — gated on instructions.md existing on host
     // (provisionCloudInstructions seeds it from the orchestrator source)
@@ -1758,6 +1797,7 @@ export function buildCloudCommonPrecreateDirs(
 ): SandboxMount[] {
   const { profile, teamId, hostHome = os.homedir(), repoRoot = process.cwd() } = opts
   const aiTeamMount = buildCloudAiTeamMount(profile, teamId, hostHome)
+  const aiTeamSrcMount = buildCloudAiTeamSrcMount(profile, teamId, hostHome)
   return [
     ...buildAmpCommonMounts(agentId, hostHome, repoRoot),
     ...buildCloudClaudeReadthroughMounts(agentId, hostHome),
@@ -1765,6 +1805,9 @@ export function buildCloudCommonPrecreateDirs(
     buildCloudAntigravityAppDataMount(agentId, hostHome),
     buildCloudRestorationSentinelMount(agentId, hostHome),
     ...(aiTeamMount ? [aiTeamMount] : []),
+    // #194 orchestrator source dir must pre-exist (RW dir mount) so docker
+    // can't materialize it root-owned; null for worker/unprofiled.
+    ...(aiTeamSrcMount ? [aiTeamSrcMount] : []),
   ]
 }
 
