@@ -204,12 +204,46 @@ function readHookState(workingDir) {
 /**
  * Parse JSONL lines into message objects (same logic as agents-chat-service).
  */
-function parseJsonlLines(lines, limit = 100) {
+// Per-program transcript normalizers (codex/gemini/antigravity rollout shapes →
+// the Claude message shape ChatView renders). Reuses the SAME shared lib
+// normalizers as the REST getConversationMessages so the WS chat path can't
+// drift again (issue #159: the WS path's Claude-only parser left non-Claude
+// chat windows blank even though the REST endpoint was fixed).
+let _lineNormalizers = null
+async function getLineNormalizers() {
+  if (!_lineNormalizers) {
+    const [codex, gemini, anti] = await Promise.all([
+      import('./lib/codex-message-normalizer.ts'),
+      import('./lib/gemini-message-normalizer.ts'),
+      import('./lib/antigravity-message-normalizer.ts'),
+    ])
+    _lineNormalizers = {
+      codex: codex.normalizeCodexLine,
+      gemini: gemini.normalizeGeminiLine,
+      antigravity: anti.normalizeAntigravityLine,
+    }
+  }
+  return _lineNormalizers
+}
+
+async function parseJsonlLines(lines, limit = 100, program = null) {
+  // Non-Claude runtimes write different JSONL shapes — normalize per program,
+  // mirroring services/agents-chat-service.ts getConversationMessages. Claude
+  // (or unknown program) falls through to the historical Claude-shape handling.
+  const normalizers = (program && program !== 'claude') ? await getLineNormalizers() : null
+  const normalizeLine = normalizers ? normalizers[program] : null
+
   const messages = []
   for (const line of lines) {
     if (!line.trim()) continue
     try {
       const message = JSON.parse(line)
+
+      if (normalizeLine) {
+        const normalized = normalizeLine(message)
+        if (normalized) messages.push(normalized)
+        continue
+      }
 
       // Skip tool-result user messages (invisible in chat, waste message budget)
       if (message.type === 'user' && message.toolUseResult) continue
@@ -289,7 +323,8 @@ async function getChatHistory(sessionName, agentId) {
 
   const fileContent = fs.readFileSync(file.path, 'utf-8')
   const lines = fileContent.split('\n')
-  const messages = parseJsonlLines(lines, 200)
+  const { cloudProgram } = await import('./lib/agent-paths.ts')
+  const messages = await parseJsonlLines(lines, 200, cloudProgram(agent))
 
   return {
     messages,
@@ -311,6 +346,14 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
     // Try agentId first, fall back to sessionName (remote hosts won't have the local agentId)
     const agent = (agentId && getAgent(agentId)) || getAgentByName(sessionName)
     if (!agent) return
+
+    // Remember the agent's program so incremental broadcasts normalize the
+    // right transcript shape (codex/gemini/antigravity vs Claude) — without it
+    // the live-update path re-introduces the #159 blank-window drift.
+    try {
+      const { cloudProgram } = await import('./lib/agent-paths.ts')
+      sessionState.agentProgram = cloudProgram(agent)
+    } catch { sessionState.agentProgram = null }
 
     // Watch the resolved path even if it doesn't exist yet (file.pending): a
     // late/deferred transcript will fire fs.watchFile's create event and rebind.
@@ -394,7 +437,7 @@ function broadcastHookState(sessionName, sessionState) {
 /**
  * Read new JSONL lines since last read and broadcast to chat clients.
  */
-function broadcastJsonlUpdates(sessionName, sessionState) {
+async function broadcastJsonlUpdates(sessionName, sessionState) {
   if (!sessionState.chatClients || sessionState.chatClients.size === 0) {
     return
   }
@@ -439,7 +482,7 @@ function broadcastJsonlUpdates(sessionName, sessionState) {
     const lines = allLines.filter(l => l.trim())
     if (lines.length === 0) return
 
-    const messages = parseJsonlLines(lines, 50)
+    const messages = await parseJsonlLines(lines, 50, sessionState.agentProgram)
     if (messages.length === 0) return
 
     // Clear stored permission when assistant responds (permission cycle is over)
@@ -1551,16 +1594,21 @@ async function startServer(handleRequest) {
             startJsonlWatcher(sessionName, sessionState, parsed.agentId)
           } else if (parsed.type === 'chat:send') {
             if (parsed.message) {
-              // Always use tmux send-keys -l with proper escaping and delay.
-              // Direct ptyProcess.write() bypasses tmux input handling and
-              // doesn't give Claude Code the 100ms gap it needs between text
-              // and Enter to process the input.
+              // Delegate to the cloud-aware sendChatMessage service rather than
+              // raw host tmux send-keys. The service branches on deployment.type
+              // (docker exec for cloud agents whose tmux runs in-container) and
+              // runs the cancelCopyMode prelude first. Doing host send-keys here
+              // failed with "can't find pane" for cloud agents (issue #159) and
+              // silently dropped sends into copy-mode/idle panes (no prelude).
               try {
-                const escaped = parsed.message.replace(/'/g, "'\\''")
-                execSync(`tmux send-keys -t "${sessionName}" -l '${escaped}'`, { timeout: 3000 })
-                // 100ms delay so Claude Code processes the literal text before Enter
-                await new Promise(r => setTimeout(r, 100))
-                execSync(`tmux send-keys -t "${sessionName}" Enter`, { timeout: 3000 })
+                const { getAgent, getAgentByName } = await import('./lib/agent-registry.ts')
+                const agent = (parsed.agentId && getAgent(parsed.agentId)) || getAgentByName(sessionName)
+                if (!agent) throw new Error(`no agent found for session ${sessionName}`)
+                const { sendChatMessage } = await import('./services/agents-chat-service.ts')
+                const result = await sendChatMessage(agent.id, parsed.message)
+                if (!result || result.status !== 200) {
+                  throw new Error(result?.data?.message || 'send failed')
+                }
                 if (ws.readyState === 1) {
                   ws.send(JSON.stringify({ type: 'chat:sent' }))
                 }
@@ -2002,11 +2050,19 @@ async function startServer(handleRequest) {
 
           if (parsed.type === 'chat:send') {
             if (parsed.message) {
+              // Delegate to the cloud-aware sendChatMessage service (deployment
+              // branch + cancelCopyMode prelude) instead of raw host tmux —
+              // host send-keys failed for cloud agents and dropped sends into
+              // idle/copy-mode panes (issue #159).
               try {
-                const escaped = parsed.message.replace(/'/g, "'\\''")
-                execSync(`tmux send-keys -t "${sessionName}" -l '${escaped}'`, { timeout: 3000 })
-                await new Promise(r => setTimeout(r, 100))
-                execSync(`tmux send-keys -t "${sessionName}" Enter`, { timeout: 3000 })
+                const { getAgent, getAgentByName } = await import('./lib/agent-registry.ts')
+                const agent = (parsed.agentId && getAgent(parsed.agentId)) || getAgentByName(sessionName)
+                if (!agent) throw new Error(`no agent found for session ${sessionName}`)
+                const { sendChatMessage } = await import('./services/agents-chat-service.ts')
+                const result = await sendChatMessage(agent.id, parsed.message)
+                if (!result || result.status !== 200) {
+                  throw new Error(result?.data?.message || 'send failed')
+                }
                 if (ws.readyState === 1) {
                   ws.send(JSON.stringify({ type: 'chat:sent' }))
                 }
