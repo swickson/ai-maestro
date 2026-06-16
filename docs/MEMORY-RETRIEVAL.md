@@ -111,7 +111,7 @@ These are recollections, not live data — verify against current state before a
 
 The **provenance banner** lets a cooperative consumer tell auto-injected recall apart from the sender's own words — it addresses the honest-confusion case where an agent mistakes its own recall for sender content. It is *not* a security boundary against a sender forging a `<memory-context>` block in their body; that isolation requires moving recall out of the signed message body into envelope metadata (tracked separately).
 
-**Injection point:** Before the agent processes the message, appended to the system context (similar to how CLAUDE.md is loaded). Not inline with the user message.
+**Injection point:** Currently prepended INLINE into the delivered AMP `payload.message`, above the sender content (which is why the provenance banner is needed). Note the delivered body then differs from the signed sender content; Card B moves recall into envelope metadata so the body stays verbatim-signed.
 
 **If no relevant memories found:** Inject nothing. Don't add an empty block or "no memories found" noise.
 
