@@ -2068,7 +2068,7 @@ describe('buildRecreateBody', () => {
     const agent = makeCloudAgent({
       deployment: {
         type: 'cloud',
-        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        cloud: { provider: 'local-container', websocketUrl: 'ws://localhost:23010/term', containerName: 'aim-x', status: 'running' },
         sandbox: { mounts },
       },
     })
@@ -2079,7 +2079,7 @@ describe('buildRecreateBody', () => {
     const agent = makeCloudAgent({
       deployment: {
         type: 'cloud',
-        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        cloud: { provider: 'local-container', websocketUrl: 'ws://localhost:23010/term', containerName: 'aim-x', status: 'running' },
         sandbox: { ziggy: true, ziggyCodePath: '/srv/ziggy-stable' },
       },
     })
@@ -2139,7 +2139,7 @@ describe('buildRecreateBody', () => {
     const agent = makeCloudAgent({
       deployment: {
         type: 'cloud',
-        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        cloud: { provider: 'local-container', websocketUrl: 'ws://localhost:23010/term', containerName: 'aim-x', status: 'running' },
         sandbox: { ziggy: true },
       },
     })
@@ -2154,7 +2154,7 @@ describe('buildRecreateBody', () => {
     const agent = makeCloudAgent({
       deployment: {
         type: 'cloud',
-        cloud: { provider: 'local-container', containerName: 'aim-x', status: 'running' },
+        cloud: { provider: 'local-container', websocketUrl: 'ws://localhost:23010/term', containerName: 'aim-x', status: 'running' },
         sandbox: { profile: 'worker', teamId: 'alpha', transportRepo: '/srv/transport/alpha/wave-1.git' },
       },
     })
@@ -2175,6 +2175,7 @@ describe('buildRecreateBody', () => {
         type: 'cloud',
         cloud: {
           provider: 'local-container',
+          websocketUrl: 'ws://localhost:23010/term',
           containerName: 'aim-x',
           status: 'running',
           runtime: {
@@ -2532,9 +2533,9 @@ function cloudAgent(port: number | null, opts: Partial<Agent> = {}): Agent {
 }
 
 describe('computeReservedCloudPorts', () => {
-  it('unions every agent port regardless of online/offline status', () => {
+  it('unions every agent port regardless of active/offline status', () => {
     const reserved = computeReservedCloudPorts(
-      [cloudAgent(23001, { status: 'online' } as Partial<Agent>), cloudAgent(23002, { status: 'offline' } as Partial<Agent>)],
+      [cloudAgent(23001, { status: 'active' } as Partial<Agent>), cloudAgent(23002, { status: 'offline' } as Partial<Agent>)],
       []
     )
     expect([...reserved].sort()).toEqual([23001, 23002])

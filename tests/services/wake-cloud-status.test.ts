@@ -147,7 +147,7 @@ const cloudAgent = (id: string, containerName: string) =>
   makeAgent({
     id,
     name: id,
-    deployment: { type: 'cloud', cloud: { provider: 'local-container', containerName, status: 'stopped' } },
+    deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://localhost:23010/term', containerName, status: 'stopped' } },
     hooks: { 'on-wake': 'echo woke' },
   })
 
@@ -174,7 +174,7 @@ describe('wakeAgent — cloud container status reconciliation', () => {
     const agent = makeAgent({
       id: 'cloud-stopped',
       name: 'cloud-stopped',
-      deployment: { type: 'cloud', cloud: { provider: 'local-container', containerName: 'aim-cloud-stopped', status: 'stopped' } },
+      deployment: { type: 'cloud', cloud: { provider: 'local-container', websocketUrl: 'ws://localhost:23010/term', containerName: 'aim-cloud-stopped', status: 'stopped' } },
     })
     mockAgentRegistry.getAgent.mockReturnValue(agent)
     mockAgentRegistry.loadAgents.mockReturnValue([agent])
