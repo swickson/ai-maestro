@@ -120,6 +120,21 @@ export function resolveConversationDir(
         return path.join(agentDir, 'claude-projects', CONTAINER_CWD_ENCODED)
     }
   }
+  // Host (non-cloud) agents run as the operator, so non-Claude programs write
+  // their transcripts to the operator's OWN cli tree — NOT ~/.claude/projects.
+  // Host antigravity (agy) writes user-prompt history to the shared
+  // ~/.gemini/antigravity-cli/history.jsonl (single operator dir, not cwd-keyed
+  // and not per-agent — local agents share it). Without this branch a local
+  // antigravity agent resolved to an empty/wrong ~/.claude/projects dir and the
+  // chat window stayed blank even though history.jsonl was right there (Ginger,
+  // local-antigravity bug — the host-branch counterpart to the cloud #219 fix).
+  // Same user-prompts-only shape + protobuf-blackbox assistant limitation as #219.
+  // NOTE: host codex (~/.codex/sessions) and host gemini (~/.gemini/tmp/.../chats)
+  // have the same host-branch blind spot — left as a follow-up (no local agent of
+  // those kinds verified here yet).
+  if (cloudProgram(agent) === 'antigravity') {
+    return path.join(hostHome, '.gemini', 'antigravity-cli')
+  }
   const workingDir = resolveHostWorkingDir(agent)
   if (!workingDir) return null
   const projectDirName = workingDir.replace(/\//g, '-')
