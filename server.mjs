@@ -178,6 +178,19 @@ async function resolveJsonlPath(agent) {
   return resolveActiveTranscript(agent)
 }
 
+// Antigravity conversations live in conversations/<uuid>.db (SQLite plaintext-
+// protobuf), NOT a JSONL transcript. Resolve + decode the newest one. Returns
+// { path, mtime, messages } | null (null ⇒ no decodable .db; caller falls back
+// to the history.jsonl user-prompt path). Dedicated source kept separate from
+// the generic JSONL resolver. See #232 + lib/antigravity-db-decoder.ts.
+async function resolveAntigravityDbConversation(agent) {
+  const { resolveConversationDir } = await import('./lib/agent-paths.ts')
+  const { loadNewestAntigravityConversation } = await import('./lib/antigravity-db-decoder.ts')
+  const dir = resolveConversationDir(agent)
+  if (!dir) return null
+  return loadNewestAntigravityConversation(path.join(dir, 'conversations'))
+}
+
 /**
  * Read hook state file for an agent's working directory.
  */
@@ -314,6 +327,23 @@ async function getChatHistory(sessionName, agentId) {
     }
   }
 
+  // Antigravity: decode the full (user + assistant + tool) conversation from
+  // the newest conversations/*.db (SQLite plaintext-protobuf, #232) — a
+  // dedicated source. The generic JSONL resolver only yields history.jsonl
+  // (user prompts). Falls through for old encrypted .pb-only conversations.
+  const { cloudProgram } = await import('./lib/agent-paths.ts')
+  if (cloudProgram(agent) === 'antigravity') {
+    const db = await resolveAntigravityDbConversation(agent)
+    if (db && db.messages.length > 0) {
+      return {
+        messages: db.messages.slice(-200),
+        hookState,
+        conversationFile: db.path,
+        lastModified: db.mtime?.toISOString?.(),
+      }
+    }
+  }
+
   // No on-disk transcript for the current session (missing dir, or the current
   // session's transcript isn't written yet — see #196). Return honest empty
   // history + hookState rather than silently serving a stale title-only stub.
@@ -323,7 +353,6 @@ async function getChatHistory(sessionName, agentId) {
 
   const fileContent = fs.readFileSync(file.path, 'utf-8')
   const lines = fileContent.split('\n')
-  const { cloudProgram } = await import('./lib/agent-paths.ts')
   const messages = await parseJsonlLines(lines, 200, cloudProgram(agent))
 
   return {
@@ -355,33 +384,58 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
       sessionState.agentProgram = cloudProgram(agent)
     } catch { sessionState.agentProgram = null }
 
+    // Antigravity watches the newest conversations/*.db (SQLite) rather than a
+    // JSONL transcript. SQLite writes land in the -wal first and don't grow the
+    // main file linearly, so detect changes by MTIME and re-decode the whole db
+    // in broadcastJsonlUpdates (#232). Falls through to the JSONL watcher below
+    // for old encrypted .pb-only agents with no decodable .db.
+    if (sessionState.agentProgram === 'antigravity') {
+      const db = await resolveAntigravityDbConversation(agent)
+      if (db) {
+        sessionState.jsonlFilePath = db.path
+        sessionState.antigravityDb = true
+        sessionState.antigravityMsgCount = db.messages.length
+        try { sessionState.jsonlMtimeMs = fs.statSync(db.path).mtimeMs } catch { sessionState.jsonlMtimeMs = 0 }
+        fs.watchFile(db.path, { interval: 1000 }, (curr) => {
+          if (curr.mtimeMs !== sessionState.jsonlMtimeMs) {
+            sessionState.jsonlMtimeMs = curr.mtimeMs
+            broadcastJsonlUpdates(sessionName, sessionState)
+          }
+        })
+        sessionState.jsonlWatcher = true
+        console.log(`[Chat] Started antigravity .db watcher for ${sessionName}: ${db.path}`)
+      }
+    }
+
     // Watch the resolved path even if it doesn't exist yet (file.pending): a
     // late/deferred transcript will fire fs.watchFile's create event and rebind.
     const file = await resolveJsonlPath(agent)
-    if (!file || !file.path) return
+    if (!sessionState.antigravityDb) {
+      if (!file || !file.path) return
 
-    sessionState.jsonlFilePath = file.path
-    try {
-      const stat = fs.statSync(file.path)
-      sessionState.jsonlFileSize = stat.size
-    } catch {
-      sessionState.jsonlFileSize = 0
-    }
-
-    // Poll every 1s — low overhead, reliable on macOS where fs.watch is flaky
-    fs.watchFile(file.path, { interval: 1000 }, (curr, prev) => {
-      if (curr.size > sessionState.jsonlFileSize) {
-        console.log(`[Chat] JSONL change detected for ${sessionName}: ${sessionState.jsonlFileSize} → ${curr.size} (${sessionState.chatClients?.size || 0} clients)`)
-        broadcastJsonlUpdates(sessionName, sessionState)
-      }
-      // Handle file truncation (new conversation started)
-      if (curr.size < sessionState.jsonlFileSize) {
+      sessionState.jsonlFilePath = file.path
+      try {
+        const stat = fs.statSync(file.path)
+        sessionState.jsonlFileSize = stat.size
+      } catch {
         sessionState.jsonlFileSize = 0
-        broadcastJsonlUpdates(sessionName, sessionState)
       }
-    })
-    sessionState.jsonlWatcher = true
-    console.log(`[Chat] Started JSONL watcher for ${sessionName}: ${file.path}`)
+
+      // Poll every 1s — low overhead, reliable on macOS where fs.watch is flaky
+      fs.watchFile(file.path, { interval: 1000 }, (curr, prev) => {
+        if (curr.size > sessionState.jsonlFileSize) {
+          console.log(`[Chat] JSONL change detected for ${sessionName}: ${sessionState.jsonlFileSize} → ${curr.size} (${sessionState.chatClients?.size || 0} clients)`)
+          broadcastJsonlUpdates(sessionName, sessionState)
+        }
+        // Handle file truncation (new conversation started)
+        if (curr.size < sessionState.jsonlFileSize) {
+          sessionState.jsonlFileSize = 0
+          broadcastJsonlUpdates(sessionName, sessionState)
+        }
+      })
+      sessionState.jsonlWatcher = true
+      console.log(`[Chat] Started JSONL watcher for ${sessionName}: ${file.path}`)
+    }
 
     // Watch hook state file for real-time permission/status updates
     const workingDir = agent.workingDirectory ||
@@ -443,6 +497,29 @@ async function broadcastJsonlUpdates(sessionName, sessionState) {
   }
   if (!sessionState.jsonlFilePath) {
     console.log(`[Chat] No JSONL path for ${sessionName}, skipping broadcast`)
+    return
+  }
+
+  // Antigravity: the transcript is a SQLite .db, not append-only JSONL — re-decode
+  // the whole conversation and broadcast only messages that appeared since the
+  // last decode (stable per-step uuids let the client merge) (#232).
+  if (sessionState.antigravityDb) {
+    try {
+      const { decodeAntigravityDb } = await import('./lib/antigravity-db-decoder.ts')
+      const all = decodeAntigravityDb(sessionState.jsonlFilePath)
+      const prev = sessionState.antigravityMsgCount || 0
+      if (all.length <= prev) return
+      const fresh = all.slice(prev)
+      sessionState.antigravityMsgCount = all.length
+      const msg = JSON.stringify({ type: 'chat:messages', data: fresh })
+      let sentCount = 0
+      sessionState.chatClients.forEach(ws => {
+        if (ws.readyState === 1) { try { ws.send(msg); sentCount++ } catch {} }
+      })
+      console.log(`[Chat] Broadcast ${fresh.length} antigravity messages to ${sentCount}/${sessionState.chatClients.size} clients for ${sessionName}`)
+    } catch (err) {
+      console.error(`[Chat] antigravity .db broadcast failed for ${sessionName}:`, err?.message)
+    }
     return
   }
 
