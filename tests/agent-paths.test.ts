@@ -32,6 +32,23 @@ describe('resolveConversationDir', () => {
     expect(dir).toBe(path.join(HOST_HOME, '.claude', 'projects', '-home-operator-code-n4-armory'))
   })
 
+  it('host ANTIGRAVITY agent: resolves to operator ~/.gemini/antigravity-cli, NOT ~/.claude/projects (local-antigravity bug, host-branch counterpart to #219)', () => {
+    const agent = {
+      id: 'a499e31a-fake-ginger',
+      program: 'antigravity',
+      workingDirectory: '/home/operator/Documents/Development/n4safety-app',
+      deployment: { type: 'local' as const },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    expect(dir).toBe(path.join(HOST_HOME, '.gemini', 'antigravity-cli'))
+    expect(dir).not.toMatch(/\.claude\/projects/)
+  })
+
+  it('host antigravity resolves even without a workingDirectory (history.jsonl is not cwd-keyed)', () => {
+    const agent = { id: 'g2', program: 'antigravity', deployment: { type: 'local' as const } }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.gemini', 'antigravity-cli'))
+  })
+
   it('cloud agent: derives from per-agent host path + CONTAINER_CWD_ENCODED, ignores host workingDirectory', () => {
     const agent = {
       id: '70b119e9-5793-44f5-b891-229aa330ff1c',
