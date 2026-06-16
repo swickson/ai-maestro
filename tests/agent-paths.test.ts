@@ -49,6 +49,31 @@ describe('resolveConversationDir', () => {
     expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.gemini', 'antigravity-cli'))
   })
 
+  it('host CODEX agent: resolves to operator ~/.codex/sessions, NOT ~/.claude/projects (host-codex bug, #225)', () => {
+    const agent = {
+      id: '537a41e8-fake-builder',
+      program: 'codex',
+      workingDirectory: '/home/operator/Documents/Development/n4safety-app',
+      deployment: { type: 'local' as const },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    // recursive date-nested rollout scan is applied downstream by resolveActiveTranscript
+    expect(dir).toBe(path.join(HOST_HOME, '.codex', 'sessions'))
+    expect(dir).not.toMatch(/\.claude\/projects/)
+  })
+
+  it('host codex resolves even without a workingDirectory (rollouts live under ~/.codex/sessions, not cwd-keyed)', () => {
+    const agent = { id: 'c2', program: 'codex', deployment: { type: 'local' as const } }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.codex', 'sessions'))
+  })
+
+  it('host CLAUDE path is unchanged by the program switch (regression guard for #223/#225)', () => {
+    const agent = { id: 'h1', workingDirectory: '/home/operator/code/x', deployment: { type: 'local' as const } }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.claude', 'projects', '-home-operator-code-x'))
+    // a host claude agent with no workingDirectory still returns null
+    expect(resolveConversationDir({ id: 'h2', deployment: { type: 'local' as const } }, HOST_HOME)).toBeNull()
+  })
+
   it('cloud agent: derives from per-agent host path + CONTAINER_CWD_ENCODED, ignores host workingDirectory', () => {
     const agent = {
       id: '70b119e9-5793-44f5-b891-229aa330ff1c',
