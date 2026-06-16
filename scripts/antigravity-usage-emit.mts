@@ -10,11 +10,18 @@
  *
  *   npx tsx scripts/antigravity-usage-emit.mts <conversation.db>
  *
- * Output (stdout, single line): { sourcePath, model, gens:[{input,output,thinking}],
- *   totals:{input,output,thinking}, identityRate:{checked,ok} }
- * `sourcePath` echoes the db arg verbatim so each record self-attributes; the
- * Ziggy collector's Smart Attribution parses agent-id/root from it (and excludes
- * bind-mounted foreign-agent dbs). The wrapper itself does NO tenancy parsing.
+ * Output (stdout, single line): { sourcePath, model,
+ *   gens:[{input,output,thinking,ts}], totals:{input,output,thinking},
+ *   identityRate:{checked,ok}, tsPlausibilityRate:{checked,ok} }
+ * - `sourcePath` echoes the db arg verbatim so each record self-attributes. The
+ *   aggregator is DUMB — collects every token from every agent, NO filtering /
+ *   exclusion; the DB/dashboard does ALL attribution + scoping by agent/project.
+ *   So sourcePath is for (1) cross-host DEDUP via its stable suffix (agent-uuid +
+ *   conversation-uuid) and (2) DB-side per-agent attribution — NOT a gate/exclusion.
+ * - `gens[].ts` = per-gen unix SECONDS (or null) for per-day event_date bucketing.
+ * - `identityRate` guards the token fields; `tsPlausibilityRate` guards `ts`
+ *   (sec-range) — collector uses ts when plausible, else a db-mtime fallback.
+ * The wrapper itself does NO tenancy parsing and is stateless per-.db.
  *
  * Exit codes (so a batch consumer can branch deterministically):
  *   0 — usage emitted to stdout
