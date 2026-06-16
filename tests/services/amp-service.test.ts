@@ -6,7 +6,7 @@
  * not filesystem I/O (which lib tests already cover).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { makeAgent, resetFixtureCounter } from '../test-utils/fixtures'
 
 // ============================================================================
@@ -1059,7 +1059,7 @@ describe('routeMessage — signature handling (#13: reserve warn for real failur
   })
 
   const sigWarns = () =>
-    warnSpy.mock.calls.some((c) => String(c[0]).includes('Invalid signature'))
+    warnSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('Invalid signature'))
 
   it('does NOT warn "Invalid signature" for an unsigned envelope from a trusted sender (the #13 noise)', async () => {
     mockAuthenticated()
@@ -1070,7 +1070,7 @@ describe('routeMessage — signature handling (#13: reserve warn for real failur
     expect(sigWarns()).toBe(false)
     // Unsigned is accepted at info, framed as explicit acceptance.
     expect(
-      logSpy.mock.calls.some((c) => String(c[0]).includes('Accepting unsigned envelope from')),
+      logSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('Accepting unsigned envelope from')),
     ).toBe(true)
   })
 
@@ -1093,7 +1093,7 @@ describe('routeMessage — signature handling (#13: reserve warn for real failur
 
     expect(sigWarns()).toBe(false)
     expect(
-      logSpy.mock.calls.some((c) => String(c[0]).includes('Verified signature from')),
+      logSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('Verified signature from')),
     ).toBe(true)
   })
 })
