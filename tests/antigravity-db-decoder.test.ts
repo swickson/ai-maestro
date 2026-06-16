@@ -120,6 +120,35 @@ describe('decodeAntigravityDb (#232)', () => {
     expect(msgs[0].message.content[0].text).toBe('↳ view_file')
   })
 
+  it('sees a WAL-only commit (no checkpoint) — read-through-WAL (Columbo #233)', () => {
+    // Regression for the WAL-blind watcher bug: a live commit lands in <db>-wal
+    // and the main .db mtime does NOT move until checkpoint. The readonly decode
+    // must still see it — which is exactly why the live watcher has to watch the
+    // -wal sibling, not just the main .db mtime.
+    const dbPath = path.join(tmpDir, 'wal.db')
+    const w = new Database(dbPath)
+    w.pragma('journal_mode = WAL')
+    w.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)')
+    const ins = w.prepare('INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)')
+    ins.run(0, 14, userPayload('first turn'))
+    w.pragma('wal_checkpoint(TRUNCATE)') // flush to main .db, reset -wal to empty
+
+    const mtimeBefore = fs.statSync(dbPath).mtimeMs
+    ins.run(1, 15, assistantPayload('second turn lives only in the WAL')) // no checkpoint
+    const mtimeAfter = fs.statSync(dbPath).mtimeMs
+
+    // The commit is in -wal: main .db is untouched, but the -wal has grown.
+    expect(mtimeAfter).toBe(mtimeBefore)
+    expect(fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(0)
+
+    // The readonly decode must still surface the WAL-only assistant turn.
+    const msgs = decodeAntigravityDb(dbPath)
+    expect(msgs).toHaveLength(2)
+    expect(msgs[1].type).toBe('assistant')
+    expect(msgs[1].message.content[0].text).toContain('second turn lives only in the WAL')
+    w.close()
+  })
+
   it('returns [] for a missing db rather than throwing', () => {
     expect(decodeAntigravityDb(path.join(tmpDir, 'does-not-exist.db'))).toEqual([])
   })

@@ -395,15 +395,34 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
         sessionState.jsonlFilePath = db.path
         sessionState.antigravityDb = true
         sessionState.antigravityMsgCount = db.messages.length
+        // Watch BOTH the main .db AND its -wal sibling. SQLite (WAL mode) lands
+        // live commits in <db>-wal first — the main .db mtime doesn't move until
+        // a checkpoint — so watching only the .db would miss in-progress turns
+        // until checkpoint (the readonly read already sees WAL, masking the gap).
+        // broadcastJsonlUpdates re-decodes the whole db and diffs by count, so
+        // firing from either watcher is idempotent. -wal may not exist yet;
+        // fs.watchFile tolerates that and fires on create (same as pending JSONL).
+        const walPath = `${db.path}-wal`
+        sessionState.antigravityWalPath = walPath
+        const fireAntigravity = () => broadcastJsonlUpdates(sessionName, sessionState)
         try { sessionState.jsonlMtimeMs = fs.statSync(db.path).mtimeMs } catch { sessionState.jsonlMtimeMs = 0 }
         fs.watchFile(db.path, { interval: 1000 }, (curr) => {
           if (curr.mtimeMs !== sessionState.jsonlMtimeMs) {
             sessionState.jsonlMtimeMs = curr.mtimeMs
-            broadcastJsonlUpdates(sessionName, sessionState)
+            fireAntigravity()
+          }
+        })
+        fs.watchFile(walPath, { interval: 1000 }, (curr) => {
+          // mtime+size signature: WAL grows on append (pre-checkpoint) and is
+          // truncated/reset on checkpoint — either transition means new commits.
+          const sig = `${curr.mtimeMs}:${curr.size}`
+          if (sig !== sessionState.antigravityWalSig) {
+            sessionState.antigravityWalSig = sig
+            fireAntigravity()
           }
         })
         sessionState.jsonlWatcher = true
-        console.log(`[Chat] Started antigravity .db watcher for ${sessionName}: ${db.path}`)
+        console.log(`[Chat] Started antigravity .db+wal watcher for ${sessionName}: ${db.path}`)
       }
     }
 
@@ -645,11 +664,14 @@ function cleanupSession(sessionName, sessionState, reason = 'unknown', ptyAlread
     killPtyProcess(sessionState.ptyProcess, sessionName, ptyAlreadyExited)
   }
 
-  // Stop JSONL file watcher
+  // Stop JSONL file watcher (+ the antigravity -wal sibling watcher, if any)
   if (sessionState.jsonlWatcher) {
     try {
       fs.unwatchFile(sessionState.jsonlFilePath)
     } catch { /* ignore */ }
+    if (sessionState.antigravityWalPath) {
+      try { fs.unwatchFile(sessionState.antigravityWalPath) } catch { /* ignore */ }
+    }
     sessionState.jsonlWatcher = null
   }
 
