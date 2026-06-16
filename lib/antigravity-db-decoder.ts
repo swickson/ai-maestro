@@ -518,6 +518,55 @@ export function extractAntigravityUsage(dbPath: string): AntigravityUsage | null
 }
 
 /**
+ * The cross-language emit contract (LOCKED 2026-06-16 with KAI + Sam).
+ *
+ * Part 1 (this module, TS) is the SOLE source of truth for antigravity token
+ * counting; the Ziggy spend pipeline (Python, github.com/swickson/ziggy
+ * apps/token-ingest) consumes this JSON rather than re-implementing the field
+ * map — which would silently drift and defeat the git-homed identity guard.
+ * `identityRate` rides IN the payload so the Python collector can assert
+ * `ok === checked` before presenting spend (Part-2 carry-forward #1, satisfied
+ * by construction). `sourcePath` echoes the input db path verbatim so every
+ * emitted record is SELF-ATTRIBUTING — the collector's Smart Attribution parses
+ * agent-id/root from it to tenant correctly and to deliberately EXCLUDE
+ * bind-mounted foreign-agent dbs (e.g. a cloud agent's app-data mounted onto a
+ * host would otherwise mis-tenant + double-count). The wrapper does NO tenancy
+ * parsing itself — it only echoes. Field names are the locked wire shape — do
+ * NOT rename without re-locking with the Ziggy side.
+ */
+export interface AntigravityUsageContract {
+  /** The db path this record was decoded from, echoed verbatim (self-attribution). */
+  sourcePath: string
+  model: string | null
+  gens: Array<{ input: number; output: number; thinking: number }>
+  totals: { input: number; output: number; thinking: number }
+  identityRate: { checked: number; ok: number }
+}
+
+/**
+ * Project the internal usage shape onto the locked cross-language contract.
+ * `sourcePath` is echoed verbatim (no resolution/parsing) — attribution is the
+ * collector's job, not the decoder's.
+ */
+export function toUsageContract(usage: AntigravityUsage, sourcePath: string): AntigravityUsageContract {
+  return {
+    sourcePath,
+    model: usage.model,
+    gens: usage.generations.map((g) => ({
+      input: g.inputTokens,
+      output: g.outputTokens,
+      thinking: g.thinkingTokens,
+    })),
+    totals: {
+      input: usage.totals.inputTokens,
+      output: usage.totals.outputTokens,
+      thinking: usage.totals.thinkingTokens,
+    },
+    identityRate: usageIdentityRate(usage.generations),
+  }
+}
+
+/**
  * Find the newest `<uuid>.db` conversation in an antigravity `conversations/`
  * dir (by mtime), or null if there are none (e.g. only old encrypted `.pb`
  * files, or the dir is absent). The caller passes the dir that contains the

@@ -24,6 +24,7 @@ import {
   extractGenUsage,
   extractAntigravityUsage,
   usageIdentityRate,
+  toUsageContract,
 } from '@/lib/antigravity-db-decoder'
 
 // ── minimal protobuf wire encoder (mirrors the real on-disk shape) ───────────
@@ -315,5 +316,45 @@ describe('extractGenUsage / extractAntigravityUsage — token accounting', () =>
     const junk = path.join(tmpDir, 'usage-junk.db')
     fs.writeFileSync(junk, 'not a database')
     expect(extractAntigravityUsage(junk)).toBeNull()
+  })
+
+  it('toUsageContract projects onto the LOCKED cross-language wire shape', () => {
+    // Locked 2026-06-16 with KAI + Sam — the exact JSON the Ziggy Python leg
+    // consumes. Field names + structure must not drift without re-locking.
+    const dbPath = writeGenDb('contract.db', [
+      genMetadataPayload({ input: 21641, output: 195, thinking: 58, modelId: 'gemini-3.5-flash-low' }),
+      genMetadataPayload({ input: 10128, output: 253, thinking: 68, modelId: 'gemini-3.5-flash-low' }),
+    ])
+    const contract = toUsageContract(extractAntigravityUsage(dbPath)!, dbPath)
+    expect(contract).toEqual({
+      sourcePath: dbPath,
+      model: 'gemini-3.5-flash-low',
+      gens: [
+        { input: 21641, output: 195, thinking: 58 },
+        { input: 10128, output: 253, thinking: 68 },
+      ],
+      totals: { input: 21641 + 10128, output: 195 + 253, thinking: 58 + 68 },
+      identityRate: { checked: 2, ok: 2 },
+    })
+    // The shape carries exactly these top-level keys — guards against silent additions.
+    expect(Object.keys(contract).sort()).toEqual(['gens', 'identityRate', 'model', 'sourcePath', 'totals'])
+  })
+
+  it('toUsageContract echoes sourcePath verbatim (no resolution) for collector attribution', () => {
+    // The cross-tenant hazard fix: every record self-attributes via the raw path
+    // it was decoded from, incl. a bind-mounted foreign-agent path the collector
+    // must be able to recognize and EXCLUDE. The wrapper must not normalize it.
+    const dbPath = writeGenDb('attrib.db', [genMetadataPayload({ input: 100, output: 10, thinking: 5 })])
+    const foreignLikePath = '/home/gosub/.aimaestro/agents/d22088ae-foreign/antigravity-app-data/conversations/x.db'
+    expect(toUsageContract(extractAntigravityUsage(dbPath)!, foreignLikePath).sourcePath).toBe(foreignLikePath)
+  })
+
+  it('contract identityRate surfaces drift (ok < checked) so the collector can refuse spend', () => {
+    const dbPath = writeGenDb('contract-drift.db', [
+      genMetadataPayload({ input: 500, output: 120, thinking: 30 }), // identity holds
+      genMetadataPayload({ input: 500, output: 120, thinking: 30, candidate: 999 }), // drift
+    ])
+    const contract = toUsageContract(extractAntigravityUsage(dbPath)!, dbPath)
+    expect(contract.identityRate).toEqual({ checked: 2, ok: 1 })
   })
 })
