@@ -1,28 +1,30 @@
 /**
  * Antigravity (agy) history.jsonl → Claude-shape normalizer for ChatView.
  *
- * Antigravity does NOT write a JSONL conversation transcript. Empirically
- * verified against a real logged-in cloud agent (han, #219):
+ * Antigravity's conversation files (verified host + cloud):
  *
- *   ~/.gemini/antigravity-cli/conversations/<conversationId>.pb   ← protobuf blob
- *   ~/.gemini/antigravity-cli/conversations/<conversationId>.db   ← sqlite (+ -wal/-shm)
- *   ~/.gemini/antigravity-cli/history.jsonl                       ← THE only JSONL
+ *   ~/.gemini/antigravity-cli/conversations/<id>.pb   ← OLD: ENCRYPTED, opaque
+ *   ~/.gemini/antigravity-cli/conversations/<id>.db   ← NEW: SQLite (plaintext
+ *                                                        protobuf) — DECODABLE
+ *   ~/.gemini/antigravity-cli/history.jsonl           ← flat log of USER prompts
  *
- * The full user+assistant conversation lives ONLY in the .pb/.db blobs — a
- * binary black box with no public protobuf schema and an internal,
- * version-fragile sqlite schema. We deliberately do NOT parse those (see #219:
- * Option B/C rejected — not worth the fragility for a chat preview).
+ * The full user+assistant conversation lives in the per-conversation files, not
+ * history.jsonl. As of ~2026-06-10 those are SQLite `.db` files whose
+ * `steps.step_payload` is plaintext protobuf and IS decodable — handled by the
+ * dedicated lib/antigravity-db-decoder.ts (#232), which supersedes the earlier
+ * "protobuf black box" conclusion (#219/#222). Only the OLD `.pb` files are
+ * genuinely encrypted/opaque.
  *
- * history.jsonl is a flat append-only log of USER prompts:
+ * THIS normalizer is the FALLBACK for agents with only old `.pb` conversations
+ * (no decodable `.db`). history.jsonl is a flat append-only log of USER prompts:
  *
  *   {display: "<the typed/injected user input>", timestamp: <ms epoch>,
  *    workspace: "/workspace", conversationId?: "<uuid>"}
  *
- * Every line is a user turn — there are no assistant/role/type fields. So this
- * normalizer maps each line to a USER message. KNOWN LIMITATION: assistant
- * responses are not rendered (they're in the .pb/.db black box). The chat
- * window shows the user's prompt history rather than a blank "No messages yet"
- * state; live assistant output remains visible in the terminal pane.
+ * Every line is a user turn — no assistant/role/type fields — so each maps to a
+ * USER message. For `.pb`-only agents the chat shows the user's prompt history
+ * rather than a blank state; live assistant output stays visible in the terminal
+ * pane. Current `.db` agents render both sides via the db decoder.
  *
  * Sister of lib/gemini-message-normalizer.ts / lib/codex-message-normalizer.ts;
  * signature kept identical so the chat dispatch (services/agents-chat-service.ts

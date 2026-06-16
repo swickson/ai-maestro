@@ -19,6 +19,7 @@ import { resolveActiveTranscript } from '@/lib/conversation-resolver'
 import { capturePaneFromContainer } from '@/lib/container-utils'
 import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
 import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
+import { loadNewestAntigravityConversation } from '@/lib/antigravity-db-decoder'
 import { normalizeCodexLine } from '@/lib/codex-message-normalizer'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -69,90 +70,112 @@ export async function getConversationMessages(
     }
   }
 
-  // Resolve the agent's ACTUAL current transcript via the shared resolver
-  // (prefers the hook's transcriptPath, rejects title-only stubs, reports
-  // pending when the current session's file isn't written yet) — same logic the
-  // live WS chat uses, so the two paths can't drift. See #195.
-  const resolved = resolveActiveTranscript(agent)
-  if (!resolved.path || !resolved.exists) {
-    return {
-      data: {
-        success: true,
-        messages: [],
-        conversationFile: null,
-        message: resolved.pending
-          ? 'Conversation transcript not yet available'
-          : 'No conversation files found'
-      },
-      status: 200
-    }
-  }
-
-  const currentConversation = { path: resolved.path, mtime: resolved.mtime as Date }
-
-  // Read and parse the JSONL file
-  const fileContent = fs.readFileSync(currentConversation.path, 'utf-8')
-  const lines = fileContent.split('\n').filter(line => line.trim())
-
   const sinceTime = since ? new Date(since).getTime() : 0
   const messages: any[] = []
   const program = cloudProgram(agent)
-  const isGemini = program === 'gemini'
-  const isAntigravity = program === 'antigravity'
-  const isCodex = program === 'codex'
+  let currentConversation: { path: string; mtime: Date } | null = null
 
-  for (const line of lines) {
-    try {
-      const raw = JSON.parse(line)
-
-      if (since && raw.timestamp) {
-        const msgTime = new Date(raw.timestamp).getTime()
-        if (msgTime <= sinceTime) continue
+  // Antigravity: decode the FULL (user + assistant + tool) conversation from
+  // the newest conversations/*.db (SQLite plaintext-protobuf, #232) as a
+  // DEDICATED source — kept separate from the generic JSONL resolver, which
+  // intentionally ignores .pb/.db and serves history.jsonl (user prompts only).
+  // Falls through to that JSONL user-prompt path below for old, encrypted
+  // .pb-only conversations that have no decodable .db.
+  if (program === 'antigravity') {
+    const decoded = loadNewestAntigravityConversation(path.join(conversationDir, 'conversations'))
+    if (decoded && decoded.messages.length > 0) {
+      currentConversation = { path: decoded.path, mtime: decoded.mtime }
+      for (const msg of decoded.messages) {
+        if (since && msg.timestamp && new Date(msg.timestamp).getTime() <= sinceTime) continue
+        messages.push(msg)
       }
+    }
+  }
 
-      if (isGemini) {
-        const normalized = normalizeGeminiLine(raw)
-        if (normalized) messages.push(normalized)
-        continue
+  if (!currentConversation) {
+    // Resolve the agent's ACTUAL current transcript via the shared resolver
+    // (prefers the hook's transcriptPath, rejects title-only stubs, reports
+    // pending when the current session's file isn't written yet) — same logic the
+    // live WS chat uses, so the two paths can't drift. See #195.
+    const resolved = resolveActiveTranscript(agent)
+    if (!resolved.path || !resolved.exists) {
+      return {
+        data: {
+          success: true,
+          messages: [],
+          conversationFile: null,
+          message: resolved.pending
+            ? 'Conversation transcript not yet available'
+            : 'No conversation files found'
+        },
+        status: 200
       }
+    }
 
-      if (isAntigravity) {
-        // Stub normalizer in v0.30.87 — returns null for every line until a
-        // logged-in cloud agent generates real conversation files we can spec.
-        // Follow-up PR slots a real implementation in once a sample lands.
-        const normalized = normalizeAntigravityLine(raw)
-        if (normalized) messages.push(normalized)
-        continue
-      }
+    currentConversation = { path: resolved.path, mtime: resolved.mtime as Date }
 
-      if (isCodex) {
-        // Codex rollout-*.jsonl: surface user/assistant message turns, skip
-        // session/turn/event metadata, reasoning, and tool-call items (#159).
-        const normalized = normalizeCodexLine(raw)
-        if (normalized) messages.push(normalized)
-        continue
-      }
+    // Read and parse the JSONL file
+    const fileContent = fs.readFileSync(currentConversation.path, 'utf-8')
+    const lines = fileContent.split('\n').filter(line => line.trim())
 
-      // Claude shape — preserve thinking-block extraction + raw message push
-      if (raw.type === 'assistant' && raw.message?.content) {
-        const content = raw.message.content
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === 'thinking' && block.thinking) {
-              messages.push({
-                type: 'thinking',
-                thinking: block.thinking,
-                timestamp: raw.timestamp,
-                uuid: raw.uuid
-              })
+    const isGemini = program === 'gemini'
+    const isAntigravity = program === 'antigravity'
+    const isCodex = program === 'codex'
+
+    for (const line of lines) {
+      try {
+        const raw = JSON.parse(line)
+
+        if (since && raw.timestamp) {
+          const msgTime = new Date(raw.timestamp).getTime()
+          if (msgTime <= sinceTime) continue
+        }
+
+        if (isGemini) {
+          const normalized = normalizeGeminiLine(raw)
+          if (normalized) messages.push(normalized)
+          continue
+        }
+
+        if (isAntigravity) {
+          // Fallback for old, encrypted .pb-only conversations (no decodable
+          // .db): history.jsonl yields USER prompts only. The assistant side
+          // for current .db conversations is handled by the dedicated decoder
+          // above (#232).
+          const normalized = normalizeAntigravityLine(raw)
+          if (normalized) messages.push(normalized)
+          continue
+        }
+
+        if (isCodex) {
+          // Codex rollout-*.jsonl: surface user/assistant message turns, skip
+          // session/turn/event metadata, reasoning, and tool-call items (#159).
+          const normalized = normalizeCodexLine(raw)
+          if (normalized) messages.push(normalized)
+          continue
+        }
+
+        // Claude shape — preserve thinking-block extraction + raw message push
+        if (raw.type === 'assistant' && raw.message?.content) {
+          const content = raw.message.content
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === 'thinking' && block.thinking) {
+                messages.push({
+                  type: 'thinking',
+                  thinking: block.thinking,
+                  timestamp: raw.timestamp,
+                  uuid: raw.uuid
+                })
+              }
             }
           }
         }
-      }
 
-      messages.push(raw)
-    } catch {
-      // Skip malformed lines
+        messages.push(raw)
+      } catch {
+        // Skip malformed lines
+      }
     }
   }
 

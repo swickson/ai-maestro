@@ -1,12 +1,13 @@
 /**
  * Antigravity (agy) history.jsonl normalizer (#219).
  *
- * Antigravity has no JSONL conversation transcript — the full convo is in
- * protobuf/sqlite blobs (black box). The only JSONL is history.jsonl, a flat
+ * This normalizer is the FALLBACK path for antigravity agents whose only
+ * conversation files are old, encrypted `.pb` blobs. history.jsonl is a flat
  * log of USER prompts: {display, timestamp, workspace, conversationId?}. These
  * tests pin the display→user mapping, the ms-epoch→ISO timestamp conversion,
  * and the skip rules (missing/blank display, non-object lines). Assistant turns
- * are intentionally unrepresented (documented limitation).
+ * are unrepresented HERE by design — current SQLite `.db` conversations render
+ * both sides via lib/antigravity-db-decoder.ts (#232).
  */
 
 import { describe, it, expect } from 'vitest'
