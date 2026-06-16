@@ -1023,7 +1023,15 @@ export async function routeMessage(
       }
       envelope.signature = body.signature
     } else {
-      console.log(`[AMP Route] No signature provided by ${envelope.from}`)
+      // #13: No signature on the envelope. The security model accepts unsigned
+      // envelopes from senders without a registered signing expectation — today
+      // that's gateway agents (Discord/Teams/…) that populate sender_public_key
+      // but don't yet sign outbound AMP (Part B wires gateway-side Ed25519
+      // signing, tracked cross-repo). Logged at info as EXPLICIT acceptance, not
+      // a warn. The `Invalid signature` warn above is deliberately reserved for a
+      // signature that IS present but fails verification, so a genuine failure is
+      // never masked by routine unsigned-gateway traffic.
+      console.log(`[AMP Route] Accepting unsigned envelope from ${envelope.from} (no signature provided)`)
     }
 
     // ── Provider Scope Check ───────────────────────────────────────────
