@@ -395,6 +395,13 @@ export interface AntigravityGenUsage {
   thinkingTokens: number
   /** Candidate-token field as stored (== output + thinking when present). */
   candidateTokens: number | null
+  /**
+   * Per-generation wall-clock timestamp (unix SECONDS) at `.1.9.4.1`, or null if
+   * absent. Lets a daily-spend consumer bucket each gen to its own event_date
+   * (a cascade can span days). Verified present + in-range + monotonic-within-db
+   * across 1594/1594 gens / 21 DBs (host + cloud), 2026-06-16.
+   */
+  tsSec: number | null
 }
 
 export interface AntigravityUsage {
@@ -422,6 +429,7 @@ export function extractGenUsage(payload: Buffer): AntigravityGenUsage | null {
     outputTokens: varintAtPath(payload, [1, 4, 9]) ?? 0,
     thinkingTokens: varintAtPath(payload, [1, 4, 10]) ?? 0,
     candidateTokens: varintAtPath(payload, [1, 4, 3]),
+    tsSec: varintAtPath(payload, [1, 9, 4, 1]),
   }
 }
 
@@ -438,6 +446,34 @@ export function usageIdentityRate(gens: AntigravityGenUsage[]): { checked: numbe
     if (g.candidateTokens === null) continue
     checked++
     if (g.candidateTokens === g.outputTokens + g.thinkingTokens) ok++
+  }
+  return { checked, ok }
+}
+
+// Plausible bounds for a per-gen UNIX-SECONDS timestamp. Deterministic (no
+// wall-clock dependence) so the guard is testable. Chosen to fail loud on every
+// realistic `.1.9.4.1` field-map drift: a MILLISECONDS value (~1.7e12) blows
+// past MAX, and a mis-read token-count (~1e4–1e6) falls below MIN — either way
+// the gen is flagged implausible instead of silently mis-dating spend.
+const PLAUSIBLE_TS_MIN_SEC = 1_577_836_800 // 2020-01-01T00:00:00Z
+const PLAUSIBLE_TS_MAX_SEC = 2_051_222_400 // 2035-01-01T00:00:00Z
+
+/**
+ * Per-gen timestamp sanity, parallel to `usageIdentityRate` but for `tsSec`.
+ * The additive-identity guard covers TOKEN fields, not the timestamp, so `ts`
+ * needs its own fail-loud check: a `.1.9.4.1` field-map drift (or a seconds↔ms
+ * unit slip) drops `ok` below `checked`, letting a daily-spend collector refuse
+ * per-day bucketing instead of mis-dating (e.g. a ms value → year ~58000, a
+ * token-count misread → 1970). Gens with null `tsSec` are not counted (absence
+ * is handled by the collector's deliberate fallback, not treated as drift).
+ */
+export function tsPlausibilityRate(gens: AntigravityGenUsage[]): { checked: number; ok: number } {
+  let checked = 0
+  let ok = 0
+  for (const g of gens) {
+    if (g.tsSec === null) continue
+    checked++
+    if (g.tsSec >= PLAUSIBLE_TS_MIN_SEC && g.tsSec <= PLAUSIBLE_TS_MAX_SEC) ok++
   }
   return { checked, ok }
 }
@@ -527,20 +563,34 @@ export function extractAntigravityUsage(dbPath: string): AntigravityUsage | null
  * `identityRate` rides IN the payload so the Python collector can assert
  * `ok === checked` before presenting spend (Part-2 carry-forward #1, satisfied
  * by construction). `sourcePath` echoes the input db path verbatim so every
- * emitted record is SELF-ATTRIBUTING — the collector's Smart Attribution parses
- * agent-id/root from it to tenant correctly and to deliberately EXCLUDE
- * bind-mounted foreign-agent dbs (e.g. a cloud agent's app-data mounted onto a
- * host would otherwise mis-tenant + double-count). The wrapper does NO tenancy
- * parsing itself — it only echoes. Field names are the locked wire shape — do
- * NOT rename without re-locking with the Ziggy side.
+ * emitted record is SELF-ATTRIBUTING. The aggregator is DUMB — it collects every
+ * token from every agent under both roots and does NO filtering/exclusion; the
+ * DB/dashboard does ALL attribution + scoping by agent/project. So `sourcePath`
+ * is for (1) cross-host DEDUP via its stable suffix (agent-uuid + conversation-
+ * uuid; same bind-mounted .db seen on two hosts collapses on ON CONFLICT) and
+ * (2) DB-side per-agent attribution — NOT a gate and NOT exclusion. The wrapper
+ * does NO tenancy parsing — it only echoes. Field names are the locked wire
+ * shape — do NOT rename without re-locking with the Ziggy side.
  */
 export interface AntigravityUsageContract {
   /** The db path this record was decoded from, echoed verbatim (self-attribution). */
   sourcePath: string
   model: string | null
-  gens: Array<{ input: number; output: number; thinking: number }>
+  /**
+   * Per-generation token counts. `ts` is the gen's unix-SECONDS timestamp (or
+   * null if absent) — additive field (2026-06-16) so a daily-spend consumer can
+   * bucket each gen to its own event_date instead of mis-dating a multi-day
+   * cascade onto one date. Backward-compatible: prior consumers ignore it.
+   */
+  gens: Array<{ input: number; output: number; thinking: number; ts: number | null }>
   totals: { input: number; output: number; thinking: number }
   identityRate: { checked: number; ok: number }
+  /**
+   * Per-gen `ts` sanity (parallel to identityRate, for the timestamp). Rides in
+   * the payload so the collector asserts `ok === checked` before trusting `ts`
+   * for per-day bucketing — a `.1.9.4.1` drift / sec↔ms slip fails loud here.
+   */
+  tsPlausibilityRate: { checked: number; ok: number }
 }
 
 /**
@@ -556,6 +606,7 @@ export function toUsageContract(usage: AntigravityUsage, sourcePath: string): An
       input: g.inputTokens,
       output: g.outputTokens,
       thinking: g.thinkingTokens,
+      ts: g.tsSec,
     })),
     totals: {
       input: usage.totals.inputTokens,
@@ -563,6 +614,7 @@ export function toUsageContract(usage: AntigravityUsage, sourcePath: string): An
       thinking: usage.totals.thinkingTokens,
     },
     identityRate: usageIdentityRate(usage.generations),
+    tsPlausibilityRate: tsPlausibilityRate(usage.generations),
   }
 }
 

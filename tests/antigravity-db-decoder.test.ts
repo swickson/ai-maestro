@@ -24,18 +24,23 @@ import {
   extractGenUsage,
   extractAntigravityUsage,
   usageIdentityRate,
+  tsPlausibilityRate,
   toUsageContract,
 } from '@/lib/antigravity-db-decoder'
 
 // ── minimal protobuf wire encoder (mirrors the real on-disk shape) ───────────
 
 function encodeVarint(n: number): Buffer {
+  // BigInt-accumulated so values > 2^32 (e.g. a millisecond-scale timestamp)
+  // encode faithfully — a `>>>= 7` / `& 0x7f` encoder silently coerces through
+  // uint32 and would mis-encode the seconds-vs-ms drift fixture (Columbo #238).
   const out: number[] = []
-  while (n > 0x7f) {
-    out.push((n & 0x7f) | 0x80)
-    n >>>= 7
+  let v = BigInt(n)
+  while (v > 0x7fn) {
+    out.push(Number(v & 0x7fn) | 0x80)
+    v >>= 7n
   }
-  out.push(n & 0x7f)
+  out.push(Number(v & 0x7fn))
   return Buffer.from(out)
 }
 
@@ -74,18 +79,20 @@ function varintField(field: number, n: number): Buffer {
 
 // gen_metadata.data layout (token accounting):
 //   .1.4.2 = input ; .1.4.3 = candidate (== .9 + .10) ; .1.4.9 = output ; .1.4.10 = thinking
-//   .3.28 = model id ; .1.21 = model display name
+//   .1.9.4.1 = per-gen unix-seconds timestamp ; .3.28 = model id ; .1.21 = model display name
 // `candidate` defaults to output + thinking (the real on-disk invariant); pass an
 // explicit value to simulate a format drift that breaks the additive identity.
+// `tsSec` omitted ⇒ no .1.9.4.1 emitted (exercises the null-timestamp path).
 function genMetadataPayload(opts: {
   input: number
   output: number
   thinking: number
   candidate?: number
+  tsSec?: number
   modelId?: string
   modelDisplay?: string
 }): Buffer {
-  const { input, output, thinking, modelId, modelDisplay } = opts
+  const { input, output, thinking, tsSec, modelId, modelDisplay } = opts
   const candidate = opts.candidate ?? output + thinking
   const usageInner = Buffer.concat([
     varintField(2, input),
@@ -94,6 +101,8 @@ function genMetadataPayload(opts: {
     varintField(10, thinking),
   ])
   const field1Parts = [lenDelim(4, usageInner)]
+  // .1.9.4.1 — nested .9 > .4 > .1 varint (per-gen timestamp)
+  if (tsSec !== undefined) field1Parts.push(lenDelim(9, lenDelim(4, varintField(1, tsSec))))
   if (modelDisplay) field1Parts.push(strField(21, modelDisplay))
   const parts = [lenDelim(1, Buffer.concat(field1Parts))]
   if (modelId) parts.push(lenDelim(3, strField(28, modelId)))
@@ -247,13 +256,20 @@ describe('findNewestAntigravityDb / loadNewestAntigravityConversation (#232)', (
 
 describe('extractGenUsage / extractAntigravityUsage — token accounting', () => {
   it('maps the gen_metadata token fields (.1.4.2/.9/.10) to input/output/thinking', () => {
-    const usage = extractGenUsage(genMetadataPayload({ input: 21641, output: 195, thinking: 58 }))
+    const usage = extractGenUsage(genMetadataPayload({ input: 21641, output: 195, thinking: 58, tsSec: 1780940507 }))
     expect(usage).not.toBeNull()
     expect(usage!.inputTokens).toBe(21641)
     expect(usage!.outputTokens).toBe(195)
     expect(usage!.thinkingTokens).toBe(58)
     // .1.4.3 candidate defaults to output + thinking — the on-disk invariant.
     expect(usage!.candidateTokens).toBe(195 + 58)
+    // .1.9.4.1 per-gen unix-seconds timestamp.
+    expect(usage!.tsSec).toBe(1780940507)
+  })
+
+  it('tsSec is null when .1.9.4.1 is absent (graceful, not 0)', () => {
+    const usage = extractGenUsage(genMetadataPayload({ input: 100, output: 10, thinking: 5 }))
+    expect(usage!.tsSec).toBeNull()
   })
 
   it('returns null for a blob with no input-token field', () => {
@@ -322,28 +338,37 @@ describe('extractGenUsage / extractAntigravityUsage — token accounting', () =>
     // Locked 2026-06-16 with KAI + Sam — the exact JSON the Ziggy Python leg
     // consumes. Field names + structure must not drift without re-locking.
     const dbPath = writeGenDb('contract.db', [
-      genMetadataPayload({ input: 21641, output: 195, thinking: 58, modelId: 'gemini-3.5-flash-low' }),
-      genMetadataPayload({ input: 10128, output: 253, thinking: 68, modelId: 'gemini-3.5-flash-low' }),
+      genMetadataPayload({ input: 21641, output: 195, thinking: 58, tsSec: 1780940507, modelId: 'gemini-3.5-flash-low' }),
+      genMetadataPayload({ input: 10128, output: 253, thinking: 68, tsSec: 1780940999, modelId: 'gemini-3.5-flash-low' }),
     ])
     const contract = toUsageContract(extractAntigravityUsage(dbPath)!, dbPath)
     expect(contract).toEqual({
       sourcePath: dbPath,
       model: 'gemini-3.5-flash-low',
       gens: [
-        { input: 21641, output: 195, thinking: 58 },
-        { input: 10128, output: 253, thinking: 68 },
+        { input: 21641, output: 195, thinking: 58, ts: 1780940507 },
+        { input: 10128, output: 253, thinking: 68, ts: 1780940999 },
       ],
       totals: { input: 21641 + 10128, output: 195 + 253, thinking: 58 + 68 },
       identityRate: { checked: 2, ok: 2 },
+      tsPlausibilityRate: { checked: 2, ok: 2 },
     })
     // The shape carries exactly these top-level keys — guards against silent additions.
-    expect(Object.keys(contract).sort()).toEqual(['gens', 'identityRate', 'model', 'sourcePath', 'totals'])
+    expect(Object.keys(contract).sort()).toEqual([
+      'gens',
+      'identityRate',
+      'model',
+      'sourcePath',
+      'totals',
+      'tsPlausibilityRate',
+    ])
   })
 
   it('toUsageContract echoes sourcePath verbatim (no resolution) for collector attribution', () => {
-    // The cross-tenant hazard fix: every record self-attributes via the raw path
-    // it was decoded from, incl. a bind-mounted foreign-agent path the collector
-    // must be able to recognize and EXCLUDE. The wrapper must not normalize it.
+    // Every record self-attributes via the raw path it was decoded from (incl. a
+    // bind-mounted foreign-agent path) so the collector can DEDUP across hosts
+    // (stable agent-uuid + conv-uuid suffix) and the DB can attribute per-agent —
+    // NOT exclude. The wrapper must not normalize the path.
     const dbPath = writeGenDb('attrib.db', [genMetadataPayload({ input: 100, output: 10, thinking: 5 })])
     const foreignLikePath = '/home/gosub/.aimaestro/agents/d22088ae-foreign/antigravity-app-data/conversations/x.db'
     expect(toUsageContract(extractAntigravityUsage(dbPath)!, foreignLikePath).sourcePath).toBe(foreignLikePath)
@@ -356,5 +381,32 @@ describe('extractGenUsage / extractAntigravityUsage — token accounting', () =>
     ])
     const contract = toUsageContract(extractAntigravityUsage(dbPath)!, dbPath)
     expect(contract.identityRate).toEqual({ checked: 2, ok: 1 })
+  })
+
+  it('tsPlausibilityRate fails loud on a seconds↔ms unit slip / .1.9.4.1 drift', () => {
+    // ts MUST be unix SECONDS. A plausible in-range secs value passes; a ms-scale
+    // value (what a unit slip or field-map drift would surface) is flagged, so a
+    // daily-spend collector refuses per-day bucketing instead of mis-dating.
+    const goodSec = 1780940507 // 2026-06-08 (seconds)
+    const msSlip = 1780940507000 // same instant in MILLISECONDS → year ~58361, implausible
+    const dbPath = writeGenDb('ts-drift.db', [
+      genMetadataPayload({ input: 100, output: 10, thinking: 5, tsSec: goodSec }),
+      genMetadataPayload({ input: 100, output: 10, thinking: 5, tsSec: msSlip }),
+      genMetadataPayload({ input: 100, output: 10, thinking: 5 }), // null ts → not counted
+    ])
+    const gens = extractAntigravityUsage(dbPath)!.generations
+    // The ms value must round-trip FAITHFULLY (not uint32-wrapped) so this proves
+    // the guard catches a genuine seconds↔ms wire value, not a coincidentally
+    // out-of-range wrapped one (Columbo #238).
+    expect(gens[0].tsSec).toBe(goodSec)
+    expect(gens[1].tsSec).toBe(msSlip)
+    expect(gens[2].tsSec).toBeNull()
+    // 2 gens carry ts (sec + ms); only the seconds one is plausible.
+    expect(tsPlausibilityRate(gens)).toEqual({ checked: 2, ok: 1 })
+    // Travels in the contract so the Python collector can assert it.
+    expect(toUsageContract(extractAntigravityUsage(dbPath)!, dbPath).tsPlausibilityRate).toEqual({
+      checked: 2,
+      ok: 1,
+    })
   })
 })
