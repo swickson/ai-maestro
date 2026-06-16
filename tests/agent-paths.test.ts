@@ -72,7 +72,7 @@ describe('resolveConversationDir', () => {
     )
   })
 
-  it('cloud Antigravity agent: derives from per-agent antigravity-app-data/conversations path (kanban 49cc27d7, single-dir OPT-B mount)', () => {
+  it('cloud Antigravity agent: derives from per-agent antigravity-app-data ROOT, not conversations/ (#219 — history.jsonl lives at root; conversations/ is .pb/.db black box)', () => {
     const agent = {
       id: 'b1c2d3e4-fake-uuid-antigravity-pilot',
       program: 'antigravity',
@@ -87,9 +87,11 @@ describe('resolveConversationDir', () => {
         'agents',
         'b1c2d3e4-fake-uuid-antigravity-pilot',
         'antigravity-app-data',
-        'conversations',
       ),
     )
+    // Explicitly NOT the conversations/ subdir (the old stub target) — that
+    // holds only protobuf/sqlite blobs the .jsonl scanner can't read.
+    expect(dir).not.toMatch(/conversations$/)
   })
 
   it('cloud Codex agent: derives from per-agent codex-app-data/sessions path (kanban 01e11bf9, single-dir OPT-B mount)', () => {
