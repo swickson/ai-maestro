@@ -55,6 +55,39 @@ export interface AgentDirectory {
 }
 
 // ============================================================================
+// Directory Keying (#42)
+// ============================================================================
+
+// Canonical entry key. agentId (a globally-unique UUID) is the only collision-
+// free key — agent names (and even hostId:name) collide across hosts and churn
+// on rename/recreate, which silently shadowed one agent's identity behind
+// another's under the old name-keyed map (#42; e.g. milo-dock "Antonia" vs
+// holmes "Watson", both named dev-aimaestro-holmes). Entries without an agentId
+// (legacy / non-AMP-registered) fall back to a hostId:name composite, which is
+// at least per-host unique.
+function entryKey(e: { agentId?: string; hostId: string; name: string }): string {
+  if (e.agentId) return e.agentId
+  return `${normalizeHostId(e.hostId)}:${(e.name || '').toLowerCase()}`
+}
+
+// Re-key an entries map to canonical keys. Idempotent, and the load-time
+// backward-compat bridge: it transparently converts an OLD name-keyed map to
+// the new agentId-keyed shape on read, so a host running new code reads BOTH
+// shapes (its own freshly-migrated file AND any older file). Sync transmits
+// entry VALUES (not keys) and the receiver re-keys, so the on-disk key shape
+// never crosses hosts — old-code peers keep working during a staggered rollout.
+function migrateToCanonicalKeys(directory: AgentDirectory): AgentDirectory {
+  if (!directory.entries) return directory
+  const rekeyed: Record<string, AgentDirectoryEntry> = {}
+  for (const entry of Object.values(directory.entries)) {
+    if (!entry || typeof entry !== 'object' || !entry.name) continue
+    rekeyed[entryKey(entry)] = entry
+  }
+  directory.entries = rekeyed
+  return directory
+}
+
+// ============================================================================
 // Directory Storage
 // ============================================================================
 
@@ -92,7 +125,9 @@ function loadDirectory(): AgentDirectory {
 
   try {
     const data = fs.readFileSync(DIRECTORY_FILE, 'utf-8')
-    directoryCache = JSON.parse(data)
+    // #42: re-key to canonical (agentId) shape on load — transparently migrates
+    // an old name-keyed file and is idempotent for an already-migrated one.
+    directoryCache = migrateToCanonicalKeys(JSON.parse(data))
     cacheTimestamp = Date.now()
     return directoryCache!
   } catch (error) {
@@ -145,21 +180,24 @@ export function rebuildLocalDirectory(): AgentDirectory {
   const agents = loadAgents()
   const selfHostId = normalizeHostId(getSelfHostId())
 
-  // Remove stale local entries
-  for (const [name, entry] of Object.entries(directory.entries)) {
+  // Remove stale local entries (key-agnostic — match by stored identity, #42).
+  for (const [key, entry] of Object.entries(directory.entries)) {
     if (entry.source === 'local' && entry.hostId === selfHostId) {
-      // Check if agent still exists locally
+      // Check if agent still exists locally (by id when known, else by name).
       const stillExists = agents.some(a =>
-        (a.name || a.alias)?.toLowerCase() === name.toLowerCase() &&
-        normalizeHostId(a.hostId) === selfHostId
+        normalizeHostId(a.hostId) === selfHostId &&
+        (entry.agentId
+          ? a.id === entry.agentId
+          : (a.name || a.alias)?.toLowerCase() === entry.name.toLowerCase())
       )
       if (!stillExists) {
-        delete directory.entries[name]
+        delete directory.entries[key]
       }
     }
   }
 
-  // Add/update local agents
+  // Add/update local agents, keyed canonically (agentId) so same-named agents
+  // on different hosts never shadow each other (#42).
   for (const agent of agents) {
     const name = (agent.name || agent.alias)?.toLowerCase()
     if (!name) continue
@@ -167,7 +205,7 @@ export function rebuildLocalDirectory(): AgentDirectory {
     const hostId = normalizeHostId(agent.hostId)
     if (hostId !== selfHostId) continue  // Only local agents
 
-    directory.entries[name] = {
+    const newEntry: AgentDirectoryEntry = {
       agentId: agent.id,
       name,
       label: agent.label || undefined,
@@ -178,6 +216,7 @@ export function rebuildLocalDirectory(): AgentDirectory {
       lastSeen: new Date().toISOString(),
       source: 'local'
     }
+    directory.entries[entryKey(newEntry)] = newEntry
   }
 
   saveDirectory(directory)
@@ -185,19 +224,49 @@ export function rebuildLocalDirectory(): AgentDirectory {
 }
 
 /**
- * Look up an agent in the directory
+ * Look up an agent in the directory by name, optionally disambiguated by host.
+ *
+ * Since the map is now agentId-keyed (#42), a name can legitimately match
+ * MULTIPLE entries (same name on different hosts). With `hostId` given, returns
+ * the unique host-qualified match. Without it, returns the sole match, or null
+ * when the name is AMBIGUOUS across hosts — callers that need a specific one
+ * must pass hostId. Use `lookupAgentsByName` to see all matches.
  */
-export function lookupAgent(name: string): AgentDirectoryEntry | null {
-  const directory = loadDirectory()
-  const normalizedName = name.toLowerCase()
-  return directory.entries[normalizedName] || null
+export function lookupAgent(name: string, hostId?: string): AgentDirectoryEntry | null {
+  const matches = lookupAgentsByName(name)
+  if (hostId) {
+    const h = normalizeHostId(hostId)
+    return matches.find(e => normalizeHostId(e.hostId) === h) || null
+  }
+  if (matches.length === 1) return matches[0]
+  if (matches.length > 1) {
+    console.warn(
+      `[Agent Directory] Ambiguous name "${name}" matches ${matches.length} agents across hosts ` +
+      `(${matches.map(e => e.hostId).join(', ')}); pass hostId to disambiguate.`
+    )
+    return null
+  }
+  return null
 }
 
 /**
- * Look up an agent in the directory by UUID
+ * All directory entries matching a name (across hosts). Surfaces collisions
+ * instead of silently shadowing them (#42).
+ */
+export function lookupAgentsByName(name: string): AgentDirectoryEntry[] {
+  const directory = loadDirectory()
+  const normalizedName = name.toLowerCase()
+  return Object.values(directory.entries).filter(e => e.name.toLowerCase() === normalizedName)
+}
+
+/**
+ * Look up an agent in the directory by UUID. O(1) for agentId-keyed entries;
+ * falls back to a scan for legacy composite-keyed ones.
  */
 export function lookupAgentById(agentId: string): AgentDirectoryEntry | null {
   const directory = loadDirectory()
+  const direct = directory.entries[agentId]
+  if (direct && direct.agentId === agentId) return direct
   for (const entry of Object.values(directory.entries)) {
     if (entry.agentId === agentId) return entry
   }
@@ -211,36 +280,44 @@ export function lookupAgentById(agentId: string): AgentDirectoryEntry | null {
 export function registerRemoteAgent(entry: Omit<AgentDirectoryEntry, 'source' | 'lastSeen'>): boolean {
   const directory = loadDirectory()
   const normalizedName = entry.name.toLowerCase()
-
-  // Don't overwrite local entries with remote ones
-  const existing = directory.entries[normalizedName]
-  if (existing && existing.source === 'local') {
-    console.log(`[Agent Directory] Skipping remote update for local agent: ${normalizedName}`)
-    return false
-  }
-
-  directory.entries[normalizedName] = {
+  const newEntry: AgentDirectoryEntry = {
     ...entry,
     name: normalizedName,
     lastSeen: new Date().toISOString(),
     source: 'remote'
   }
+  const key = entryKey(newEntry)
 
+  // Don't overwrite a LOCAL entry for the SAME agent (same canonical key) with a
+  // remote one. Keying by agentId means a remote agent that merely shares a NAME
+  // with a local agent on this host now gets its own key and coexists, instead
+  // of being silently dropped by the old name-collision guard (#42).
+  const existing = directory.entries[key]
+  if (existing && existing.source === 'local') {
+    console.log(`[Agent Directory] Skipping remote update for local agent: ${key}`)
+    return false
+  }
+
+  directory.entries[key] = newEntry
   return saveDirectory(directory)
 }
 
 /**
  * Remove an agent from the directory
  */
-export function unregisterAgent(name: string): boolean {
+export function unregisterAgent(name: string, hostId?: string): boolean {
   const directory = loadDirectory()
   const normalizedName = name.toLowerCase()
+  const h = hostId ? normalizeHostId(hostId) : undefined
 
-  if (!directory.entries[normalizedName]) {
-    return false
-  }
+  // Find every key whose entry matches the name (+ host when given). Without a
+  // host, an ambiguous name removes all matches (caller didn't disambiguate).
+  const keys = Object.entries(directory.entries)
+    .filter(([, e]) => e.name.toLowerCase() === normalizedName && (!h || normalizeHostId(e.hostId) === h))
+    .map(([k]) => k)
 
-  delete directory.entries[normalizedName]
+  if (keys.length === 0) return false
+  for (const k of keys) delete directory.entries[k]
   return saveDirectory(directory)
 }
 
@@ -316,7 +393,14 @@ export async function syncWithPeers(timeout: number = 5000): Promise<{
         for (const entry of data.entries) {
           // Only import entries from the peer's local agents
           if (entry.source === 'local' && entry.hostId === host.id) {
-            const existing = lookupAgent(entry.name)
+            // Existence check by agentId (#42) — a local agent that merely
+            // SHARES A NAME with this remote one must not block its import
+            // (the old lookupAgent(name) guard silently shadowed cross-host
+            // same-named agents). Fall back to host-qualified name when the
+            // peer entry has no agentId.
+            const existing = entry.agentId
+              ? lookupAgentById(entry.agentId)
+              : lookupAgent(entry.name, entry.hostId)
             if (!existing || existing.source === 'remote') {
               registerRemoteAgent({
                 agentId: entry.agentId,

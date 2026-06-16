@@ -1594,15 +1594,35 @@ describe('provisionCloudGeminiAuth', () => {
     expect(body.token_type).toBe('Bearer')
   })
 
-  it('seeds empty {} when host has no oauth_creds.json (first-time setup case)', () => {
+  it('leaves oauth_creds.json ABSENT when host has no creds so Gemini shows its auth picker (#209)', () => {
     const { authPath, bootstrapped } = provisionCloudGeminiAuth(uuid, tmpHome)
     expect(bootstrapped).toBe(false)
-    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toEqual({})
+    // #209: no empty-{} placeholder — an absent file lets the Gemini CLI fall
+    // through to its first-run OAuth picker instead of hitting a malformed cred.
+    expect(fs.existsSync(authPath)).toBe(false)
   })
 
   it('writes the seeded file with restrictive 0600 perms', () => {
+    const hostGeminiDir = path.join(tmpHome, '.gemini')
+    fs.mkdirSync(hostGeminiDir, { recursive: true })
+    fs.writeFileSync(path.join(hostGeminiDir, 'oauth_creds.json'),
+      '{"access_token":"ya29.x"}\n', { mode: 0o600 })
     const { authPath } = provisionCloudGeminiAuth(uuid, tmpHome)
     expect(fs.statSync(authPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('still re-seeds from host on a later run after the operator runs gemini login (absent-dest is seedable, #209)', () => {
+    // First provision with no host login → oauth_creds.json absent (no placeholder).
+    provisionCloudGeminiAuth(uuid, tmpHome)
+    expect(fs.existsSync(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'gemini-oauth-creds.json'))).toBe(false)
+    // Operator runs `gemini` + completes OAuth on the host, then a /recreate re-provisions.
+    const hostGeminiDir = path.join(tmpHome, '.gemini')
+    fs.mkdirSync(hostGeminiDir, { recursive: true })
+    fs.writeFileSync(path.join(hostGeminiDir, 'oauth_creds.json'),
+      '{"access_token":"ya29.host-after-login"}\n', { mode: 0o600 })
+    const { authPath, bootstrapped } = provisionCloudGeminiAuth(uuid, tmpHome)
+    expect(bootstrapped).toBe(true)
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).access_token).toBe('ya29.host-after-login')
   })
 
   it('preserves existing per-agent gemini-oauth-creds.json across re-runs (per-agent rotation independence)', () => {

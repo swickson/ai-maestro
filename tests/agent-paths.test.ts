@@ -32,6 +32,48 @@ describe('resolveConversationDir', () => {
     expect(dir).toBe(path.join(HOST_HOME, '.claude', 'projects', '-home-operator-code-n4-armory'))
   })
 
+  it('host ANTIGRAVITY agent: resolves to operator ~/.gemini/antigravity-cli, NOT ~/.claude/projects (local-antigravity bug, host-branch counterpart to #219)', () => {
+    const agent = {
+      id: 'a499e31a-fake-ginger',
+      program: 'antigravity',
+      workingDirectory: '/home/operator/Documents/Development/n4safety-app',
+      deployment: { type: 'local' as const },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    expect(dir).toBe(path.join(HOST_HOME, '.gemini', 'antigravity-cli'))
+    expect(dir).not.toMatch(/\.claude\/projects/)
+  })
+
+  it('host antigravity resolves even without a workingDirectory (history.jsonl is not cwd-keyed)', () => {
+    const agent = { id: 'g2', program: 'antigravity', deployment: { type: 'local' as const } }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.gemini', 'antigravity-cli'))
+  })
+
+  it('host CODEX agent: resolves to operator ~/.codex/sessions, NOT ~/.claude/projects (host-codex bug, #225)', () => {
+    const agent = {
+      id: '537a41e8-fake-builder',
+      program: 'codex',
+      workingDirectory: '/home/operator/Documents/Development/n4safety-app',
+      deployment: { type: 'local' as const },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    // recursive date-nested rollout scan is applied downstream by resolveActiveTranscript
+    expect(dir).toBe(path.join(HOST_HOME, '.codex', 'sessions'))
+    expect(dir).not.toMatch(/\.claude\/projects/)
+  })
+
+  it('host codex resolves even without a workingDirectory (rollouts live under ~/.codex/sessions, not cwd-keyed)', () => {
+    const agent = { id: 'c2', program: 'codex', deployment: { type: 'local' as const } }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.codex', 'sessions'))
+  })
+
+  it('host CLAUDE path is unchanged by the program switch (regression guard for #223/#225)', () => {
+    const agent = { id: 'h1', workingDirectory: '/home/operator/code/x', deployment: { type: 'local' as const } }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.claude', 'projects', '-home-operator-code-x'))
+    // a host claude agent with no workingDirectory still returns null
+    expect(resolveConversationDir({ id: 'h2', deployment: { type: 'local' as const } }, HOST_HOME)).toBeNull()
+  })
+
   it('cloud agent: derives from per-agent host path + CONTAINER_CWD_ENCODED, ignores host workingDirectory', () => {
     const agent = {
       id: '70b119e9-5793-44f5-b891-229aa330ff1c',
@@ -72,7 +114,7 @@ describe('resolveConversationDir', () => {
     )
   })
 
-  it('cloud Antigravity agent: derives from per-agent antigravity-app-data/conversations path (kanban 49cc27d7, single-dir OPT-B mount)', () => {
+  it('cloud Antigravity agent: derives from per-agent antigravity-app-data ROOT, not conversations/ (#219 — history.jsonl lives at root; conversations/ is .pb/.db black box)', () => {
     const agent = {
       id: 'b1c2d3e4-fake-uuid-antigravity-pilot',
       program: 'antigravity',
@@ -87,9 +129,11 @@ describe('resolveConversationDir', () => {
         'agents',
         'b1c2d3e4-fake-uuid-antigravity-pilot',
         'antigravity-app-data',
-        'conversations',
       ),
     )
+    // Explicitly NOT the conversations/ subdir (the old stub target) — that
+    // holds only protobuf/sqlite blobs the .jsonl scanner can't read.
+    expect(dir).not.toMatch(/conversations$/)
   })
 
   it('cloud Codex agent: derives from per-agent codex-app-data/sessions path (kanban 01e11bf9, single-dir OPT-B mount)', () => {

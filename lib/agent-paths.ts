@@ -93,15 +93,19 @@ export function resolveConversationDir(
         // value from ~/.gemini/projects.json (CONTAINER_CWD_GEMINI_PROJECT).
         return path.join(agentDir, 'gemini-chats')
       case 'antigravity':
-        // Antigravity (agy) writes conversation JSONL under
-        // ~/.gemini/antigravity-cli/conversations/. The whole antigravity-cli/
-        // dir is bind-mounted single-source (OPT-B) at
-        // <agentDir>/antigravity-app-data/ → /home/claude/.gemini/antigravity-cli/.
-        // Returns the conversations subdir so the chat-history reader scans
-        // matching files. Format normalization is currently a stub in
-        // lib/antigravity-message-normalizer.ts — real implementation lands
-        // once a logged-in cloud agent generates sample conversation files.
-        return path.join(agentDir, 'antigravity-app-data', 'conversations')
+        // Antigravity (agy) does NOT write a JSONL conversation transcript.
+        // Empirically (han cloud agent, #219): conversations/ holds only
+        // <conversationId>.pb (protobuf) + .db (sqlite WAL) blobs — a binary
+        // black box with no public schema. The ONLY JSONL is history.jsonl at
+        // the antigravity-app-data ROOT, a flat log of USER prompts
+        // ({display, timestamp, workspace, conversationId?}); assistant
+        // responses live only in the .pb/.db black box. So return the ROOT dir
+        // (single .jsonl there) — the flat scan picks history.jsonl and
+        // normalizeAntigravityLine renders the user turns. Assistant-side is a
+        // documented known limitation (lib/antigravity-message-normalizer.ts).
+        // The whole antigravity-cli/ dir is bind-mounted single-source (OPT-B)
+        // at <agentDir>/antigravity-app-data/ → /home/claude/.gemini/antigravity-cli/.
+        return path.join(agentDir, 'antigravity-app-data')
       case 'codex':
         // Codex writes conversation transcripts as rollout-*.jsonl under
         // ~/.codex/sessions/<YYYY>/<MM>/<DD>/. The whole ~/.codex tree is
@@ -116,10 +120,43 @@ export function resolveConversationDir(
         return path.join(agentDir, 'claude-projects', CONTAINER_CWD_ENCODED)
     }
   }
-  const workingDir = resolveHostWorkingDir(agent)
-  if (!workingDir) return null
-  const projectDirName = workingDir.replace(/\//g, '-')
-  return path.join(hostHome, '.claude', 'projects', projectDirName)
+  // Host (non-cloud) agents run as the operator, so non-Claude programs write
+  // their transcripts to the operator's OWN cli tree — NOT ~/.claude/projects.
+  // Mirror the cloud branch's per-program resolution against the host $HOME.
+  // Without this, every non-Claude local agent resolved to an empty/wrong
+  // ~/.claude/projects dir and the chat window stayed blank (#223/#225, the
+  // host-branch counterparts to the cloud #219 fix).
+  switch (cloudProgram(agent)) {
+    case 'antigravity':
+      // ~/.gemini/antigravity-cli/history.jsonl — a shared operator dir (not
+      // cwd-keyed, not per-agent; local agents share it). USER-PROMPTS-ONLY +
+      // protobuf-blackbox assistant limitation, same as cloud #219/#223.
+      return path.join(hostHome, '.gemini', 'antigravity-cli')
+    case 'codex':
+      // ~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl (#225). Recursion is
+      // applied by resolveActiveTranscript (recursive = codex), so the nested
+      // date dirs are scanned. Renders BOTH user + assistant turns — codex,
+      // unlike antigravity, is not a black box.
+      // LIMITATION: ~/.codex is the operator's SHARED dir; selectTranscriptFile
+      // picks the newest-mtime rollout, which could belong to a different host
+      // codex session if the operator runs codex in another cwd. Empirically the
+      // recent rollouts all carry the agent's cwd (verified vs dev-n4safety-builder),
+      // and session_meta.payload.cwd is recorded — so cwd-pinned selection is a
+      // feasible future refinement if cross-session bleed becomes a problem.
+      return path.join(hostHome, '.codex', 'sessions')
+    // NOTE: host GEMINI (~/.gemini/tmp/<project>/chats/session-*.jsonl) has the
+    // same blind spot, but the project key is the literal from ~/.gemini/projects.json
+    // (cwd-derived on host, NOT the cloud's fixed 'workspace'), and there is no
+    // local gemini agent to verify the end-to-end resolution against. Left as a
+    // thin follow-up rather than ship an unverified path (#225 scope note).
+    case 'claude':
+    default: {
+      const workingDir = resolveHostWorkingDir(agent)
+      if (!workingDir) return null
+      const projectDirName = workingDir.replace(/\//g, '-')
+      return path.join(hostHome, '.claude', 'projects', projectDirName)
+    }
+  }
 }
 
 // Mirrors the hashCwd implementations at services/agents-chat-service.ts:25,

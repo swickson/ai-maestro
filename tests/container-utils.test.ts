@@ -43,7 +43,7 @@ vi.mock('util', async () => {
   }
 })
 
-import { cancelCopyModeInContainer, removeContainer } from '@/lib/container-utils'
+import { cancelCopyModeInContainer, removeContainer, sendKeysToContainer } from '@/lib/container-utils'
 
 describe('cancelCopyModeInContainer', () => {
   beforeEach(() => {
@@ -205,5 +205,59 @@ describe('CONTAINER_CWD constants', () => {
       typeof import('@/lib/container-utils')
     >('@/lib/container-utils')
     expect(CONTAINER_CWD_ENCODED).toBe(CONTAINER_CWD.replace(/\//g, '-'))
+  })
+})
+
+describe('sendKeysToContainer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('sends literal text then a separate Enter, in order (text before submit)', async () => {
+    const calls: string[] = []
+    mockExec.mockImplementation((cmd: string, cb: Function) => {
+      calls.push(cmd)
+      cb(null, '', '')
+    })
+
+    await sendKeysToContainer('aim-test', 'test-session', 'hello world', { enter: true })
+
+    // Two execs: the literal text, then Enter — the gap between them lets the
+    // in-container TUI process the text before the submit (issue #159).
+    expect(calls.length).toBe(2)
+    expect(calls[0]).toContain('send-keys')
+    expect(calls[0]).toContain('-l ')
+    expect(calls[0]).toContain("'hello world'")
+    expect(calls[0]).toContain("'test-session:0.0'")
+    expect(calls[1]).toContain('send-keys')
+    expect(calls[1]).toContain(' Enter')
+    expect(calls[1]).not.toContain('-l ')
+  })
+
+  it('does not send a trailing Enter when enter is not set', async () => {
+    const calls: string[] = []
+    mockExec.mockImplementation((cmd: string, cb: Function) => {
+      calls.push(cmd)
+      cb(null, '', '')
+    })
+
+    await sendKeysToContainer('aim-test', 'test-session', 'no submit', {})
+
+    expect(calls.length).toBe(1)
+    expect(calls[0]).toContain("'no submit'")
+    expect(calls[0]).not.toContain(' Enter')
+  })
+
+  it('shell-quotes container and session names', async () => {
+    const calls: string[] = []
+    mockExec.mockImplementation((cmd: string, cb: Function) => {
+      calls.push(cmd)
+      cb(null, '', '')
+    })
+
+    await sendKeysToContainer('aim-test', 'sess', 'hi', { enter: true })
+
+    expect(calls[0]).toContain("'aim-test'")
+    expect(calls[0]).toContain("'sess:0.0'")
   })
 })
