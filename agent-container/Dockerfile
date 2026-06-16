@@ -131,6 +131,7 @@ USER root
 COPY agent-server.js ./
 COPY claude-home-merge.cjs ./
 COPY restoration-gate.cjs ./
+COPY runtime-check.cjs ./
 RUN chmod +x agent-server.js
 
 # Create workspace directory
