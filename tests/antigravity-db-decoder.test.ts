@@ -21,6 +21,9 @@ import {
   decodeAntigravityDb,
   findNewestAntigravityDb,
   loadNewestAntigravityConversation,
+  extractGenUsage,
+  extractAntigravityUsage,
+  usageIdentityRate,
 } from '@/lib/antigravity-db-decoder'
 
 // ── minimal protobuf wire encoder (mirrors the real on-disk shape) ───────────
@@ -62,6 +65,48 @@ function assistantPayload(text: string, toolName?: string): Buffer {
 }
 function toolPayload(label: string): Buffer {
   return lenDelim(5, strField(30, label))
+}
+
+function varintField(field: number, n: number): Buffer {
+  return Buffer.concat([tag(field, 0), encodeVarint(n)])
+}
+
+// gen_metadata.data layout (token accounting):
+//   .1.4.2 = input ; .1.4.3 = candidate (== .9 + .10) ; .1.4.9 = output ; .1.4.10 = thinking
+//   .3.28 = model id ; .1.21 = model display name
+// `candidate` defaults to output + thinking (the real on-disk invariant); pass an
+// explicit value to simulate a format drift that breaks the additive identity.
+function genMetadataPayload(opts: {
+  input: number
+  output: number
+  thinking: number
+  candidate?: number
+  modelId?: string
+  modelDisplay?: string
+}): Buffer {
+  const { input, output, thinking, modelId, modelDisplay } = opts
+  const candidate = opts.candidate ?? output + thinking
+  const usageInner = Buffer.concat([
+    varintField(2, input),
+    varintField(3, candidate),
+    varintField(9, output),
+    varintField(10, thinking),
+  ])
+  const field1Parts = [lenDelim(4, usageInner)]
+  if (modelDisplay) field1Parts.push(strField(21, modelDisplay))
+  const parts = [lenDelim(1, Buffer.concat(field1Parts))]
+  if (modelId) parts.push(lenDelim(3, strField(28, modelId)))
+  return Buffer.concat(parts)
+}
+
+function writeGenDb(name: string, gens: Buffer[]): string {
+  const dbPath = path.join(tmpDir, name)
+  const db = new Database(dbPath)
+  db.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)')
+  const ins = db.prepare('INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?)')
+  gens.forEach((g, i) => ins.run(i, g, g.length))
+  db.close()
+  return dbPath
 }
 
 // ── temp-db harness ──────────────────────────────────────────────────────────
@@ -196,5 +241,79 @@ describe('findNewestAntigravityDb / loadNewestAntigravityConversation (#232)', (
     expect(result).not.toBeNull()
     expect(result!.messages).toHaveLength(1)
     expect(result!.messages[0].message.content[0].text).toBe('hi')
+  })
+})
+
+describe('extractGenUsage / extractAntigravityUsage — token accounting', () => {
+  it('maps the gen_metadata token fields (.1.4.2/.9/.10) to input/output/thinking', () => {
+    const usage = extractGenUsage(genMetadataPayload({ input: 21641, output: 195, thinking: 58 }))
+    expect(usage).not.toBeNull()
+    expect(usage!.inputTokens).toBe(21641)
+    expect(usage!.outputTokens).toBe(195)
+    expect(usage!.thinkingTokens).toBe(58)
+    // .1.4.3 candidate defaults to output + thinking — the on-disk invariant.
+    expect(usage!.candidateTokens).toBe(195 + 58)
+  })
+
+  it('returns null for a blob with no input-token field', () => {
+    // A non-usage protobuf (e.g. a string-only blob) must not masquerade as usage.
+    expect(extractGenUsage(strField(1, 'just some text'))).toBeNull()
+  })
+
+  it('sums per-generation usage and reports output+thinking as output-billed', () => {
+    const dbPath = writeGenDb('usage.db', [
+      genMetadataPayload({ input: 21641, output: 195, thinking: 58, modelId: 'gemini-3.5-flash-low' }),
+      genMetadataPayload({ input: 10128, output: 253, thinking: 68, modelId: 'gemini-3.5-flash-low' }),
+      genMetadataPayload({ input: 2404, output: 95, thinking: 65, modelId: 'gemini-3.5-flash-low' }),
+    ])
+    const result = extractAntigravityUsage(dbPath)
+    expect(result).not.toBeNull()
+    expect(result!.model).toBe('gemini-3.5-flash-low')
+    expect(result!.totals.generationCount).toBe(3)
+    expect(result!.totals.inputTokens).toBe(21641 + 10128 + 2404)
+    expect(result!.totals.outputTokens).toBe(195 + 253 + 95)
+    expect(result!.totals.thinkingTokens).toBe(58 + 68 + 65)
+    // Thinking bills at the output rate → output-billed = output + thinking.
+    expect(result!.totals.outputBilledTokens).toBe(195 + 253 + 95 + 58 + 68 + 65)
+  })
+
+  it('falls back to the .1.21 display name when no .3.28 model id is present', () => {
+    const dbPath = writeGenDb('model-fallback.db', [
+      genMetadataPayload({ input: 100, output: 10, thinking: 5, modelDisplay: 'Gemini 3.5 Flash (Medium)' }),
+    ])
+    expect(extractAntigravityUsage(dbPath)!.model).toBe('Gemini 3.5 Flash (Medium)')
+  })
+
+  it('ADDITIVE-IDENTITY GUARD: identity holds 100% on well-formed data, fails loud on drift', () => {
+    // The load-bearing RE invariant — candidate == output + thinking — is what
+    // makes the (schema-less) field map trustworthy. usageIdentityRate lets a
+    // caller assert on it so the NEXT antigravity format churn fails loud instead
+    // of silently mis-counting spend.
+    const good = [
+      extractGenUsage(genMetadataPayload({ input: 500, output: 120, thinking: 30 }))!,
+      extractGenUsage(genMetadataPayload({ input: 800, output: 1097, thinking: 3991 }))!,
+    ]
+    const goodRate = usageIdentityRate(good)
+    expect(goodRate).toEqual({ checked: 2, ok: 2 })
+
+    // Simulate a format change where .1.4.3 no longer equals output + thinking.
+    const drifted = extractGenUsage(
+      genMetadataPayload({ input: 500, output: 120, thinking: 30, candidate: 999 })
+    )!
+    const driftRate = usageIdentityRate([...good, drifted])
+    expect(driftRate).toEqual({ checked: 3, ok: 2 }) // < 1.0 → caller fails loud
+  })
+
+  it('returns null for a .db without a gen_metadata table (graceful, not a throw)', () => {
+    // A chat-only db (steps but no gen_metadata) must yield null, not crash.
+    const dbPath = writeDb('chat-only.db', [{ step_type: 14, payload: userPayload('hi') }])
+    expect(extractAntigravityUsage(dbPath)).toBeNull()
+  })
+
+  it('returns null for a missing or garbage db rather than throwing', () => {
+    expect(extractAntigravityUsage(path.join(tmpDir, 'nope.db'))).toBeNull()
+    const junk = path.join(tmpDir, 'usage-junk.db')
+    fs.writeFileSync(junk, 'not a database')
+    expect(extractAntigravityUsage(junk)).toBeNull()
   })
 })
