@@ -7,7 +7,9 @@ import { notifyUser } from '@/services/users-service'
  * Send a notification to a user via their preferred platform.
  * Routes through the appropriate gateway DM endpoint.
  *
- * Body: { message, platform?, subject? }
+ * Body: { message, platform?, subject?, botSlug? }
+ * botSlug targets a specific multi-bot-platform bot (e.g. send as LeoAI);
+ * omitted → falls back to the user's most-recently-inbound bot. (#13)
  */
 export async function POST(
   request: NextRequest,
@@ -22,6 +24,7 @@ export async function POST(
     const result = await notifyUser(id, body.message, {
       platform: body.platform,
       subject: body.subject,
+      botSlug: body.botSlug,
     })
     if (result.error) {
       return NextResponse.json({ error: result.error }, { status: result.status })
