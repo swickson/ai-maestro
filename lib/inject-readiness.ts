@@ -82,10 +82,15 @@ export const TERMINAL_IDLE_SECONDS = 3
  * TERMINAL_IDLE_SECONDS. Absent activity (never tracked) is treated as idle so a
  * freshly-discovered session is still notifiable.
  *
- * NOTE (cloud agents): host-side `sessionActivity` is only updated while the
- * host PTY bridge is streaming the container's tmux. An unwatched cloud agent
- * therefore reads as idle here; for those, the `promptPending` half of the guard
- * (hook state, bind-mounted) still protects against auto-pick/auto-approve.
+ * NOTE (cloud agents): a cloud agent currently reads as fully safe-to-inject by
+ * BOTH signals: (1) host-side `sessionActivity` is only updated while the host
+ * PTY bridge is streaming the container's tmux, so an unwatched cloud agent reads
+ * as idle here; and (2) `readHookState` reads the HOST chat-state file, which a
+ * cloud agent does NOT write — its hook state flows via the pushed activity API
+ * and its bind-mounted chat-state dir is empty on the host — so `promptPending`
+ * is false too. So this never regresses cloud delivery, but it also adds NO new
+ * protection for cloud yet (cloud auto-approve is NOT prevented here). Cloud-aware
+ * readiness (pushed hookState + a cloud activity signal) is a scoped follow-up.
  */
 export function isTerminalIdle(sessionName: string, now: number = Date.now()): boolean {
   const last = sessionActivity.get(sessionName)
