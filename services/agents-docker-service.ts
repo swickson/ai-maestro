@@ -977,12 +977,16 @@ export function buildCloudCodexAppDataMount(
 // independent + revoke radius is per-agent.
 //
 // If the host has no oauth_creds.json yet (first-time setup) AND no
-// migrated predecessor file is present, seed empty {}. Gemini will then
-// show its auth picker on first launch in the container, matching pre-PR
-// behavior. seedFromHostFile fully owns dest-existence semantics — see
-// the function docstring for the empty-{}-re-seed contract that lets
-// post-hoc host login propagate via /recreate (kanban 02a8ebda
-// + Watson Mason finding from PR #105).
+// migrated predecessor file is present, oauth_creds.json is left ABSENT
+// (#209, sibling of the codex #158 fix). An absent file lets the Gemini
+// CLI fall through to its first-run "Please set an Auth method" picker;
+// an empty {} placeholder instead reaches the CLI as a malformed
+// credential and can suppress that picker. seedFromHostFile fully owns
+// dest-existence semantics — see the function docstring for the
+// empty-{}-re-seed contract that lets post-hoc host login propagate via
+// /recreate (kanban 02a8ebda + Watson Mason finding from PR #105). That
+// contract treats an absent dest the same as the empty-{} placeholder,
+// so dropping the placeholder write does not break recreate-path seeding.
 //
 // Refresh-token tradeoff: same as codex-auth + claude-credentials — once
 // the per-agent copy diverges from the host source via in-container
@@ -1000,9 +1004,12 @@ export function provisionCloudGeminiAuth(
     path.join(hostHome, '.gemini', 'oauth_creds.json'),
     authPath,
   )
-  if (!bootstrapped && !fs.existsSync(authPath)) {
-    fs.writeFileSync(authPath, '{}\n', { mode: 0o600 })
-  }
+  // #209: intentionally NO empty-{} fallback write here (sibling of #158).
+  // When neither a host login nor a migrated predecessor seeded
+  // oauth_creds.json, leaving it absent lets the Gemini CLI run its
+  // first-run OAuth picker instead of choking on a malformed {} credential.
+  // authPath is still returned (the file mount carries whatever Gemini
+  // writes after login back to the per-agent dir).
   return { authPath, bootstrapped }
 }
 
