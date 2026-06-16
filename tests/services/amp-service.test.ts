@@ -1034,3 +1034,66 @@ describe('routeMessage — AMPAttachmentLegacy hard-reject', () => {
     expect(result.data).not.toHaveProperty('error', 'deprecated_attachment_shape')
   })
 })
+
+describe('routeMessage — signature handling (#13: reserve warn for real failures)', () => {
+  function buildSigBody(signature: string | null): any {
+    return {
+      to: 'bob@testorg.aimaestro.local',
+      subject: 'hi',
+      payload: { type: 'task', message: 'do the thing' },
+      ...(signature !== null ? { signature } : {}),
+    }
+  }
+
+  let warnSpy: ReturnType<typeof vi.spyOn>
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    warnSpy.mockRestore()
+    logSpy.mockRestore()
+  })
+
+  const sigWarns = () =>
+    warnSpy.mock.calls.some((c) => String(c[0]).includes('Invalid signature'))
+
+  it('does NOT warn "Invalid signature" for an unsigned envelope from a trusted sender (the #13 noise)', async () => {
+    mockAuthenticated()
+    mockAmpKeys.loadKeyPair.mockReturnValue({ publicHex: 'abc', privateHex: 'def', fingerprint: 'fp' })
+
+    await routeMessage(buildSigBody(null), 'Bearer test-key', null, null, null, null)
+
+    expect(sigWarns()).toBe(false)
+    // Unsigned is accepted at info, framed as explicit acceptance.
+    expect(
+      logSpy.mock.calls.some((c) => String(c[0]).includes('Accepting unsigned envelope from')),
+    ).toBe(true)
+  })
+
+  it('DOES warn "Invalid signature" only when a signature IS present but fails verification', async () => {
+    mockAuthenticated()
+    mockAmpKeys.loadKeyPair.mockReturnValue({ publicHex: 'abc', privateHex: 'def', fingerprint: 'fp' })
+    mockAmpKeys.verifySignature.mockReturnValue(false)
+
+    await routeMessage(buildSigBody('deadbeef-sig'), 'Bearer test-key', null, null, null, null)
+
+    expect(sigWarns()).toBe(true)
+  })
+
+  it('does NOT warn when a present signature verifies cleanly', async () => {
+    mockAuthenticated()
+    mockAmpKeys.loadKeyPair.mockReturnValue({ publicHex: 'abc', privateHex: 'def', fingerprint: 'fp' })
+    mockAmpKeys.verifySignature.mockReturnValue(true)
+
+    await routeMessage(buildSigBody('valid-sig'), 'Bearer test-key', null, null, null, null)
+
+    expect(sigWarns()).toBe(false)
+    expect(
+      logSpy.mock.calls.some((c) => String(c[0]).includes('Verified signature from')),
+    ).toBe(true)
+  })
+})
