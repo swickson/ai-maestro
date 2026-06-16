@@ -68,6 +68,19 @@ describe('selectTranscriptFile', () => {
     expect(path.basename(selectTranscriptFile(dir).path!)).toBe('gemini.jsonl')
   })
 
+  it('antigravity (#219): picks history.jsonl and IGNORES the .pb/.db conversation blobs', () => {
+    // Mirrors the real antigravity-app-data ROOT layout: only history.jsonl is
+    // .jsonl; conversations are protobuf/sqlite blobs the scanner must skip.
+    const history = JSON.stringify({ display: 'hello agent', timestamp: 1779482879705, workspace: '/workspace' }) + '\n'
+    write('history.jsonl', history, 2_000_000)
+    write('57d9416c.pb', 'binary-protobuf-bytes', 3_000_000)   // newer, but NOT .jsonl
+    write('57d9416c.db', 'sqlite-bytes', 3_500_000)            // newest, but NOT .jsonl
+    fs.writeFileSync(path.join(dir, 'settings.json'), '{}')    // .json, not .jsonl
+    const r = selectTranscriptFile(dir)
+    expect(r.exists).toBe(true)
+    expect(path.basename(r.path!)).toBe('history.jsonl')       // the only .jsonl wins
+  })
+
   it('prefers the hook transcriptPath when it exists in the dir, over a newer file', () => {
     const hook = write('session-abc.jsonl', REAL, 1_000_000)   // older
     write('newer.jsonl', REAL, 5_000_000)                       // newer

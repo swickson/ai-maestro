@@ -93,15 +93,19 @@ export function resolveConversationDir(
         // value from ~/.gemini/projects.json (CONTAINER_CWD_GEMINI_PROJECT).
         return path.join(agentDir, 'gemini-chats')
       case 'antigravity':
-        // Antigravity (agy) writes conversation JSONL under
-        // ~/.gemini/antigravity-cli/conversations/. The whole antigravity-cli/
-        // dir is bind-mounted single-source (OPT-B) at
-        // <agentDir>/antigravity-app-data/ → /home/claude/.gemini/antigravity-cli/.
-        // Returns the conversations subdir so the chat-history reader scans
-        // matching files. Format normalization is currently a stub in
-        // lib/antigravity-message-normalizer.ts — real implementation lands
-        // once a logged-in cloud agent generates sample conversation files.
-        return path.join(agentDir, 'antigravity-app-data', 'conversations')
+        // Antigravity (agy) does NOT write a JSONL conversation transcript.
+        // Empirically (han cloud agent, #219): conversations/ holds only
+        // <conversationId>.pb (protobuf) + .db (sqlite WAL) blobs — a binary
+        // black box with no public schema. The ONLY JSONL is history.jsonl at
+        // the antigravity-app-data ROOT, a flat log of USER prompts
+        // ({display, timestamp, workspace, conversationId?}); assistant
+        // responses live only in the .pb/.db black box. So return the ROOT dir
+        // (single .jsonl there) — the flat scan picks history.jsonl and
+        // normalizeAntigravityLine renders the user turns. Assistant-side is a
+        // documented known limitation (lib/antigravity-message-normalizer.ts).
+        // The whole antigravity-cli/ dir is bind-mounted single-source (OPT-B)
+        // at <agentDir>/antigravity-app-data/ → /home/claude/.gemini/antigravity-cli/.
+        return path.join(agentDir, 'antigravity-app-data')
       case 'codex':
         // Codex writes conversation transcripts as rollout-*.jsonl under
         // ~/.codex/sessions/<YYYY>/<MM>/<DD>/. The whole ~/.codex tree is
