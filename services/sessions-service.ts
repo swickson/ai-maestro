@@ -36,7 +36,8 @@ import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
 import { sessionActivity, agentActivity, terminalSessions, broadcastStatusUpdate, broadcastChatEvent } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
 import { resolveBinary, LAUNCH_ENV_SCRUB } from '@/lib/program-resolver'
-import crypto from 'crypto'
+import { readHookState } from '@/lib/inject-readiness'
+// crypto/hashCwd removed: chat-state hashing now lives in lib/inject-readiness
 import { type ServiceResult, missingField, notFound, alreadyExists, invalidField, operationFailed, serviceError } from '@/services/service-errors'
 
 const execAsync = promisify(exec)
@@ -137,37 +138,14 @@ async function httpPost(url: string, body: any, timeout = 10000): Promise<any> {
   }
 }
 
-/** Hash working directory to find hook state file */
-function hashCwd(cwd: string): string {
-  return crypto.createHash('md5').update(cwd || '').digest('hex').substring(0, 16)
-}
-
-/** Read hook state for a given working directory */
+/** Read hook state for a given working directory.
+ * Delegates to the shared lib/inject-readiness reader (single source of truth for
+ * the chat-state file format + 60s staleness rule, also used by the notification
+ * inject-readiness gate). */
 function getHookState(workingDir: string): { status: string; notificationType?: string } | null {
-  if (!workingDir) return null
-
-  const stateDir = path.join(os.homedir(), '.aimaestro', 'chat-state')
-  const cwdHash = hashCwd(workingDir)
-  const stateFile = path.join(stateDir, `${cwdHash}.json`)
-
-  try {
-    if (fs.existsSync(stateFile)) {
-      const content = fs.readFileSync(stateFile, 'utf-8')
-      const state = JSON.parse(content)
-
-      const isWaitingState = state.status === 'waiting_for_input' || state.status === 'permission_request' || state.status === 'question_prompt'
-      if (!isWaitingState) {
-        const stateAge = Date.now() - new Date(state.updatedAt).getTime()
-        if (stateAge > 60000) return null
-      }
-
-      return { status: state.status, notificationType: state.notificationType }
-    }
-  } catch {
-    // Ignore errors reading state files
-  }
-
-  return null
+  const state = readHookState(workingDir)
+  if (!state || !state.status) return null
+  return { status: state.status, notificationType: state.notificationType }
 }
 
 /** Check if a session is idle based on activity threshold */
