@@ -122,23 +122,41 @@ export function resolveConversationDir(
   }
   // Host (non-cloud) agents run as the operator, so non-Claude programs write
   // their transcripts to the operator's OWN cli tree — NOT ~/.claude/projects.
-  // Host antigravity (agy) writes user-prompt history to the shared
-  // ~/.gemini/antigravity-cli/history.jsonl (single operator dir, not cwd-keyed
-  // and not per-agent — local agents share it). Without this branch a local
-  // antigravity agent resolved to an empty/wrong ~/.claude/projects dir and the
-  // chat window stayed blank even though history.jsonl was right there (Ginger,
-  // local-antigravity bug — the host-branch counterpart to the cloud #219 fix).
-  // Same user-prompts-only shape + protobuf-blackbox assistant limitation as #219.
-  // NOTE: host codex (~/.codex/sessions) and host gemini (~/.gemini/tmp/.../chats)
-  // have the same host-branch blind spot — left as a follow-up (no local agent of
-  // those kinds verified here yet).
-  if (cloudProgram(agent) === 'antigravity') {
-    return path.join(hostHome, '.gemini', 'antigravity-cli')
+  // Mirror the cloud branch's per-program resolution against the host $HOME.
+  // Without this, every non-Claude local agent resolved to an empty/wrong
+  // ~/.claude/projects dir and the chat window stayed blank (#223/#225, the
+  // host-branch counterparts to the cloud #219 fix).
+  switch (cloudProgram(agent)) {
+    case 'antigravity':
+      // ~/.gemini/antigravity-cli/history.jsonl — a shared operator dir (not
+      // cwd-keyed, not per-agent; local agents share it). USER-PROMPTS-ONLY +
+      // protobuf-blackbox assistant limitation, same as cloud #219/#223.
+      return path.join(hostHome, '.gemini', 'antigravity-cli')
+    case 'codex':
+      // ~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl (#225). Recursion is
+      // applied by resolveActiveTranscript (recursive = codex), so the nested
+      // date dirs are scanned. Renders BOTH user + assistant turns — codex,
+      // unlike antigravity, is not a black box.
+      // LIMITATION: ~/.codex is the operator's SHARED dir; selectTranscriptFile
+      // picks the newest-mtime rollout, which could belong to a different host
+      // codex session if the operator runs codex in another cwd. Empirically the
+      // recent rollouts all carry the agent's cwd (verified vs dev-n4safety-builder),
+      // and session_meta.payload.cwd is recorded — so cwd-pinned selection is a
+      // feasible future refinement if cross-session bleed becomes a problem.
+      return path.join(hostHome, '.codex', 'sessions')
+    // NOTE: host GEMINI (~/.gemini/tmp/<project>/chats/session-*.jsonl) has the
+    // same blind spot, but the project key is the literal from ~/.gemini/projects.json
+    // (cwd-derived on host, NOT the cloud's fixed 'workspace'), and there is no
+    // local gemini agent to verify the end-to-end resolution against. Left as a
+    // thin follow-up rather than ship an unverified path (#225 scope note).
+    case 'claude':
+    default: {
+      const workingDir = resolveHostWorkingDir(agent)
+      if (!workingDir) return null
+      const projectDirName = workingDir.replace(/\//g, '-')
+      return path.join(hostHome, '.claude', 'projects', projectDirName)
+    }
   }
-  const workingDir = resolveHostWorkingDir(agent)
-  if (!workingDir) return null
-  const projectDirName = workingDir.replace(/\//g, '-')
-  return path.join(hostHome, '.claude', 'projects', projectDirName)
 }
 
 // Mirrors the hashCwd implementations at services/agents-chat-service.ts:25,
