@@ -261,9 +261,12 @@ describe('users-service', () => {
       const body = JSON.parse(init.body)
       expect(body.platformUserId).toBe('aad-xyz')
       expect(body.botSlug).toBe('bot-alpha')
+      // #13 Teams cold-start: tenantId from mapping context reaches the gateway
+      // so it can createConversation for a never-DM'd user.
+      expect(body.tenantId).toBe('t1')
     })
 
-    it('routes discord to port 3023 and omits botSlug (single-bot platform)', async () => {
+    it('routes discord to port 3023 and omits botSlug + tenantId (single-bot/tenant platform)', async () => {
       const result = await notifyUser('user-1', 'hi', { platform: 'discord' })
       expect(result.status).toBe(200)
       const [url, init] = fetchMock.mock.calls[0]
@@ -271,6 +274,26 @@ describe('users-service', () => {
       const body = JSON.parse(init.body)
       expect(body.platformUserId).toBe('123')
       expect('botSlug' in body).toBe(false)
+      // No tenantId on the discord mapping context → dropped from the body
+      // (JSON.stringify omits undefined), preserving the single-tenant shape.
+      expect('tenantId' in body).toBe(false)
+    })
+
+    it('explicit options.botSlug TARGETS that bot, overriding context.botSlug (#13 cold-start)', async () => {
+      // Proactive DM that must send as a specific bot (e.g. LeoAI) rather than
+      // whichever bot last had inbound — this is what drives a gateway cold-start.
+      const result = await notifyUser('user-1', 'hi', { platform: 'teams', botSlug: 'leoai' })
+      expect(result.status).toBe(200)
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+      expect(body.botSlug).toBe('leoai')          // override, NOT 'bot-alpha'
+      expect(body.tenantId).toBe('t1')            // tenantId still carried (one per mapping)
+    })
+
+    it('falls back to context.botSlug when no override is given (backward-compatible)', async () => {
+      const result = await notifyUser('user-1', 'hi', { platform: 'teams' })
+      expect(result.status).toBe(200)
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+      expect(body.botSlug).toBe('bot-alpha')      // unchanged default behavior
     })
   })
 })

@@ -288,7 +288,7 @@ const GATEWAY_DM_ENDPOINTS: Record<string, { port: string; path: string }> = {
 export async function notifyUser(
   userId: string,
   message: string,
-  options?: { platform?: string; subject?: string }
+  options?: { platform?: string; subject?: string; botSlug?: string }
 ): Promise<ServiceResult<{ success: boolean; platform?: string; method?: string }>> {
   const user = getUser(userId)
   if (!user) {
@@ -318,10 +318,20 @@ export async function notifyUser(
 
   // Gateway runs on the same host as Maestro, on its per-platform port.
   const gatewayUrl = `http://localhost:${endpoint.port}${endpoint.path}`
-  // Multi-bot platforms (Teams) need to know which bot to deliver as; the bot
-  // identity is stored per-user on the mapping context. undefined for single-bot
-  // platforms (Discord) and dropped by JSON.stringify, preserving its body shape.
-  const botSlug = (targetMapping.context as { botSlug?: string } | undefined)?.botSlug
+  // Multi-bot platforms (Teams) need to know which bot to deliver as. An explicit
+  // options.botSlug TARGETS a specific bot (e.g. a proactive DM that must send as
+  // LeoAI, not as whichever bot last had inbound) — this is the correct-attribution
+  // path AND what triggers a cold-start (the gateway finds no thread for that bot
+  // and createConversation's, see dm.ts findByUserAndBot). When not specified, we
+  // fall back to the per-user mapping context.botSlug (most-recently-inbound bot),
+  // preserving existing behavior. undefined for single-bot platforms (Discord) and
+  // dropped by JSON.stringify, preserving body shape. (#13)
+  const botSlug = options?.botSlug ?? (targetMapping.context as { botSlug?: string } | undefined)?.botSlug
+  // Teams cold-start DM (#13): the gateway needs the tenant to createConversation
+  // for a user it has never DM'd. tenantId is captured per-user on the mapping
+  // context on inbound (auto-create / updateLastSeen store it). Same shape as
+  // botSlug — undefined for single-tenant platforms and dropped by JSON.stringify.
+  const tenantId = (targetMapping.context as { tenantId?: string } | undefined)?.tenantId
 
   try {
     const controller = new AbortController()
@@ -336,6 +346,7 @@ export async function notifyUser(
       body: JSON.stringify({
         platformUserId: targetMapping.platformUserId,
         botSlug,
+        tenantId,
         message,
         subject: options?.subject,
       }),

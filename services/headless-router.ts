@@ -1429,7 +1429,7 @@ const routes: Route[] = [
   }},
   { method: 'POST', pattern: /^\/api\/users\/([^/]+)\/notify$/, paramNames: ['id'], handler: async (req, res, params) => {
     const body = await readJsonBody(req)
-    sendServiceResult(res, await notifyUser(params.id, body.message, { platform: body.platform, subject: body.subject }))
+    sendServiceResult(res, await notifyUser(params.id, body.message, { platform: body.platform, subject: body.subject, botSlug: body.botSlug }))
   }},
   { method: 'PATCH', pattern: /^\/api\/users\/([^/]+)\/last-seen$/, paramNames: ['id'], handler: async (req, res, params) => {
     const body = await readJsonBody(req)
