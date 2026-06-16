@@ -93,15 +93,19 @@ export function resolveConversationDir(
         // value from ~/.gemini/projects.json (CONTAINER_CWD_GEMINI_PROJECT).
         return path.join(agentDir, 'gemini-chats')
       case 'antigravity':
-        // Antigravity (agy) writes conversation JSONL under
-        // ~/.gemini/antigravity-cli/conversations/. The whole antigravity-cli/
-        // dir is bind-mounted single-source (OPT-B) at
-        // <agentDir>/antigravity-app-data/ → /home/claude/.gemini/antigravity-cli/.
-        // Returns the conversations subdir so the chat-history reader scans
-        // matching files. Format normalization is currently a stub in
-        // lib/antigravity-message-normalizer.ts — real implementation lands
-        // once a logged-in cloud agent generates sample conversation files.
-        return path.join(agentDir, 'antigravity-app-data', 'conversations')
+        // Antigravity (agy) does NOT write a JSONL conversation transcript.
+        // Empirically (han cloud agent, #219): conversations/ holds only
+        // <conversationId>.pb (protobuf) + .db (sqlite WAL) blobs — a binary
+        // black box with no public schema. The ONLY JSONL is history.jsonl at
+        // the antigravity-app-data ROOT, a flat log of USER prompts
+        // ({display, timestamp, workspace, conversationId?}); assistant
+        // responses live only in the .pb/.db black box. So return the ROOT dir
+        // (single .jsonl there) — the flat scan picks history.jsonl and
+        // normalizeAntigravityLine renders the user turns. Assistant-side is a
+        // documented known limitation (lib/antigravity-message-normalizer.ts).
+        // The whole antigravity-cli/ dir is bind-mounted single-source (OPT-B)
+        // at <agentDir>/antigravity-app-data/ → /home/claude/.gemini/antigravity-cli/.
+        return path.join(agentDir, 'antigravity-app-data')
       case 'codex':
         // Codex writes conversation transcripts as rollout-*.jsonl under
         // ~/.codex/sessions/<YYYY>/<MM>/<DD>/. The whole ~/.codex tree is
@@ -115,6 +119,21 @@ export function resolveConversationDir(
       default:
         return path.join(agentDir, 'claude-projects', CONTAINER_CWD_ENCODED)
     }
+  }
+  // Host (non-cloud) agents run as the operator, so non-Claude programs write
+  // their transcripts to the operator's OWN cli tree — NOT ~/.claude/projects.
+  // Host antigravity (agy) writes user-prompt history to the shared
+  // ~/.gemini/antigravity-cli/history.jsonl (single operator dir, not cwd-keyed
+  // and not per-agent — local agents share it). Without this branch a local
+  // antigravity agent resolved to an empty/wrong ~/.claude/projects dir and the
+  // chat window stayed blank even though history.jsonl was right there (Ginger,
+  // local-antigravity bug — the host-branch counterpart to the cloud #219 fix).
+  // Same user-prompts-only shape + protobuf-blackbox assistant limitation as #219.
+  // NOTE: host codex (~/.codex/sessions) and host gemini (~/.gemini/tmp/.../chats)
+  // have the same host-branch blind spot — left as a follow-up (no local agent of
+  // those kinds verified here yet).
+  if (cloudProgram(agent) === 'antigravity') {
+    return path.join(hostHome, '.gemini', 'antigravity-cli')
   }
   const workingDir = resolveHostWorkingDir(agent)
   if (!workingDir) return null
