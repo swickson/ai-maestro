@@ -62,6 +62,11 @@ export function isInteractivePrompt(status?: string | null): boolean {
 export interface AgentHookState {
   status?: string
   notificationType?: string
+  /** Harness that wrote this state ('claude' | 'gemini' | 'codex'). PR-B: only a
+   *  Claude hook writes the authoritative busy/idle bracket, so the inject gate
+   *  trusts hook-idle ONLY when agent === 'claude' and otherwise falls back to the
+   *  capture-pane probe (a non-Claude hook never writes a busy edge). */
+  agent?: string
   updatedAt?: string
   [key: string]: unknown
 }
@@ -111,9 +116,13 @@ export function readHookState(workingDir?: string | null): AgentHookState | null
   try {
     if (!fs.existsSync(stateFile)) return null
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8')) as AgentHookState
-    // A live prompt is always honored; a settled/active state older than 60s is
-    // treated as absent so a long-dormant file never masks the real pane state.
-    if (!isInteractivePrompt(state.status) && state.updatedAt) {
+    // A live prompt is always honored; so is the PR-B authoritative 'busy' state
+    // (busy turns routinely exceed 60s — p50 ~60s — and its staleness is handled by
+    // the N-minute guard in isAgentBusy, not aged out here). A settled/active state
+    // older than 60s is treated as absent so a long-dormant file never masks the
+    // real pane state.
+    const honored = isInteractivePrompt(state.status) || state.status === 'busy'
+    if (!honored && state.updatedAt) {
       const stateAge = Date.now() - new Date(state.updatedAt).getTime()
       if (stateAge > 60_000) return null
     }
@@ -283,6 +292,49 @@ export async function isPaneBusy(
   return normalizePane(snap1) !== normalizePane(snap2)
 }
 
+/**
+ * Staleness threshold (#PR-B): how long a hook-written 'busy' is trusted WITHOUT a
+ * capture-pane re-verify. Beyond this, a 'busy' is treated as possibly-stuck (a
+ * MISSED Stop — empirically ~2.2% of turns; without this guard a missed Stop would
+ * strand all notifications forever) and verified via capture-pane so it self-heals
+ * to idle. 5 min is above the p90 turn (~4.3 min from hook-debug.log), so ~92% of
+ * turns hit the cheap fresh path; a stuck-busy self-heals within ~5 min.
+ */
+export const HOOK_BUSY_STALE_MS = 5 * 60_000
+
+/**
+ * Authoritative busy decision (#PR-B). The Claude hook writes status:'busy' at
+ * UserPromptSubmit (turn START) and status:'idle' at Stop (turn END), so the HOOK
+ * STATE is the primary, client-independent busy signal — no terminal scraping on
+ * the hot path. Stop fires once per TURN (not per tool-round, empirically), so
+ * busy=[UserPromptSubmit, Stop) brackets the whole turn including the
+ * think→tool-call seam → court-safe by construction.
+ *
+ *   hook 'busy' & FRESH (<HOOK_BUSY_STALE_MS) -> busy (cheap; the common case)
+ *   hook 'busy' & STALE                        -> capture-pane VERIFY (missed-Stop
+ *                                                 self-heal: still-busy keeps
+ *                                                 deferring, static-idle -> idle)
+ *   hook present, agent==='claude', not busy   -> NOT busy (authoritative idle)
+ *   non-Claude / no agent / hook MISSING       -> capture-pane FALLBACK
+ *
+ * Non-Claude harnesses (gemini/codex) never write a busy edge, so their hook-idle
+ * is NOT trustworthy — fall back to capture-pane (else we'd inject mid-generation).
+ */
+export async function isAgentBusy(
+  sessionName: string,
+  hookState: AgentHookState | null,
+  now: number = Date.now(),
+  probe: PaneProbe = defaultProbe
+): Promise<boolean> {
+  if (hookState?.status === 'busy') {
+    const age = hookState.updatedAt ? now - new Date(hookState.updatedAt).getTime() : Infinity
+    if (age < HOOK_BUSY_STALE_MS) return true          // fresh hook-busy — trust it (no capture-pane)
+    return await isPaneBusy(sessionName, now, probe)   // stale — verify, self-heal a missed Stop
+  }
+  if (hookState?.agent === 'claude') return false      // Claude + not 'busy' = authoritative idle
+  return await isPaneBusy(sessionName, now, probe)     // non-Claude / no agent / hook missing — fallback
+}
+
 export interface InjectReadiness {
   terminalIdle: boolean
   hookStatus?: string
@@ -346,16 +398,18 @@ export async function getInjectReadinessAsync(
   now: number = Date.now(),
   probe: PaneProbe = defaultProbe
 ): Promise<InjectReadiness> {
-  const busy = await isPaneBusy(sessionName, now, probe)
-  const terminalIdle = !busy
   const hookState = readHookState(workingDir)
+  const busy = await isAgentBusy(sessionName, hookState, now, probe)
+  const terminalIdle = !busy
   const promptPending = isBlockingPrompt(hookState)
 
   let safeToSubmit = true
   let reason = 'idle and clear'
   if (busy) {
     safeToSubmit = false
-    reason = 'terminal busy (mid-generation)'
+    reason = hookState?.status === 'busy'
+      ? 'agent busy (hook: mid-turn)'
+      : 'terminal busy (mid-generation)'
   } else if (promptPending) {
     safeToSubmit = false
     reason = `interactive prompt pending (${promptReason(hookState)})`

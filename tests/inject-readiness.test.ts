@@ -11,6 +11,8 @@ import {
   readHookState,
   paneShowsBusyFooter,
   isPaneBusy,
+  isAgentBusy,
+  HOOK_BUSY_STALE_MS,
   getInjectReadiness,
   getInjectReadinessAsync,
   TERMINAL_IDLE_SECONDS,
@@ -384,5 +386,102 @@ describe('getInjectReadinessAsync (the gate) — both regression directions', ()
     const probe = fakeProbe([null])
     const r = await getInjectReadinessAsync(sess, wd, NOW, probe)
     expect(r.safeToSubmit).toBe(true)
+  })
+})
+
+// PR-B: authoritative hook-state busy. Hook writes 'busy' at UserPromptSubmit
+// (turn start) and 'idle' at Stop (turn end). isAgentBusy trusts that bracket
+// (cheap, no capture-pane) for Claude, with a staleness guard for a missed Stop,
+// and falls back to capture-pane for non-Claude / missing hook.
+describe('isAgentBusy (PR-B authoritative hook-busy)', () => {
+  const IDLE = ['❯ \nOpus 4.8 (1M context) | ctx 31% | $1.00']
+  const BUSY = ['✶ Frolicking… (12s · ↓ 1.6k tokens)']
+  const fresh = () => new Date(NOW - 1000).toISOString()
+  const stale = () => new Date(NOW - HOOK_BUSY_STALE_MS - 1000).toISOString()
+
+  it('hook busy + FRESH -> busy WITHOUT capture-pane (the hot path)', async () => {
+    const probe = fakeProbe(IDLE)
+    expect(await isAgentBusy(sess, { status: 'busy', agent: 'claude', updatedAt: fresh() }, NOW, probe)).toBe(true)
+    expect(probe.calls).toBe(0)
+  })
+
+  it('hook busy + STALE + pane still busy -> busy (verify keeps deferring a long turn)', async () => {
+    const probe = fakeProbe(BUSY)
+    expect(await isAgentBusy(sess, { status: 'busy', agent: 'claude', updatedAt: stale() }, NOW, probe)).toBe(true)
+    expect(probe.calls).toBeGreaterThan(0)
+  })
+
+  it('hook busy + STALE + pane static-idle -> NOT busy (missed-Stop self-heal)', async () => {
+    const probe = fakeProbe([IDLE[0], IDLE[0]])
+    expect(await isAgentBusy(sess, { status: 'busy', agent: 'claude', updatedAt: stale() }, NOW, probe)).toBe(false)
+  })
+
+  it('Claude hook IDLE -> NOT busy WITHOUT capture-pane (authoritative idle hot path)', async () => {
+    const probe = fakeProbe(BUSY) // even busy-looking pane is ignored — claude-idle is authoritative
+    expect(await isAgentBusy(sess, { status: 'idle', agent: 'claude', updatedAt: fresh() }, NOW, probe)).toBe(false)
+    expect(probe.calls).toBe(0)
+  })
+
+  it('Claude active / waiting_for_input -> NOT terminal-busy (prompt handled by isBlockingPrompt)', async () => {
+    const probe = fakeProbe(IDLE)
+    expect(await isAgentBusy(sess, { status: 'active', agent: 'claude', updatedAt: fresh() }, NOW, probe)).toBe(false)
+    expect(await isAgentBusy(sess, { status: 'waiting_for_input', agent: 'claude', updatedAt: fresh() }, NOW, probe)).toBe(false)
+    expect(probe.calls).toBe(0)
+  })
+
+  it('fresh hook-busy wins even if sessionActivity fast-path would also say busy (no probe)', async () => {
+    sessionActivity.set(sess, NOW)
+    const probe = fakeProbe(IDLE)
+    expect(await isAgentBusy(sess, { status: 'busy', agent: 'claude', updatedAt: fresh() }, NOW, probe)).toBe(true)
+    expect(probe.calls).toBe(0)
+  })
+
+  it('non-Claude (gemini) hook idle but pane BUSY -> busy (fallback, no false-idle court)', async () => {
+    const probe = fakeProbe(BUSY)
+    expect(await isAgentBusy(sess, { status: 'idle', agent: 'gemini', updatedAt: fresh() }, NOW, probe)).toBe(true)
+    expect(probe.calls).toBeGreaterThan(0)
+  })
+
+  it('no agent field (pre-PR-B / old state) idle but pane busy -> fallback catches it', async () => {
+    const probe = fakeProbe(BUSY)
+    expect(await isAgentBusy(sess, { status: 'idle', updatedAt: fresh() }, NOW, probe)).toBe(true)
+  })
+
+  it('hook missing (null) -> capture-pane fallback (today behavior)', async () => {
+    expect(await isAgentBusy(sess, null, NOW, fakeProbe(BUSY))).toBe(true)
+    expect(await isAgentBusy(sess, null, NOW, fakeProbe([null]))).toBe(false) // cloud / no pane
+  })
+})
+
+describe('getInjectReadinessAsync — PR-B hook-busy integration', () => {
+  it('Claude hook BUSY (fresh) -> defer (hook mid-turn), no capture-pane', async () => {
+    writeState(wd, { status: 'busy', agent: 'claude', updatedAt: new Date(NOW).toISOString() }) // 'busy' is staleness-exempt
+    const probe = fakeProbe(['❯ \nidle bar'])
+    const r = await getInjectReadinessAsync(sess, wd, NOW, probe)
+    expect(r.safeToSubmit).toBe(false)
+    expect(r.reason).toMatch(/hook/)
+    expect(probe.calls).toBe(0)
+  })
+
+  it('Claude hook IDLE (fresh) -> inject, no capture-pane (busy-looking pane ignored)', async () => {
+    writeState(wd, { status: 'idle', agent: 'claude', updatedAt: new Date().toISOString() }) // real-fresh so readHookState keeps it
+    const probe = fakeProbe(['✶ Frolicking… (1s · ↓ 1k tokens)'])
+    const r = await getInjectReadinessAsync(sess, wd, Date.now(), probe)
+    expect(r.safeToSubmit).toBe(true)
+    expect(probe.calls).toBe(0)
+  })
+
+  it('Claude STALE-busy + idle pane -> inject (self-heal a missed Stop)', async () => {
+    writeState(wd, { status: 'busy', agent: 'claude', updatedAt: new Date(NOW - HOOK_BUSY_STALE_MS - 1000).toISOString() })
+    const probe = fakeProbe(['❯ \nidle', '❯ \nidle'])
+    const r = await getInjectReadinessAsync(sess, wd, NOW, probe)
+    expect(r.safeToSubmit).toBe(true)
+  })
+
+  it('non-Claude idle but pane busy -> defer (fallback, no false-idle court)', async () => {
+    writeState(wd, { status: 'idle', agent: 'gemini', updatedAt: new Date().toISOString() })
+    const probe = fakeProbe(['✶ Frolicking… (1s · ↓ 1k tokens)'])
+    const r = await getInjectReadinessAsync(sess, wd, Date.now(), probe)
+    expect(r.safeToSubmit).toBe(false)
   })
 })
