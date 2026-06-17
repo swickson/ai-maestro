@@ -159,6 +159,33 @@ describe('paneShowsBusyFooter (KAI-validated Claude busy signals)', () => {
     expect(paneShowsBusyFooter('⏵⏵ bypass permissions on (shift+tab to cycle)')).toBe(false)
     expect(paneShowsBusyFooter('❯ ')).toBe(false)
   })
+
+  it('region-scoped: busy patterns in the BODY do NOT match when the FOOTER is idle', () => {
+    // An agent pane whose scrollback/body quotes the busy patterns (·…ing, ↓N
+    // tokens, [N/N]) but is actually idle-at-prompt. Full-pane matching would
+    // false-positive → over-defer/strand; footer-region scoping must ignore body.
+    const idleFooterBusyBody = [
+      '● discussing the gate: "· Vibing…", "↓ 7.9k tokens", step [1/418]', // busy-like BODY
+      'more body', 'more body', 'more body', 'more body',
+      'more body', 'more body', 'more body', 'more body',
+      '────────────────────',
+      '❯ ',
+      '────────────────────',
+      '  dev-aimaestrogw-holmes | 0 unread',
+      '  Opus 4.8 (1M context) | ctx 31% | $31.36',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsBusyFooter(idleFooterBusyBody)).toBe(false)
+  })
+
+  it('region-scoped: a real footer padded down by trailing blank lines still matches', () => {
+    const paddedBusy = [
+      'some streamed response text',
+      '· Vibing… (1m 2s · ↓ 3.1k tokens)',
+      '', '', '', '',
+    ].join('\n')
+    expect(paneShowsBusyFooter(paddedBusy)).toBe(true)
+  })
 })
 
 describe('isPaneBusy (client-independent probe — closes the unwatched-pane blind spot)', () => {

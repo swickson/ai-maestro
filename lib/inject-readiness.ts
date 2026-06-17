@@ -179,8 +179,36 @@ const BUSY_FOOTER_PATTERNS: RegExp[] = [
   /\bRunning[.…]/,              // "Running…"
 ]
 
+/**
+ * How many trailing (non-blank) lines of the pane count as the "footer region".
+ * The live spinner/token-timer/esc-hint renders at the very bottom — just above
+ * and around the input box + status bar — so it lands within the last few lines.
+ * Empirically validated at 8 against live busy/idle agent panes (Holmes canary,
+ * the spinner sits ~line -7, above the 6-line input-box+status-bar stack).
+ */
+const FOOTER_REGION_LINES = 8
+
+/**
+ * True when the BUSY footer patterns appear in the pane's FOOTER REGION (the last
+ * few non-blank lines), not anywhere in the capture.
+ *
+ * Why region-scoped (not full-pane): the busy patterns (·…ing, ↓N tokens, [N/N])
+ * also occur in ordinary BODY/scrollback text — e.g. an agent pane full of a
+ * discussion that quotes them (us, tonight). Matching the full capture
+ * false-positives such an idle pane as busy → the notification over-DEFERS and
+ * re-strands the agent (the same symptom as BUG2, just from the busy side; safe
+ * direction — no court/auto-approve — but still a strand). Scoping to the footer
+ * region keeps the real busy signal (always at the bottom) while ignoring body
+ * text above it.
+ *
+ * Trailing blank lines are stripped FIRST so a real footer that tmux padded down
+ * with blank rows still lands inside the window.
+ */
 export function paneShowsBusyFooter(content: string): boolean {
-  return BUSY_FOOTER_PATTERNS.some(re => re.test(content))
+  const trimmed = content.replace(/\s+$/, '')
+  if (!trimmed) return false
+  const footerRegion = trimmed.split('\n').slice(-FOOTER_REGION_LINES).join('\n')
+  return BUSY_FOOTER_PATTERNS.some(re => re.test(footerRegion))
 }
 
 /** Normalize pane text so trailing-whitespace padding doesn't read as a diff. */
