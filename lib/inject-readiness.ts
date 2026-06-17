@@ -12,29 +12,47 @@
  *   2. TOOL-CALL CORRUPTION (the "court" / literal-<invoke> leak) — injecting
  *      keystrokes while the model is mid-generation at the think->tool-call seam
  *      desyncs the harness, so the model's own tool call renders as literal text
- *      in the pane instead of executing.
+ *      in the pane instead of executing. NOTE: this is an UPSTREAM Claude Code
+ *      harness bug (anthropics/claude-code #64108/#65248, open, no maintainer
+ *      fix); we cannot cure it, but the AMP-injected Enter reliably PRECIPITATES
+ *      it, so we remove the precipitant we control — never inject mid-generation.
  *
  * Both collapse to one rule: only inject-and-submit when the pane is genuinely
  * idle AND no interactive prompt is pending.
  *
- * The busy signal is terminal-OUTPUT activity (`sessionActivity`), NOT the hook
- * state file: the hook state goes stale for SECONDS after a new prompt starts
- * generating (see services/sessions-service.ts `getActivity`, which for the same
- * reason treats terminal output as the source of truth for busy/idle and only
- * trusts a `waiting_*` hook status when the terminal is already idle).
+ * Two signals, each with a known blind spot the #239 follow-up (this module)
+ * closes:
+ *
+ *   - BUSY signal — terminal-OUTPUT activity (`sessionActivity`). This is only
+ *     populated while a dashboard CLIENT is streaming the pane (server.mjs
+ *     ptyProcess.onData). An UNWATCHED agent therefore reads as idle even when
+ *     mid-generation — the over-permissive blind spot that precipitated Bishop's
+ *     court. `isPaneBusy()` closes it with a client-independent `tmux
+ *     capture-pane` probe (footer + 2-snapshot diff) that needs no client.
+ *   - PROMPT signal — the hook state file. The hook writes `waiting_for_input`
+ *     for BOTH a real permission prompt AND the BENIGN idle_prompt (Claude idle
+ *     at the prompt — the IDEAL moment to deliver). Treating all
+ *     `waiting_for_input` as blocking stranded notifications mesh-wide (an
+ *     already-idle agent fires no new idle_prompt, so the defer never resurfaces).
+ *     `isBlockingPrompt()` discriminates by `notificationType`.
  */
 
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { sessionActivity } from '@/services/shared-state'
 
-// A hook status is "interactive/pending" when the hook captured an
-// AskUserQuestion or a permission request, or the generic waiting_for_input that
-// follows them. A bare Enter into any of these auto-confirms — never auto-submit
-// while one is pending. (Mirrors the predicate previously inlined in server.mjs,
-// widened to include waiting_for_input which is also a live prompt.)
+const execFileAsync = promisify(execFile)
+
+// A hook status is "interactive/pending" at the STATUS level when the hook
+// captured an AskUserQuestion or a permission request, or the generic
+// waiting_for_input that follows them. Kept for the readHookState staleness
+// rule (a live prompt is never aged out) — the actual inject GATE uses
+// isBlockingPrompt(), which additionally discriminates waiting_for_input by
+// notificationType (see below).
 const INTERACTIVE_PROMPT_STATUSES = new Set(['question_prompt', 'permission_request', 'waiting_for_input'])
 
 export function isInteractivePrompt(status?: string | null): boolean {
@@ -48,10 +66,42 @@ export interface AgentHookState {
   [key: string]: unknown
 }
 
+// Statuses that are ALWAYS a live, blocking prompt — a bare Enter would
+// auto-answer/auto-approve. These are written directly by the hook's PreToolUse
+// (question_prompt) and PermissionRequest (permission_request) handlers, so they
+// are unambiguous.
+const ALWAYS_BLOCKING_STATUSES = new Set(['question_prompt', 'permission_request'])
+
+/**
+ * Decide whether the hook state represents a PENDING interactive prompt that a
+ * bare Enter would auto-confirm — i.e. a reason to DEFER injection.
+ *
+ * The subtlety (#239 BUG2): the hook writes `status: 'waiting_for_input'` for
+ * TWO very different situations, distinguished only by `notificationType`
+ * (ai-maestro-hook.cjs Notification handler):
+ *   - notificationType === 'idle_prompt'       -> Claude is idle AT the prompt.
+ *       This is the BENIGN case and the IDEAL moment to deliver. ALLOW.
+ *   - notificationType === 'permission_prompt'  -> a real pending permission.
+ *       A bare Enter would APPROVE it. BLOCK.
+ *   - notificationType missing                  -> lean ALLOW: idle is the common
+ *       case, and a real permission also writes status=permission_request first
+ *       (caught by ALWAYS_BLOCKING_STATUSES), so we don't strand on an ambiguous
+ *       waiting_for_input.
+ */
+export function isBlockingPrompt(state?: AgentHookState | null): boolean {
+  const status = state?.status
+  if (!status) return false
+  if (ALWAYS_BLOCKING_STATUSES.has(status)) return true
+  if (status === 'waiting_for_input') {
+    return state?.notificationType === 'permission_prompt'
+  }
+  return false
+}
+
 /**
  * Read the per-cwd hook state file the Claude Code hook writes to
  * `~/.aimaestro/chat-state/<md5(cwd)>.json`. Mirrors server.mjs `readHookState`:
- * a non-waiting state older than 60s is treated as absent (stale). Never throws.
+ * a non-prompt state older than 60s is treated as absent (stale). Never throws.
  */
 export function readHookState(workingDir?: string | null): AgentHookState | null {
   if (!workingDir) return null
@@ -78,24 +128,124 @@ export function readHookState(workingDir?: string | null): AgentHookState | null
 export const TERMINAL_IDLE_SECONDS = 3
 
 /**
- * True when the agent's terminal has produced no output for at least
- * TERMINAL_IDLE_SECONDS. Absent activity (never tracked) is treated as idle so a
- * freshly-discovered session is still notifiable.
+ * True when the agent's terminal has produced no TRACKED output for at least
+ * TERMINAL_IDLE_SECONDS. Absent activity (never tracked) is treated as idle.
  *
- * NOTE (cloud agents): a cloud agent currently reads as fully safe-to-inject by
- * BOTH signals: (1) host-side `sessionActivity` is only updated while the host
- * PTY bridge is streaming the container's tmux, so an unwatched cloud agent reads
- * as idle here; and (2) `readHookState` reads the HOST chat-state file, which a
- * cloud agent does NOT write — its hook state flows via the pushed activity API
- * and its bind-mounted chat-state dir is empty on the host — so `promptPending`
- * is false too. So this never regresses cloud delivery, but it also adds NO new
- * protection for cloud yet (cloud auto-approve is NOT prevented here). Cloud-aware
- * readiness (pushed hookState + a cloud activity signal) is a scoped follow-up.
+ * IMPORTANT (#239 BUG1): `sessionActivity` is only updated while a dashboard
+ * client streams the pane (server.mjs ptyProcess.onData). So a `false` here
+ * (BUSY) is reliable, but a `true` here (idle) is NOT trustworthy for an
+ * UNWATCHED pane — it reads idle even mid-generation. Use this only as the
+ * fast-path POSITIVE for busy; confirm an apparent-idle verdict with
+ * `isPaneBusy()`'s client-independent capture-pane probe before injecting.
  */
 export function isTerminalIdle(sessionName: string, now: number = Date.now()): boolean {
   const last = sessionActivity.get(sessionName)
   if (last === undefined) return true
   return (now - last) / 1000 > TERMINAL_IDLE_SECONDS
+}
+
+// ---------------------------------------------------------------------------
+// Client-independent busy probe (#239 BUG1 fix)
+// ---------------------------------------------------------------------------
+
+/** Interval between the two capture-pane snapshots used to detect live output. */
+export const PANE_PROBE_INTERVAL_MS = 400
+
+/**
+ * Busy-footer patterns — the PRIMARY busy signal for Claude panes. Empirically
+ * validated by KAI on live busy/idle Claude panes (Milo): a generating pane's
+ * footer shows a spinner gerund + ticking token-timer (e.g. "· Vibing… (2m 6s · ↓
+ * 7.9k tokens)") or "esc to interrupt"; an idle pane shows only the ❯ prompt and a
+ * static status bar ("Opus 4.8 (1M context) | ctx % | $cost", pipe-separated, no
+ * spinner) which matches NONE of these.
+ *
+ * This is the busy-relevant SUBSET of server.mjs `isStatusPattern` (a broader
+ * log-filter), PLUS the token-timer and "Running…" patterns KAI asked to add.
+ * `isStatusPattern`'s idle-or-neutral members ('? for shortcuts', 'Tip:', the
+ * input-box border) are deliberately EXCLUDED — they also render on an IDLE pane
+ * and would false-positive idle as busy (→ never deliver).
+ *
+ * Crucially the footer is present THROUGHOUT generation including the
+ * think→tool-call seam (the court moment) because the timer keeps ticking — so a
+ * single capture catches the exact failure window a sub-second diff could miss.
+ * The 2-snapshot diff (below) is the harness-agnostic backstop for Codex/Gemini,
+ * whose footers differ.
+ */
+const BUSY_FOOTER_PATTERNS: RegExp[] = [
+  /[✳·]\s*\w+ing[.…]/,         // spinner gerund: "· Vibing…", "✳ Forming…", "· Thinking…"
+  /esc to interrupt/i,          // generating footer hint
+  /\[\d+\/\d+\]/,               // thinking-step markers: [1/418] (incl. timestamped steps)
+  /[↓↑]\s*[\d.]+k?\s+tokens/i,  // token-timer: "↓ 7.9k tokens", "↑ 1.2k tokens"
+  /\bRunning[.…]/,              // "Running…"
+]
+
+export function paneShowsBusyFooter(content: string): boolean {
+  return BUSY_FOOTER_PATTERNS.some(re => re.test(content))
+}
+
+/** Normalize pane text so trailing-whitespace padding doesn't read as a diff. */
+function normalizePane(content: string): string {
+  return content.split('\n').map(line => line.replace(/\s+$/, '')).join('\n').trim()
+}
+
+/**
+ * Capture an agent's tmux pane WITHOUT a dashboard client. Returns null when the
+ * pane is not host-capturable — no such session, tmux absent/timeout, or a CLOUD
+ * agent whose tmux runs inside its container (host has no matching session). A
+ * null result yields NO new busy signal, so cloud delivery is never regressed
+ * (cloud-aware probing via docker exec is the #241 follow-up, out of scope here).
+ */
+export async function tmuxCapturePane(sessionName: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('tmux', ['capture-pane', '-p', '-t', `${sessionName}:0.0`], { timeout: 2000 })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
+export interface PaneProbe {
+  capturePane: (sessionName: string) => Promise<string | null>
+  sleep?: (ms: number) => Promise<void>
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+const defaultProbe: PaneProbe = { capturePane: tmuxCapturePane }
+
+/**
+ * Client-independent busy check. Closes the unwatched-pane blind spot of
+ * `isTerminalIdle` (#239 BUG1) so an unwatched mid-generation agent is no longer
+ * mistaken for idle.
+ *
+ *   1. Fast path — if tracked output is recent (`!isTerminalIdle`), the pane is
+ *      BUSY for certain (a watched pane); short-circuit. (We trust only the
+ *      positive; an absent/idle activity reading is the untrustworthy case.)
+ *   2. Apparent-idle — capture the pane with no client and decide:
+ *        - busy footer present (esc to interrupt / spinner)  -> BUSY
+ *        - two snapshots ~400ms apart that differ            -> BUSY (live output)
+ *        - otherwise                                         -> idle
+ *      A non-capturable pane (null) yields not-busy (no cloud regression).
+ */
+export async function isPaneBusy(
+  sessionName: string,
+  now: number = Date.now(),
+  probe: PaneProbe = defaultProbe
+): Promise<boolean> {
+  if (!isTerminalIdle(sessionName, now)) return true
+
+  const snap1 = await probe.capturePane(sessionName)
+  if (snap1 == null) return false
+  if (paneShowsBusyFooter(snap1)) return true
+
+  const sleep = probe.sleep ?? defaultSleep
+  await sleep(PANE_PROBE_INTERVAL_MS)
+
+  const snap2 = await probe.capturePane(sessionName)
+  if (snap2 == null) return false
+  if (paneShowsBusyFooter(snap2)) return true
+
+  return normalizePane(snap1) !== normalizePane(snap2)
 }
 
 export interface InjectReadiness {
@@ -108,16 +258,17 @@ export interface InjectReadiness {
   reason: string
 }
 
+function promptReason(state: AgentHookState | null): string {
+  if (!state?.status) return 'unknown'
+  return state.notificationType ? `${state.status}/${state.notificationType}` : state.status
+}
+
 /**
- * Decide whether a notification/wake may be injected-and-submitted into a pane.
- *
- *   terminal BUSY (recent output)  -> defer; injecting now risks the tool-call
- *                                     serialization corruption ("court" leak).
- *   prompt PENDING (question/perm) -> defer; a bare Enter would auto-pick/approve.
- *   idle AND clear                 -> safe to submit.
- *
- * A deferred message is NOT lost: it stays unread in the inbox and the hook
- * surfaces it on the next genuine idle (idle_prompt / UserPromptSubmit drain).
+ * SYNCHRONOUS readiness — the pure core (no capture-pane). The busy signal is the
+ * `sessionActivity` fast-path ONLY, so it carries `isTerminalIdle`'s
+ * unwatched-pane blind spot. Use this where shelling out to tmux is not possible;
+ * the injection GATE should use `getInjectReadinessAsync`, which adds the
+ * client-independent busy probe.
  */
 export function getInjectReadiness(
   sessionName: string,
@@ -126,7 +277,7 @@ export function getInjectReadiness(
 ): InjectReadiness {
   const terminalIdle = isTerminalIdle(sessionName, now)
   const hookState = readHookState(workingDir)
-  const promptPending = isInteractivePrompt(hookState?.status)
+  const promptPending = isBlockingPrompt(hookState)
 
   let safeToSubmit = true
   let reason = 'idle and clear'
@@ -135,7 +286,44 @@ export function getInjectReadiness(
     reason = 'terminal busy (mid-generation)'
   } else if (promptPending) {
     safeToSubmit = false
-    reason = `interactive prompt pending (${hookState?.status})`
+    reason = `interactive prompt pending (${promptReason(hookState)})`
+  }
+
+  return { terminalIdle, hookStatus: hookState?.status, promptPending, safeToSubmit, reason }
+}
+
+/**
+ * ASYNC readiness — THE injection gate. Decide whether a notification/wake may be
+ * injected-and-submitted into a pane, using the client-independent capture-pane
+ * busy probe so an UNWATCHED mid-generation pane is correctly deferred.
+ *
+ *   terminal BUSY (probe)          -> defer; injecting now risks the tool-call
+ *                                     serialization corruption ("court" leak).
+ *   prompt PENDING (real, by type) -> defer; a bare Enter would auto-pick/approve.
+ *   idle AND clear                 -> safe to submit.
+ *
+ * A deferred message is NOT lost: it stays unread in the inbox and the hook
+ * surfaces it on the next genuine idle (idle_prompt / UserPromptSubmit drain).
+ */
+export async function getInjectReadinessAsync(
+  sessionName: string,
+  workingDir?: string | null,
+  now: number = Date.now(),
+  probe: PaneProbe = defaultProbe
+): Promise<InjectReadiness> {
+  const busy = await isPaneBusy(sessionName, now, probe)
+  const terminalIdle = !busy
+  const hookState = readHookState(workingDir)
+  const promptPending = isBlockingPrompt(hookState)
+
+  let safeToSubmit = true
+  let reason = 'idle and clear'
+  if (busy) {
+    safeToSubmit = false
+    reason = 'terminal busy (mid-generation)'
+  } else if (promptPending) {
+    safeToSubmit = false
+    reason = `interactive prompt pending (${promptReason(hookState)})`
   }
 
   return { terminalIdle, hookStatus: hookState?.status, promptPending, safeToSubmit, reason }

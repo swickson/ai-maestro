@@ -12,7 +12,7 @@ import { computeSessionName } from '@/types/agent'
 import { getSelfHostId, isSelf } from '@/lib/hosts-config-server.mjs'
 import { getRuntime } from '@/lib/agent-runtime'
 import { sendKeysToContainer } from '@/lib/container-utils'
-import { getInjectReadiness } from '@/lib/inject-readiness'
+import { getInjectReadinessAsync } from '@/lib/inject-readiness'
 
 // Configuration (can be overridden via environment variables)
 const NOTIFICATIONS_ENABLED = process.env.NOTIFICATIONS_ENABLED !== 'false'
@@ -198,7 +198,7 @@ export async function notifyAgent(options: NotificationOptions): Promise<Notific
     const workingDir = agent.workingDirectory
       || primarySession.workingDirectory
       || agent.preferences?.defaultWorkingDirectory
-    const readiness = getInjectReadiness(sessionName, workingDir)
+    const readiness = await getInjectReadinessAsync(sessionName, workingDir)
     if (!readiness.safeToSubmit) {
       console.log(`[Notify] Deferring wake for ${agentName}: ${readiness.reason} — message stays in inbox, surfaces on next idle`)
       return { success: true, notified: false, reason: `Deferred: ${readiness.reason}` }
