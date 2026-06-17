@@ -18,7 +18,7 @@ import { promises as fs } from 'fs'
 import * as fsSync from 'fs'
 import path from 'path'
 import os from 'os'
-import type { AMPEnvelope, AMPPayload } from '@/lib/types/amp'
+import type { AMPEnvelope, AMPPayload, Enrichment } from '@/lib/types/amp'
 
 const AMP_DIR = path.join(os.homedir(), '.agent-messaging')
 const AMP_AGENTS_DIR = path.join(AMP_DIR, 'agents')
@@ -317,7 +317,8 @@ export async function writeToAMPInbox(
   payload: AMPPayload,
   recipientAgent?: string,
   senderPublicKey?: string,
-  recipientAgentId?: string
+  recipientAgentId?: string,
+  enrichment?: Enrichment
 ): Promise<string | null> {
   try {
     const agentName = recipientAgent || extractAgentName(envelope.to)
@@ -368,6 +369,9 @@ export async function writeToAMPInbox(
         delivery_method: 'local',
         status: 'unread'
       },
+      // Card B: receiver-added, server-authoritative, UNSIGNED — a top-level
+      // sibling of envelope/payload (outside the signed unit, by position).
+      ...(enrichment ? { enrichment } : {}),
       ...(senderPublicKey ? { sender_public_key: senderPublicKey } : {})
     }
 

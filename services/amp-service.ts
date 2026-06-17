@@ -61,6 +61,7 @@ import type {
   AMPEnvelope,
   AMPPayload,
   AMPKeypairRotationRequest,
+  Enrichment,
 } from '@/lib/types/amp'
 import { type ServiceResult } from '@/services/service-errors'
 
@@ -406,10 +407,13 @@ interface LocalDeliveryOptions {
 async function deliverLocally(opts: LocalDeliveryOptions): Promise<void> {
   const { envelope, payload, recipientAgentName, senderAgent, senderName, forwardedFrom, senderPublicKeyHex, senderAuthenticated, body } = opts
 
-  // ── Memory Retrieval ──────────────────────────────────────────────
-  // Inject relevant long-term memories into the payload before delivery.
+  // ── Memory Retrieval (Card B) ─────────────────────────────────────
+  // Surface relevant long-term memories as receiver-local `enrichment`, built
+  // FRESH here from this Maestro's own store — never copied from the inbound
+  // body (§4a server-authoritative: enrichment is never sender-supplied). The
+  // sender's `payload` is delivered VERBATIM so delivered body == signed body.
   // Best-effort: failures are non-fatal and fall through to plain delivery.
-  let enrichedPayload = payload
+  let enrichment: Enrichment | undefined
   try {
     const agent = await agentRegistry.getAgent(opts.localAgent.id)
     const agentDb = await agent.getDatabase()
@@ -432,9 +436,9 @@ async function deliverLocally(opts: LocalDeliveryOptions): Promise<void> {
       message: messageContext,
     })
 
-    if (retrieval.contextBlock) {
-      enrichedPayload = { ...payload, message: `${retrieval.contextBlock}\n\n${payload.message}` }
-      console.log(`[AMP Route] Injected ${retrieval.memories.length} memories for ${recipientAgentName} (cache: ${retrieval.cacheKey ? 'hit' : 'miss'})`)
+    if (retrieval.memoryRecall) {
+      enrichment = { memoryRecall: retrieval.memoryRecall }
+      console.log(`[AMP Route] Attached ${retrieval.memoryRecall.items.length} recall item(s) as enrichment for ${recipientAgentName} (cache: ${retrieval.cacheKey ? 'hit' : 'miss'})`)
     }
   } catch (err) {
     // Non-fatal — deliver without memory enrichment
@@ -443,7 +447,8 @@ async function deliverLocally(opts: LocalDeliveryOptions): Promise<void> {
 
   await deliver({
     envelope,
-    payload: enrichedPayload,
+    payload,            // VERBATIM sender content — no longer mutated (Card B)
+    enrichment,
     recipientAgentName,
     senderPublicKeyHex,
     senderAuthenticated,
@@ -835,6 +840,18 @@ export async function routeMessage(
   contentLength: string | null
 ): Promise<ServiceResult<AMPRouteResponse>> {
   try {
+    // ── §4a STRIP: enrichment is SERVER-AUTHORITATIVE, never sender-supplied ──
+    // `enrichment` is not a field of AMPRouteRequest, so a typed client can't set
+    // it — but a raw POST could smuggle one. Drop any inbound `enrichment` before
+    // processing so it can never be passed through as forged provenance. (Defense;
+    // the load-bearing guarantee is that deliverLocally builds enrichment fresh
+    // and never copies it from `body`.)
+    const rawBody = body as unknown as Record<string, unknown>
+    if (rawBody.enrichment !== undefined) {
+      console.warn('[AMP Route] Dropping sender-supplied `enrichment` (server-authoritative, Card B §4a)')
+      delete rawBody.enrichment
+    }
+
     // ── Authentication ─────────────────────────────────────────────────
     let auth = authenticateRequest(authHeader)
 

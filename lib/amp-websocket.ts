@@ -20,7 +20,7 @@
 import type { WebSocket } from 'ws'
 import { validateApiKey } from '@/lib/amp-auth'
 import { getPendingMessages, acknowledgeMessage } from '@/lib/amp-relay'
-import type { AMPEnvelope, AMPPayload } from '@/lib/types/amp'
+import type { AMPEnvelope, AMPPayload, Enrichment } from '@/lib/types/amp'
 
 // ============================================================================
 // Connection Registry
@@ -58,7 +58,8 @@ export function deliverViaWebSocket(
   address: string,
   envelope: AMPEnvelope,
   payload: AMPPayload,
-  senderPublicKey?: string
+  senderPublicKey?: string,
+  enrichment?: Enrichment
 ): boolean {
   const agentConns = connections.get(address)
   if (!agentConns || agentConns.size === 0) return false
@@ -67,6 +68,8 @@ export function deliverViaWebSocket(
     type: 'message',
     envelope,
     payload,
+    // Card B: receiver-added, server-authoritative, UNSIGNED — top-level sibling.
+    ...(enrichment ? { enrichment } : {}),
     ...(senderPublicKey ? { sender_public_key: senderPublicKey } : {}),
     delivered_at: new Date().toISOString(),
   })
