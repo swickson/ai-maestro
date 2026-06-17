@@ -497,6 +497,7 @@ async function main() {
                     status: 'waiting_for_input',
                     message: input.message || 'Waiting for your input...',
                     notificationType,
+                    agent,
                     sessionId,
                     transcriptPath
                 });
@@ -533,6 +534,7 @@ async function main() {
                     status: 'waiting_for_input',
                     message: input.message || 'Waiting for your input...',
                     notificationType,
+                    agent,
                     sessionId,
                     transcriptPath,
                     // Preserve tool info from PermissionRequest if we have it
@@ -550,6 +552,7 @@ async function main() {
             writeState(cwd, {
                 status: 'idle',
                 message: null,
+                agent,
                 sessionId,
                 transcriptPath
             });
@@ -560,6 +563,7 @@ async function main() {
             writeState(cwd, {
                 status: 'active',
                 message: null,
+                agent,
                 sessionId,
                 transcriptPath,
                 source: input.source
@@ -578,6 +582,17 @@ async function main() {
             break;
 
         case 'UserPromptSubmit': {
+            // PR-B: AUTHORITATIVE BUSY edge. UserPromptSubmit is Claude's reliable
+            // turn-START signal (fires once per turn, synchronously BEFORE the model
+            // generates). Writing status:busy here — paired with Stop→idle (turn END)
+            // — makes busy/idle authoritative from the agent's own lifecycle, so the
+            // inject-readiness gate no longer has to scrape terminal output for "busy".
+            // Empirically Stop fires once per TURN, not per tool-round, so
+            // busy=[UserPromptSubmit, Stop) brackets the whole turn INCLUDING the
+            // think→tool-call seam (no mid-turn idle flip → no court). Write busy
+            // FIRST so it lands even if the async drain below is slow/cancelled.
+            writeState(cwd, { status: 'busy', message: 'Generating…', agent, sessionId, transcriptPath });
+
             // Drain on every user prompt — this is the reliable delivery slot
             // for Claude Code. SessionStart can be preempted by other plugins'
             // hooks (e.g. Vercel plugin emitting 50KB overwhelms the context
