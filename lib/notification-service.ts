@@ -13,7 +13,7 @@ import { getSelfHostId, isSelf } from '@/lib/hosts-config-server.mjs'
 import { getRuntime } from '@/lib/agent-runtime'
 import { sendKeysToContainer } from '@/lib/container-utils'
 import { getInjectReadinessAsync } from '@/lib/inject-readiness'
-import { recordDeferred, peekDeferred, clearDeferred } from '@/lib/deferred-notifications'
+import { recordDeferred, peekDeferred, clearDeferred, listPendingSessions } from '@/lib/deferred-notifications'
 import { getAgentUnreadCount } from '@/lib/agent-messaging'
 
 // Configuration (can be overridden via environment variables)
@@ -210,6 +210,7 @@ export async function notifyAgent(options: NotificationOptions): Promise<Notific
       // drains on that turn), and re-waking a live prompt is exactly what we must not do.
       if (!readiness.terminalIdle) {
         recordDeferred(sessionName, options)
+        ensureDeferredSweep() // reliability backstop — the broadcast-triggered flush can be cut (see below)
       }
       console.log(`[Notify] Deferring wake for ${agentName}: ${readiness.reason} — message stays in inbox, surfaces on next idle`)
       return { success: true, notified: false, reason: `Deferred: ${readiness.reason}` }
@@ -299,6 +300,59 @@ export async function flushDeferredNotifications(sessionName: string): Promise<v
     }
   } catch (error) {
     console.error(`[Notify] flushDeferredNotifications failed for ${sessionName}:`, error)
+  }
+}
+
+// --- Reliability sweep (#245 follow-up) ---------------------------------------
+// The broadcast-triggered flush (broadcastActivityUpdate, fired by the hook's
+// /api/sessions/activity/update POST) is FAST but UNRELIABLE: the host Claude hook
+// fire-and-forgets that POST then process.exit()s, intentionally cutting it so it
+// can't blow the hook deadline (ai-maestro-hook.cjs). So a busy-deferred wake to a
+// passively-waiting agent may never resurface if its idle broadcast was cut — which
+// is exactly what was observed on the Holmes .57 canary (0 resurface, real agent).
+// This periodic sweep re-flushes every pending session on a timer; the flush re-gates
+// via readHookState, which reads the RELIABLY-written hook-state FILE (the same signal
+// PR-B's busy gate trusts), so resurface is guaranteed within ~one interval of the
+// agent idling, broadcast or not. The broadcast-flush stays as the instant fast-path.
+const DEFERRED_SWEEP_INTERVAL_MS = Number(process.env.DEFERRED_SWEEP_INTERVAL_MS) || 15_000
+let _sweepTimer: ReturnType<typeof setInterval> | null = null
+let _sweeping = false
+
+/** Flush every pending-deferred session once; stop the timer when the queue drains. */
+export async function sweepDeferredNotifications(): Promise<void> {
+  if (_sweeping) return // never overlap a slow sweep with the next tick
+  _sweeping = true
+  try {
+    const sessions = listPendingSessions()
+    if (sessions.length === 0) {
+      stopDeferredSweep()
+      return
+    }
+    for (const session of sessions) {
+      await flushDeferredNotifications(session)
+    }
+  } finally {
+    _sweeping = false
+  }
+}
+
+/** Idempotently start the periodic sweep (called when a wake is first deferred). */
+export function ensureDeferredSweep(): void {
+  if (_sweepTimer) return
+  _sweepTimer = setInterval(() => {
+    void sweepDeferredNotifications()
+  }, DEFERRED_SWEEP_INTERVAL_MS)
+  // Don't let the sweep timer alone keep a process alive (clean exit in tests/CLIs).
+  if (typeof (_sweepTimer as { unref?: () => void }).unref === 'function') {
+    ;(_sweepTimer as { unref: () => void }).unref()
+  }
+}
+
+/** Stop the periodic sweep (auto-called when the queue is empty; also for tests). */
+export function stopDeferredSweep(): void {
+  if (_sweepTimer) {
+    clearInterval(_sweepTimer)
+    _sweepTimer = null
   }
 }
 

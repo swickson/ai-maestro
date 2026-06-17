@@ -89,6 +89,19 @@ export function clearDeferred(sessionName: string): void {
   pending.delete(sessionName)
 }
 
+/**
+ * Session keys that have at least one non-expired deferred entry. Drives the
+ * periodic reliability sweep (the broadcast-triggered flush can be cut by the
+ * hook's process.exit, so the server re-flushes these on a timer).
+ */
+export function listPendingSessions(now: number = Date.now()): string[] {
+  const out: string[] = []
+  for (const [session, list] of pending) {
+    if (list.some(e => now - e.deferredAt <= DEFERRED_TTL_MS)) out.push(session)
+  }
+  return out
+}
+
 /** Test/diagnostic helper — total queued sessions. */
 export function _deferredSessionCount(): number {
   return pending.size

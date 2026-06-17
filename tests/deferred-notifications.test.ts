@@ -5,6 +5,7 @@ import {
   peekDeferred,
   clearDeferred,
   hasDeferred,
+  listPendingSessions,
   _deferredSessionCount,
   DEFERRED_TTL_MS,
   DEFERRED_MAX_PER_SESSION,
@@ -126,7 +127,12 @@ vi.mock('@/lib/agent-messaging', () => ({
   getAgentUnreadCount: (...a: unknown[]) => getAgentUnreadCount(...a),
 }))
 
-import { flushDeferredNotifications } from '@/lib/notification-service'
+import {
+  flushDeferredNotifications,
+  sweepDeferredNotifications,
+  ensureDeferredSweep,
+  stopDeferredSweep,
+} from '@/lib/notification-service'
 
 describe('flushDeferredNotifications (resurface on idle)', () => {
   beforeEach(() => {
@@ -171,5 +177,76 @@ describe('flushDeferredNotifications (resurface on idle)', () => {
 
     expect(sendKeys).not.toHaveBeenCalled()
     expect(hasDeferred('reed')).toBe(true) // survives for the next idle transition
+  })
+})
+
+// ---------------------------------------------------------------------------
+// listPendingSessions + the reliability SWEEP — the fix for the broadcast being
+// cut by the hook's process.exit (Holmes .57 resurface miss). The sweep re-flushes
+// pending sessions on a timer, independent of the (racy) idle broadcast.
+// ---------------------------------------------------------------------------
+describe('listPendingSessions', () => {
+  beforeEach(() => {
+    clearDeferred('a')
+    clearDeferred('b')
+    clearDeferred('reed') // a prior describe may leave 'reed' queued (busy-requeue case)
+  })
+
+  it('lists sessions with at least one non-expired deferred entry', () => {
+    expect(listPendingSessions()).toEqual([])
+    recordDeferred('a', opts('m1'))
+    recordDeferred('b', opts('m2'))
+    expect(listPendingSessions().sort()).toEqual(['a', 'b'])
+  })
+
+  it('omits a session whose only entry has expired', () => {
+    const t0 = 1_000_000_000_000
+    recordDeferred('a', opts('m1'), t0)
+    expect(listPendingSessions(t0 + DEFERRED_TTL_MS + 1)).toEqual([])
+  })
+})
+
+describe('sweepDeferredNotifications (reliable trigger, broadcast-independent)', () => {
+  beforeEach(() => {
+    sendKeys.mockClear()
+    getInjectReadinessAsync.mockReset()
+    getAgentUnreadCount.mockReset()
+    clearDeferred('reed')
+    stopDeferredSweep()
+  })
+
+  it('re-flushes a pending session WITHOUT any broadcast (the Holmes fix): idle + unread -> resurface', async () => {
+    recordDeferred('reed', opts('m1'))
+    getAgentUnreadCount.mockResolvedValue(1)
+    getInjectReadinessAsync.mockResolvedValue({ safeToSubmit: true, terminalIdle: true, reason: 'idle and clear' })
+
+    await sweepDeferredNotifications() // no broadcastActivityUpdate involved
+
+    expect(sendKeys).toHaveBeenCalled() // resurfaced purely from the timer-driven sweep
+    expect(hasDeferred('reed')).toBe(false)
+  })
+
+  it('leaves a still-busy session queued (re-defers), so a later sweep retries', async () => {
+    recordDeferred('reed', opts('m1'))
+    getAgentUnreadCount.mockResolvedValue(1)
+    getInjectReadinessAsync.mockResolvedValue({ safeToSubmit: false, terminalIdle: false, reason: 'agent busy (hook: mid-turn)' })
+
+    await sweepDeferredNotifications()
+
+    expect(sendKeys).not.toHaveBeenCalled()
+    expect(hasDeferred('reed')).toBe(true)
+  })
+
+  it('is a no-op when nothing is pending', async () => {
+    await sweepDeferredNotifications()
+    expect(sendKeys).not.toHaveBeenCalled()
+  })
+
+  it('ensureDeferredSweep is idempotent and stopDeferredSweep tears it down', () => {
+    expect(() => {
+      ensureDeferredSweep()
+      ensureDeferredSweep() // second call must not start a second timer
+      stopDeferredSweep()
+    }).not.toThrow()
   })
 })
