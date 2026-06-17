@@ -192,9 +192,35 @@ describe('paneShowsBusyFooter (empirically-calibrated, line-anchored)', () => {
     expect(paneShowsBusyFooter(pane)).toBe(false)
   })
 
-  it('region+anchor: a real busy footer (padded down by trailing blanks) still matches', () => {
-    const paddedBusy = ['some streamed response text', '✶ Frolicking… (18s · ↓ 531 tokens · thinking)', '', '', ''].join('\n')
-    expect(paneShowsBusyFooter(paddedBusy)).toBe(true)
+  it('FLOATING OFFSET: catches the spinner at any depth (-7/-9/-11/-13), not just clean -7', () => {
+    // The defect a fixed tail-N window had: a transient feedback prompt / Tip line
+    // / interior blanks FLOAT the spinner up (measured -7/-9/-11 on real panes), so
+    // a windowed match slices it out → court. Full-pane + anchoring catches it
+    // anywhere. Reproduces KAI's -11 capture (feedback-prompt layout).
+    const chrome = [
+      '────────────────────',
+      '❯ ',
+      '────────────────────',
+      '  agent | 0 unread',
+      '  Opus 4.8 (1M context) | ctx 31% | $1.00',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ]
+    for (const padAbove of [0, 2, 4, 6]) {
+      // transient feedback prompt + blanks that push the spinner up out of any tail-N
+      const filler = Array(padAbove).fill('● How is Claude doing this session?')
+      const pane = ['streamed response text', '✢ Discombobulating… (1m 18s · ↓ 1.6k tokens)', ...filler, ...chrome].join('\n')
+      expect(paneShowsBusyFooter(pane)).toBe(true) // spinner now at offset -(padAbove+6): -6,-8,-10,-12
+    }
+  })
+
+  it('a real busy footer matches regardless of trailing blank padding', () => {
+    expect(paneShowsBusyFooter(['response text', '✶ Frolicking… (18s · ↓ 531 tokens · thinking)', '', '', ''].join('\n'))).toBe(true)
+  })
+
+  it('accepted residual: a pane literally DISPLAYING a captured footer line reads busy (safe over-defer)', () => {
+    // e.g. this very session showing a captured spinner line at line-start — over-
+    // defer is the SAFE direction (no court / no auto-approve), cron-backstopped.
+    expect(paneShowsBusyFooter('✢ Discombobulating… (1m 18s · ↓ 1.6k tokens)')).toBe(true)
   })
 })
 

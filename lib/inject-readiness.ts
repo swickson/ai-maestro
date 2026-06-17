@@ -192,35 +192,30 @@ const BUSY_FOOTER_PATTERNS: RegExp[] = [
 ]
 
 /**
- * How many trailing (non-blank) lines of the pane count as the "footer region".
- * The live spinner/token-timer/esc-hint renders at the very bottom — just above
- * and around the input box + status bar — so it lands within the last few lines.
- * Empirically validated at 8 against live busy/idle agent panes (Holmes canary,
- * the spinner sits ~line -7, above the 6-line input-box+status-bar stack).
- */
-const FOOTER_REGION_LINES = 8
-
 /**
- * True when the BUSY footer patterns appear in the pane's FOOTER REGION (the last
- * few non-blank lines), not anywhere in the capture.
+ * True when a line-anchored BUSY footer pattern appears ANYWHERE in the pane.
  *
- * Why region-scoped (not full-pane): the busy patterns (·…ing, ↓N tokens, [N/N])
- * also occur in ordinary BODY/scrollback text — e.g. an agent pane full of a
- * discussion that quotes them (us, tonight). Matching the full capture
- * false-positives such an idle pane as busy → the notification over-DEFERS and
- * re-strands the agent (the same symptom as BUG2, just from the busy side; safe
- * direction — no court/auto-approve — but still a strand). Scoping to the footer
- * region keeps the real busy signal (always at the bottom) while ignoring body
- * text above it.
+ * We deliberately do NOT window to a fixed tail-N region. The live
+ * spinner/progress line FLOATS: measured at offset -7, -9, and -11 across real
+ * generating panes (a transient "How is Claude doing this session?" feedback
+ * prompt, a Tip line, or interior blank rows push it up above a fixed window). Any
+ * fixed tail-N risks slicing the spinner OUT → a genuinely-generating pane reads
+ * idle → inject at the think→tool-call seam → court. So the window itself was the
+ * defect (it traded the .54 court-safety for a court hole).
  *
- * Trailing blank lines are stripped FIRST so a real footer that tmux padded down
- * with blank rows still lands inside the window.
+ * Instead we rely on the line-ANCHORING in BUSY_FOOTER_PATTERNS (each requires a
+ * spinner glyph / ⎿ run-indicator at LINE-START, with the "●" response bullet
+ * excluded) to do the body-quote rejection a window was previously used for. So a
+ * full-pane match is BOTH court-safe (catches the spinner at any offset) AND
+ * body-safe (a quoted "· Vibing…" mid-line, or a "● …" bullet, does not match).
+ *
+ * Accepted residual (CelestIA's edge): a pane that literally DISPLAYS a captured
+ * footer line at line-start reads busy → over-defer. That is the SAFE direction
+ * (no court / no auto-approve), cron-backstopped, and far rarer than the
+ * floating-spinner court hole a fixed window would reintroduce.
  */
 export function paneShowsBusyFooter(content: string): boolean {
-  const trimmed = content.replace(/\s+$/, '')
-  if (!trimmed) return false
-  const footerRegion = trimmed.split('\n').slice(-FOOTER_REGION_LINES).join('\n')
-  return BUSY_FOOTER_PATTERNS.some(re => re.test(footerRegion))
+  return BUSY_FOOTER_PATTERNS.some(re => re.test(content))
 }
 
 /** Normalize pane text so trailing-whitespace padding doesn't read as a diff. */
