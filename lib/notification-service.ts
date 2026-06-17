@@ -269,7 +269,10 @@ export async function notifyAgent(options: NotificationOptions): Promise<Notific
  * court-safe readiness gate, so if the pane went busy again the wake re-defers and stays
  * queued (peek, not take) for the next idle. The busy gate itself is untouched.
  */
-export async function flushDeferredNotifications(sessionName: string): Promise<void> {
+export async function flushDeferredNotifications(
+  sessionName: string,
+  trigger: 'edge' | 'sweep' = 'edge'
+): Promise<void> {
   try {
     const entries = peekDeferred(sessionName)
     if (entries.length === 0) return
@@ -294,7 +297,7 @@ export async function flushDeferredNotifications(sessionName: string): Promise<v
     const result = await notifyAgent(options)
     if (result.notified) {
       console.log(
-        `[Notify] Resurfaced ${entries.length} deferred wake(s) for ${options.agentName} on idle`
+        `[Notify] Resurfaced ${entries.length} deferred wake(s) for ${options.agentName} on idle (${trigger})`
       )
       clearDeferred(sessionName)
     }
@@ -328,8 +331,12 @@ export async function sweepDeferredNotifications(): Promise<void> {
       stopDeferredSweep()
       return
     }
+    // Composes with PR-B's hook-busy gate: on a MISSED Stop the hook stays 'busy'
+    // (fresh <5min) so the flush's isAgentBusy RE-DEFERS (peek-not-take, stays
+    // queued) — no premature inject; once PR-B's 5min staleness guard capture-pane-
+    // verifies idle, this sweep then resurfaces. So a missed-Stop deferral self-heals.
     for (const session of sessions) {
-      await flushDeferredNotifications(session)
+      await flushDeferredNotifications(session, 'sweep')
     }
   } finally {
     _sweeping = false
