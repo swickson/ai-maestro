@@ -12,6 +12,7 @@ import { computeSessionName } from '@/types/agent'
 import { getSelfHostId, isSelf } from '@/lib/hosts-config-server.mjs'
 import { getRuntime } from '@/lib/agent-runtime'
 import { sendKeysToContainer } from '@/lib/container-utils'
+import { getInjectReadiness } from '@/lib/inject-readiness'
 
 // Configuration (can be overridden via environment variables)
 const NOTIFICATIONS_ENABLED = process.env.NOTIFICATIONS_ENABLED !== 'false'
@@ -182,6 +183,26 @@ export async function notifyAgent(options: NotificationOptions): Promise<Notific
     // Get the primary session (index 0)
     const primarySession = agent.sessions.find(s => s.index === 0) || agent.sessions[0]
     const sessionName = computeSessionName(agent.name, primarySession.index)
+
+    // SAFETY GATE — never inject the wake "echo + Enter" into a pane that is not
+    // idle-and-clear:
+    //   - mid-generation (terminal busy) -> the keystrokes desync the harness and
+    //     the model's own tool call leaks as literal <invoke> text (the "court" bug)
+    //   - an AskUserQuestion/permission prompt open -> the bare Enter auto-selects
+    //     option 1, silently answering the question or APPROVING the permission
+    // When not safe, defer: the message stays unread in the inbox and the hook
+    // surfaces it on the next genuine idle (idle_prompt / UserPromptSubmit drain).
+    // Signals are terminal-output activity + the hook state file; both are host-
+    // reliable. A cloud agent whose signals aren't host-visible reads as safe, so
+    // this never regresses cloud delivery (cloud-aware readiness is a follow-up).
+    const workingDir = agent.workingDirectory
+      || primarySession.workingDirectory
+      || agent.preferences?.defaultWorkingDirectory
+    const readiness = getInjectReadiness(sessionName, workingDir)
+    if (!readiness.safeToSubmit) {
+      console.log(`[Notify] Deferring wake for ${agentName}: ${readiness.reason} — message stays in inbox, surfaces on next idle`)
+      return { success: true, notified: false, reason: `Deferred: ${readiness.reason}` }
+    }
 
     // Cloud-agent dispatch: tmux runs INSIDE the container, host has no
     // matching session. Without this branch, sessionExists below returns
