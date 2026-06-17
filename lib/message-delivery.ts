@@ -16,7 +16,7 @@ import { notifyAgent } from '@/lib/notification-service'
 import { applyContentSecurity } from '@/lib/content-security'
 import { deliverViaWebSocket, isAgentConnectedViaWS } from '@/lib/amp-websocket'
 import { getAgent } from '@/lib/agent-registry'
-import type { AMPEnvelope, AMPPayload } from '@/lib/types/amp'
+import type { AMPEnvelope, AMPPayload, Enrichment } from '@/lib/types/amp'
 
 export interface DeliveryInput {
   envelope: AMPEnvelope
@@ -24,6 +24,13 @@ export interface DeliveryInput {
   recipientAgentName: string
   senderPublicKeyHex?: string
   senderAuthenticated?: boolean
+  /**
+   * Receiver-added, server-authoritative, UNSIGNED enrichment (Card B). Written
+   * alongside the verbatim payload to the inbox + WS push as a top-level sibling.
+   * Deliberately NOT included in the webhook HMAC body (that hashes only
+   * {envelope, payload, sender_public_key}); webhook enrichment is a follow-up.
+   */
+  enrichment?: Enrichment
   // Notification context
   senderName: string
   senderHost?: string
@@ -45,7 +52,7 @@ export interface DeliveryResult {
 export async function deliver(input: DeliveryInput): Promise<DeliveryResult> {
   const {
     envelope, payload, recipientAgentName, senderPublicKeyHex,
-    senderAuthenticated,
+    senderAuthenticated, enrichment,
     senderName, senderHost, recipientAgentId,
     subject, priority, messageType,
   } = input
@@ -71,7 +78,7 @@ export async function deliver(input: DeliveryInput): Promise<DeliveryResult> {
     console.error(`[Delivery] No recipientAgentId for ${recipientAgentName} - cannot write inbox`)
     return { delivered: false, notified: false, error: 'No recipient agent UUID' }
   }
-  const inboxPath = await writeToAMPInbox(envelope, securedEnvelopePayload, recipientAgentName, senderPublicKeyHex, recipientAgentId)
+  const inboxPath = await writeToAMPInbox(envelope, securedEnvelopePayload, recipientAgentName, senderPublicKeyHex, recipientAgentId, enrichment)
   if (!inboxPath) {
     return { delivered: false, notified: false, error: 'Failed to write to AMP inbox' }
   }
@@ -79,7 +86,7 @@ export async function deliver(input: DeliveryInput): Promise<DeliveryResult> {
   // 1c. Try WebSocket delivery (real-time push, supplementary to disk write)
   const recipientAddress = envelope.to
   if (isAgentConnectedViaWS(recipientAddress)) {
-    const wsOk = deliverViaWebSocket(recipientAddress, envelope, securedEnvelopePayload, senderPublicKeyHex)
+    const wsOk = deliverViaWebSocket(recipientAddress, envelope, securedEnvelopePayload, senderPublicKeyHex, enrichment)
     if (wsOk) {
       console.log(`[Delivery] Also pushed ${envelope.id} via WebSocket to ${recipientAddress}`)
     }

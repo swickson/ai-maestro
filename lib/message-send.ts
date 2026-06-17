@@ -311,6 +311,9 @@ export async function sendFromUI(options: SendFromUIOptions): Promise<{ message:
       const recipientName = toResolved.alias || toResolved.agentId
       // Pass senderPublicKeyHex when sender is verified so deliver() preserves trust level
       const senderPubKey = isFromVerified ? (options.amp?.senderPublicKey || 'verified') : undefined
+      // Card B §4a: `enrichment` is intentionally NOT set here — it is
+      // server-authoritative and populated only by the inbound delivery path
+      // (deliverLocally, fresh from this Maestro's memory store), never on send.
       const result = await deliver({
         envelope,
         payload,

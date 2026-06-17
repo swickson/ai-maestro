@@ -213,12 +213,74 @@ export interface AMPAttachmentV1 {
   expires_at: string
 }
 
+// ============================================================================
+// Delivery Enrichment (Card B) — receiver-added, server-authoritative, UNSIGNED
+// ============================================================================
+
 /**
- * Complete AMP Message (envelope + payload)
+ * A single recalled memory item surfaced to the recipient. Mirrors the shape
+ * agreed in the Card B contract (combined-proposal §3).
+ */
+export interface MemoryRecallItem {
+  /** The recalled fact/snippet. */
+  text: string
+  /** 0..1 confidence; consumers MAY threshold/sort/hide low-confidence items. */
+  confidence: number
+  /** Times the memory has been reinforced, if the store tracks it. */
+  reinforcement?: number
+  /** Opaque memory id for trace/audit + cross-turn dedupe. */
+  sourceId?: string
+}
+
+/**
+ * Recipient-local memory recall, injected by THIS Maestro at delivery time.
+ * Provenance is inline (recipientAgentId/injectedAt) so a consumer can render it
+ * distinctly with no out-of-band knowledge.
+ */
+export interface MemoryRecall {
+  /** Schema marker; an unknown future version => consumer ignores the object. */
+  kind: 'memory-recall-v1'
+  /** WHOSE memory this is (the recipient) — provenance. */
+  recipientAgentId: string
+  /** ISO-8601 Maestro stamp at injection (recipient clock, not the sender's). */
+  injectedAt: string
+  /** Advisory the consumer SHOULD surface verbatim if it renders recall. */
+  advisory: string
+  items: MemoryRecallItem[]
+}
+
+/**
+ * Receiver-added advisory content, injected by the receiving Maestro at delivery
+ * time. SERVER-AUTHORITATIVE and UNSIGNED by design (Card B §4a):
+ *  - It sits OUTSIDE `payload`, so it is NOT covered by the sender Ed25519
+ *    signature (canonical = from|to|subject|priority|in_reply_to|hash(payload))
+ *    NOR by the outbound webhook HMAC (hash of {envelope, payload,
+ *    sender_public_key}). Delivered `payload` therefore stays == signed payload.
+ *  - A sender NEVER supplies `enrichment`; Maestro strips any inbound-supplied
+ *    `enrichment` on `/route` and populates this field exclusively, server-side.
+ *    Its trust derives entirely from the receiving Maestro owning the field —
+ *    without that, an "outside the signature" object would be sender-forgeable
+ *    provenance (worse than the in-band banner it replaces).
+ * Purely additive + optional: a consumer that ignores it still gets the verbatim,
+ * signature-valid body.
+ */
+export interface Enrichment {
+  /** Absent when there is no recall for this delivery. */
+  memoryRecall?: MemoryRecall
+}
+
+/**
+ * Complete AMP Message (envelope + payload).
+ *
+ * `enrichment` is a top-level sibling of `envelope`/`payload` (NEVER nested under
+ * either — nesting it under `envelope` would pull it into the webhook HMAC body,
+ * and under `payload` into the sender signature). See {@link Enrichment}.
  */
 export interface AMPMessage {
   envelope: AMPEnvelope
   payload: AMPPayload
+  /** Receiver-added, server-authoritative, unsigned. Absent when no enrichment. */
+  enrichment?: Enrichment
 }
 
 // ============================================================================
