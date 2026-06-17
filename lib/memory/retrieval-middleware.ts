@@ -169,6 +169,26 @@ export const MEMORY_RECALL_ADVISORY =
   'These are recollections, not live data — verify against current state before acting.'
 
 /**
+ * Sanitize memory-derived recall text before it lands in `enrichment`. Recall
+ * content is the recipient's own server-authoritative memory (never sender-
+ * signed), but it is DERIVED from past message content over time, so it could
+ * carry terminal-control sequences or harness tool-call sentinels. Rendered raw
+ * into an agent's CLI output that would be a content re-injection vector adjacent
+ * to the "court" tool-call-leak class. We neutralize at the producer (the data
+ * boundary) so EVERY consumer receives safe enrichment, not just amp-read.
+ */
+export function sanitizeRecallText(text: string): string {
+  return text
+    // Strip ANSI/CSI escape sequences (cursor moves, colors, terminal spoofing).
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    // Strip remaining C0/C1 control chars (keep \t and \n for readability).
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+    // Defang harness tool-call sentinels so derived recall can't render as a live
+    // tool call. Zero-width space (U+200B) after '<' breaks the tag while staying readable.
+    .replace(/<(\/?)(function_calls|invoke|parameter|antml)\b/gi, '<\u200B$1$2')
+}
+
+/**
  * Build the structured `MemoryRecall` for the AMP `enrichment` slot (Card B).
  * Returns null when there is nothing to surface.
  *
@@ -185,7 +205,7 @@ export function buildMemoryRecall(
   if (memories.length === 0) return null
 
   const items: MemoryRecallItem[] = memories.map(mem => ({
-    text: mem.content,
+    text: sanitizeRecallText(mem.content),
     confidence: mem.confidence,
     ...(mem.reinforcement_count > 0 ? { reinforcement: mem.reinforcement_count } : {}),
     ...(mem.memory_id ? { sourceId: mem.memory_id } : {}),
