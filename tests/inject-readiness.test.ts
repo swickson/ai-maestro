@@ -139,18 +139,25 @@ describe('isTerminalIdle (sync fast-path — POSITIVE/busy is trustworthy, idle 
   })
 })
 
-describe('paneShowsBusyFooter (KAI-validated Claude busy signals)', () => {
-  it('matches a live generating footer (spinner gerund + token-timer)', () => {
-    expect(paneShowsBusyFooter('  · Vibing… (2m 6s · ↓ 7.9k tokens)')).toBe(true)
-    expect(paneShowsBusyFooter('✳ Forming…')).toBe(true)
-    expect(paneShowsBusyFooter('· Thinking…')).toBe(true)
+describe('paneShowsBusyFooter (empirically-calibrated, line-anchored)', () => {
+  it('matches every live spinner glyph captured from a real agent (* · ✢ ✶ ✻ ✽ ✳)', () => {
+    // The spinner animates through this whole set frame-to-frame — anchoring to a
+    // narrow class (just [✳·]) would UNDER-match most frames → court.
+    for (const g of ['*', '·', '✢', '✶', '✻', '✽', '✳']) {
+      expect(paneShowsBusyFooter(`${g} Frolicking… (14s · ↓ 531 tokens · thinking)`)).toBe(true)
+    }
   })
 
-  it('matches the esc-to-interrupt hint, step markers, token-timer, and Running…', () => {
-    expect(paneShowsBusyFooter('press esc to interrupt')).toBe(true)
-    expect(paneShowsBusyFooter('thinking [12/418]')).toBe(true)
-    expect(paneShowsBusyFooter('  ↑ 1.2k tokens')).toBe(true)
+  it('matches the indented live footer line and the ⎿ Running seam indicator', () => {
+    expect(paneShowsBusyFooter('  · Vibing… (2m 6s · ↓ 7.9k tokens)')).toBe(true)
     expect(paneShowsBusyFooter('  ⎿  Running…')).toBe(true)
+  })
+
+  it('matches token-timer / esc-hint / [N/N] when on a spinner-glyph line (glyph-variant net)', () => {
+    expect(paneShowsBusyFooter('✻ Forming… (esc to interrupt)')).toBe(true)
+    expect(paneShowsBusyFooter('✶ Thinking… [12/418]')).toBe(true)
+    expect(paneShowsBusyFooter('✽ Undulating… (24s · ↑ 1.2k tokens)')).toBe(true)
+    expect(paneShowsBusyFooter('✻  (esc to interrupt · 5s)')).toBe(true) // glyph line, no gerund word
   })
 
   it('does NOT match an idle Claude status bar (false-positive guard)', () => {
@@ -158,6 +165,62 @@ describe('paneShowsBusyFooter (KAI-validated Claude busy signals)', () => {
     expect(paneShowsBusyFooter('Opus 4.8 (1M context) | ctx 31% | $31.36')).toBe(false)
     expect(paneShowsBusyFooter('⏵⏵ bypass permissions on (shift+tab to cycle)')).toBe(false)
     expect(paneShowsBusyFooter('❯ ')).toBe(false)
+  })
+
+  it('does NOT match busy tokens quoted MID-LINE in body prose (anchoring, not region)', () => {
+    expect(paneShowsBusyFooter('the spinner showed · Vibing… while it ran')).toBe(false)
+    expect(paneShowsBusyFooter('press esc to interrupt to stop')).toBe(false)
+    expect(paneShowsBusyFooter('● discussing how "↓ 7.9k tokens" renders')).toBe(false)
+    // a "●" response bullet that starts with a gerund — no immediate ellipsis
+    expect(paneShowsBusyFooter('● Running the migration now and then testing')).toBe(false)
+  })
+
+  it('COLUMBO CASE: a busy-quoting body line IMMEDIATELY above the idle footer → false', () => {
+    // The dangerous case the region-only fix missed: tail-8 INCLUDES this body
+    // line, so only structural ANCHORING (not the window) can reject it. The "●"
+    // response bullet is outside the spinner class, and the busy tokens are mid-line.
+    const pane = [
+      'earlier response text',
+      '● Then I checked "· Vibing…" and "↓ 7.9k tokens", esc to interrupt, step [1/418]',
+      '────────────────────',
+      '❯ ',
+      '────────────────────',
+      '  dev-aimaestrogw-holmes | 0 unread',
+      '  Opus 4.8 (1M context) | ctx 31% | $1.00',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsBusyFooter(pane)).toBe(false)
+  })
+
+  it('FLOATING OFFSET: catches the spinner at any depth (-7/-9/-11/-13), not just clean -7', () => {
+    // The defect a fixed tail-N window had: a transient feedback prompt / Tip line
+    // / interior blanks FLOAT the spinner up (measured -7/-9/-11 on real panes), so
+    // a windowed match slices it out → court. Full-pane + anchoring catches it
+    // anywhere. Reproduces KAI's -11 capture (feedback-prompt layout).
+    const chrome = [
+      '────────────────────',
+      '❯ ',
+      '────────────────────',
+      '  agent | 0 unread',
+      '  Opus 4.8 (1M context) | ctx 31% | $1.00',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ]
+    for (const padAbove of [0, 2, 4, 6]) {
+      // transient feedback prompt + blanks that push the spinner up out of any tail-N
+      const filler = Array(padAbove).fill('● How is Claude doing this session?')
+      const pane = ['streamed response text', '✢ Discombobulating… (1m 18s · ↓ 1.6k tokens)', ...filler, ...chrome].join('\n')
+      expect(paneShowsBusyFooter(pane)).toBe(true) // spinner now at offset -(padAbove+6): -6,-8,-10,-12
+    }
+  })
+
+  it('a real busy footer matches regardless of trailing blank padding', () => {
+    expect(paneShowsBusyFooter(['response text', '✶ Frolicking… (18s · ↓ 531 tokens · thinking)', '', '', ''].join('\n'))).toBe(true)
+  })
+
+  it('accepted residual: a pane literally DISPLAYING a captured footer line reads busy (safe over-defer)', () => {
+    // e.g. this very session showing a captured spinner line at line-start — over-
+    // defer is the SAFE direction (no court / no auto-approve), cron-backstopped.
+    expect(paneShowsBusyFooter('✢ Discombobulating… (1m 18s · ↓ 1.6k tokens)')).toBe(true)
   })
 })
 

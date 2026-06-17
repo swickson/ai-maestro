@@ -152,33 +152,68 @@ export function isTerminalIdle(sessionName: string, now: number = Date.now()): b
 export const PANE_PROBE_INTERVAL_MS = 400
 
 /**
- * Busy-footer patterns — the PRIMARY busy signal for Claude panes. Empirically
- * validated by KAI on live busy/idle Claude panes (Milo): a generating pane's
- * footer shows a spinner gerund + ticking token-timer (e.g. "· Vibing… (2m 6s · ↓
- * 7.9k tokens)") or "esc to interrupt"; an idle pane shows only the ❯ prompt and a
- * static status bar ("Opus 4.8 (1M context) | ctx % | $cost", pipe-separated, no
- * spinner) which matches NONE of these.
+ * Spinner-glyph class for the live Claude footer. EMPIRICALLY CAPTURED
+ * 2026-06-17 from a real generating agent (think + tool-use seam): the spinner
+ * animates through `* · ✢ ✶ ✻ ✽ …` every frame while the gerund word changes only
+ * every few seconds — i.e. the leading glyph is NOT stable, so anchoring to a
+ * narrow class (e.g. just `[✳·]`) would UNDER-match most frames → inject mid-gen →
+ * court. This class is the Dingbat "sparkle" block U+2720–U+274F plus middle-dot
+ * (U+00B7) and asterisk, which covers the whole animation. The "●" response
+ * bullet (U+25CF) is deliberately OUTSIDE the class, so a BODY line like
+ * "● discussing…" can never be read as a spinner.
+ */
+const SPINNER = '[\\u2720-\\u274F\\u00B7*]'
+
+/**
+ * Busy-footer patterns — the PRIMARY busy signal for Claude panes. Each is
+ * LINE-ANCHORED (multiline `^`) to a real footer line, NOT a bare substring:
+ * the live spinner/progress line STARTS (after indent) with a spinner glyph (or
+ * the ⎿ run-indicator) and carries the gerund/timer/hint; the SAME tokens quoted
+ * in BODY prose appear mid-line or after a "●" bullet. Anchoring separates them
+ * structurally — the fix Columbo requested (#244 review) — WITHOUT shrinking the
+ * footer window, which would risk the dangerous UNDER-match/court direction.
  *
- * This is the busy-relevant SUBSET of server.mjs `isStatusPattern` (a broader
- * log-filter), PLUS the token-timer and "Running…" patterns KAI asked to add.
- * `isStatusPattern`'s idle-or-neutral members ('? for shortcuts', 'Tip:', the
- * input-box border) are deliberately EXCLUDED — they also render on an IDLE pane
- * and would false-positive idle as busy (→ never deliver).
+ * Discriminators that survive a body quote even within the footer region:
+ *   - line-START spinner glyph (sparkle/·/*, NOT the "●" bullet)
+ *   - gerund IMMEDIATELY followed by an ellipsis ("Frolicking…"), which body
+ *     prose ("● discussing the gate") does not have.
  *
- * Crucially the footer is present THROUGHOUT generation including the
- * think→tool-call seam (the court moment) because the timer keeps ticking — so a
- * single capture catches the exact failure window a sub-second diff could miss.
- * The 2-snapshot diff (below) is the harness-agnostic backstop for Codex/Gemini,
- * whose footers differ.
+ * The footer is present THROUGHOUT generation incl. the think→tool-call seam (the
+ * court moment) — the timer keeps ticking and the ⎿ run-indicator shows during the
+ * tool call — so a single capture catches the exact failure window. The 2-snapshot
+ * diff (below) is the harness-agnostic backstop for Codex/Gemini.
  */
 const BUSY_FOOTER_PATTERNS: RegExp[] = [
-  /[✳·]\s*\w+ing[.…]/,         // spinner gerund: "· Vibing…", "✳ Forming…", "· Thinking…"
-  /esc to interrupt/i,          // generating footer hint
-  /\[\d+\/\d+\]/,               // thinking-step markers: [1/418] (incl. timestamped steps)
-  /[↓↑]\s*[\d.]+k?\s+tokens/i,  // token-timer: "↓ 7.9k tokens", "↑ 1.2k tokens"
-  /\bRunning[.…]/,              // "Running…"
+  new RegExp(`^\\s*${SPINNER}\\s*\\w+ing[.…]`, 'm'),                // spinner gerund: "✶ Frolicking…", "· Vibing…", "* Thinking…"
+  /^\s*⎿\s*Running[.…]/m,                                          // tool-run indicator (the seam): "⎿ Running…"
+  new RegExp(`^\\s*${SPINNER}.*[↓↑]\\s*[\\d.]+k?\\s+tokens`, 'im'), // spinner line carrying the token-timer (glyph-variant safety net)
+  new RegExp(`^\\s*${SPINNER}.*esc to interrupt`, 'im'),           // spinner line carrying the esc hint
+  new RegExp(`^\\s*${SPINNER}.*\\[\\d+/\\d+\\]`, 'm'),             // spinner line carrying a [N/N] step marker
 ]
 
+/**
+/**
+ * True when a line-anchored BUSY footer pattern appears ANYWHERE in the pane.
+ *
+ * We deliberately do NOT window to a fixed tail-N region. The live
+ * spinner/progress line FLOATS: measured at offset -7, -9, and -11 across real
+ * generating panes (a transient "How is Claude doing this session?" feedback
+ * prompt, a Tip line, or interior blank rows push it up above a fixed window). Any
+ * fixed tail-N risks slicing the spinner OUT → a genuinely-generating pane reads
+ * idle → inject at the think→tool-call seam → court. So the window itself was the
+ * defect (it traded the .54 court-safety for a court hole).
+ *
+ * Instead we rely on the line-ANCHORING in BUSY_FOOTER_PATTERNS (each requires a
+ * spinner glyph / ⎿ run-indicator at LINE-START, with the "●" response bullet
+ * excluded) to do the body-quote rejection a window was previously used for. So a
+ * full-pane match is BOTH court-safe (catches the spinner at any offset) AND
+ * body-safe (a quoted "· Vibing…" mid-line, or a "● …" bullet, does not match).
+ *
+ * Accepted residual (CelestIA's edge): a pane that literally DISPLAYS a captured
+ * footer line at line-start reads busy → over-defer. That is the SAFE direction
+ * (no court / no auto-approve), cron-backstopped, and far rarer than the
+ * floating-spinner court hole a fixed window would reintroduce.
+ */
 export function paneShowsBusyFooter(content: string): boolean {
   return BUSY_FOOTER_PATTERNS.some(re => re.test(content))
 }
