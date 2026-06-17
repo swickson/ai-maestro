@@ -559,7 +559,15 @@ export function broadcastActivityUpdate(
   // deferred while it was BUSY. A passively-waiting agent (no heartbeat / no further
   // prompt) never resurfaces a busy-deferred message on its own — the send-keys re-push
   // CAN inject into a now-idle waiting pane. Fire-and-forget; no-op when nothing queued.
-  if (status === 'waiting_for_input') {
+  //
+  // Flush on BOTH idle edges: the hook's Stop handler writes status='idle' IMMEDIATELY
+  // at turn-end (near-instant resurface — the edge that delivers the moment the busy
+  // window that caused the defer ends), and the idle_prompt Notification writes
+  // 'waiting_for_input' ~60s later (a backstop if the idle edge was missed/raced). The
+  // flush re-gates via notifyAgent's full court-safe readiness probe, so a premature
+  // 'idle' that races a continuing turn (e.g. a per-tool-round Stop) is caught by
+  // isPaneBusy and re-deferred — no court (KAI's flush-time idle re-check edge).
+  if (status === 'idle' || status === 'waiting_for_input') {
     const flushTarget = sessionName || (agentId ? getAgent(agentId)?.name : undefined)
     if (flushTarget) {
       void flushDeferredNotifications(flushTarget)
