@@ -33,6 +33,7 @@ import { getHosts, getSelfHost, isSelf, getHostById } from '@/lib/hosts-config'
 import { persistSession, loadPersistedSessions, unpersistSession } from '@/lib/session-persistence'
 import { parseNameForDisplay, isCallSession } from '@/types/agent'
 import { initAgentAMPHome, getAgentAMPDir } from '@/lib/amp-inbox-writer'
+import { flushDeferredNotifications } from '@/lib/notification-service'
 import { sessionActivity, agentActivity, terminalSessions, broadcastStatusUpdate, broadcastChatEvent } from '@/services/shared-state'
 import { getRuntime } from '@/lib/agent-runtime'
 import { resolveBinary, LAUNCH_ENV_SCRUB } from '@/lib/program-resolver'
@@ -553,6 +554,17 @@ export function broadcastActivityUpdate(
   }
 
   broadcastStatusUpdate(sessionName, status, hookStatus, notificationType, agentId)
+
+  // Resurface (#245): when an agent transitions to idle, flush any wakes that were
+  // deferred while it was BUSY. A passively-waiting agent (no heartbeat / no further
+  // prompt) never resurfaces a busy-deferred message on its own — the send-keys re-push
+  // CAN inject into a now-idle waiting pane. Fire-and-forget; no-op when nothing queued.
+  if (status === 'waiting_for_input') {
+    const flushTarget = sessionName || (agentId ? getAgent(agentId)?.name : undefined)
+    if (flushTarget) {
+      void flushDeferredNotifications(flushTarget)
+    }
+  }
 
   // Push hookState to chat-subscribed WebSocket clients in real-time
   if (hookState) {

@@ -13,6 +13,8 @@ import { getSelfHostId, isSelf } from '@/lib/hosts-config-server.mjs'
 import { getRuntime } from '@/lib/agent-runtime'
 import { sendKeysToContainer } from '@/lib/container-utils'
 import { getInjectReadinessAsync } from '@/lib/inject-readiness'
+import { recordDeferred, peekDeferred, clearDeferred } from '@/lib/deferred-notifications'
+import { getAgentUnreadCount } from '@/lib/agent-messaging'
 
 // Configuration (can be overridden via environment variables)
 const NOTIFICATIONS_ENABLED = process.env.NOTIFICATIONS_ENABLED !== 'false'
@@ -200,6 +202,15 @@ export async function notifyAgent(options: NotificationOptions): Promise<Notific
       || agent.preferences?.defaultWorkingDirectory
     const readiness = await getInjectReadinessAsync(sessionName, workingDir)
     if (!readiness.safeToSubmit) {
+      // Resurface gap fix (#245): a wake deferred because the pane is BUSY must be
+      // re-attempted when the agent next idles — a passively-waiting agent (no
+      // heartbeat / no further prompt) never resurfaces it otherwise (the idle_prompt
+      // hook can't inject into an already-waiting session). Queue ONLY the busy case;
+      // a prompt-pending defer resolves when the agent answers the prompt (its hook
+      // drains on that turn), and re-waking a live prompt is exactly what we must not do.
+      if (!readiness.terminalIdle) {
+        recordDeferred(sessionName, options)
+      }
       console.log(`[Notify] Deferring wake for ${agentName}: ${readiness.reason} — message stays in inbox, surfaces on next idle`)
       return { success: true, notified: false, reason: `Deferred: ${readiness.reason}` }
     }
@@ -246,10 +257,57 @@ export async function notifyAgent(options: NotificationOptions): Promise<Notific
 }
 
 /**
+ * Resurface (#245): re-attempt any wakes deferred-for-busy for this session, now that
+ * the agent has transitioned to idle. Called fire-and-forget from broadcastActivityUpdate
+ * on the `waiting_for_input` edge.
+ *
+ * A single wake makes the agent's own hook drain ALL unread, so we re-attempt the OLDEST
+ * deferral (arrival order) and clear the queue on success. If the agent already drained
+ * (unread == 0) we skip + clear — the "drained meanwhile" dedup edge (e.g. a heartbeat
+ * re-prompted it first), which avoids a spurious wake. notifyAgent re-runs the full
+ * court-safe readiness gate, so if the pane went busy again the wake re-defers and stays
+ * queued (peek, not take) for the next idle. The busy gate itself is untouched.
+ */
+export async function flushDeferredNotifications(sessionName: string): Promise<void> {
+  try {
+    const entries = peekDeferred(sessionName)
+    if (entries.length === 0) return
+
+    const { options } = entries[0]
+
+    // Dedup edge: if nothing is unread, the agent already drained — don't re-wake.
+    const agentRef = options.agentId || options.agentName
+    let unread = 1 // default to "has unread" so a query failure still re-attempts (safe:
+    try {
+      unread = await getAgentUnreadCount(agentRef) // the hook drains only unread anyway)
+    } catch {
+      /* unread query failed — fall through and re-attempt */
+    }
+    if (unread === 0) {
+      clearDeferred(sessionName)
+      return
+    }
+
+    // Re-attempt via notifyAgent so the full court-safe readiness gate re-runs (idle now
+    // → injects; busy again → re-defers + stays queued). One wake drains all unread.
+    const result = await notifyAgent(options)
+    if (result.notified) {
+      console.log(
+        `[Notify] Resurfaced ${entries.length} deferred wake(s) for ${options.agentName} on idle`
+      )
+      clearDeferred(sessionName)
+    }
+  } catch (error) {
+    console.error(`[Notify] flushDeferredNotifications failed for ${sessionName}:`, error)
+  }
+}
+
+/**
  * Singleton notification service for easy import
  */
 export const notificationService = {
   notifyAgent,
+  flushDeferredNotifications,
   isEnabled: () => NOTIFICATIONS_ENABLED,
 }
 
