@@ -139,18 +139,25 @@ describe('isTerminalIdle (sync fast-path — POSITIVE/busy is trustworthy, idle 
   })
 })
 
-describe('paneShowsBusyFooter (KAI-validated Claude busy signals)', () => {
-  it('matches a live generating footer (spinner gerund + token-timer)', () => {
-    expect(paneShowsBusyFooter('  · Vibing… (2m 6s · ↓ 7.9k tokens)')).toBe(true)
-    expect(paneShowsBusyFooter('✳ Forming…')).toBe(true)
-    expect(paneShowsBusyFooter('· Thinking…')).toBe(true)
+describe('paneShowsBusyFooter (empirically-calibrated, line-anchored)', () => {
+  it('matches every live spinner glyph captured from a real agent (* · ✢ ✶ ✻ ✽ ✳)', () => {
+    // The spinner animates through this whole set frame-to-frame — anchoring to a
+    // narrow class (just [✳·]) would UNDER-match most frames → court.
+    for (const g of ['*', '·', '✢', '✶', '✻', '✽', '✳']) {
+      expect(paneShowsBusyFooter(`${g} Frolicking… (14s · ↓ 531 tokens · thinking)`)).toBe(true)
+    }
   })
 
-  it('matches the esc-to-interrupt hint, step markers, token-timer, and Running…', () => {
-    expect(paneShowsBusyFooter('press esc to interrupt')).toBe(true)
-    expect(paneShowsBusyFooter('thinking [12/418]')).toBe(true)
-    expect(paneShowsBusyFooter('  ↑ 1.2k tokens')).toBe(true)
+  it('matches the indented live footer line and the ⎿ Running seam indicator', () => {
+    expect(paneShowsBusyFooter('  · Vibing… (2m 6s · ↓ 7.9k tokens)')).toBe(true)
     expect(paneShowsBusyFooter('  ⎿  Running…')).toBe(true)
+  })
+
+  it('matches token-timer / esc-hint / [N/N] when on a spinner-glyph line (glyph-variant net)', () => {
+    expect(paneShowsBusyFooter('✻ Forming… (esc to interrupt)')).toBe(true)
+    expect(paneShowsBusyFooter('✶ Thinking… [12/418]')).toBe(true)
+    expect(paneShowsBusyFooter('✽ Undulating… (24s · ↑ 1.2k tokens)')).toBe(true)
+    expect(paneShowsBusyFooter('✻  (esc to interrupt · 5s)')).toBe(true) // glyph line, no gerund word
   })
 
   it('does NOT match an idle Claude status bar (false-positive guard)', () => {
@@ -160,30 +167,33 @@ describe('paneShowsBusyFooter (KAI-validated Claude busy signals)', () => {
     expect(paneShowsBusyFooter('❯ ')).toBe(false)
   })
 
-  it('region-scoped: busy patterns in the BODY do NOT match when the FOOTER is idle', () => {
-    // An agent pane whose scrollback/body quotes the busy patterns (·…ing, ↓N
-    // tokens, [N/N]) but is actually idle-at-prompt. Full-pane matching would
-    // false-positive → over-defer/strand; footer-region scoping must ignore body.
-    const idleFooterBusyBody = [
-      '● discussing the gate: "· Vibing…", "↓ 7.9k tokens", step [1/418]', // busy-like BODY
-      'more body', 'more body', 'more body', 'more body',
-      'more body', 'more body', 'more body', 'more body',
+  it('does NOT match busy tokens quoted MID-LINE in body prose (anchoring, not region)', () => {
+    expect(paneShowsBusyFooter('the spinner showed · Vibing… while it ran')).toBe(false)
+    expect(paneShowsBusyFooter('press esc to interrupt to stop')).toBe(false)
+    expect(paneShowsBusyFooter('● discussing how "↓ 7.9k tokens" renders')).toBe(false)
+    // a "●" response bullet that starts with a gerund — no immediate ellipsis
+    expect(paneShowsBusyFooter('● Running the migration now and then testing')).toBe(false)
+  })
+
+  it('COLUMBO CASE: a busy-quoting body line IMMEDIATELY above the idle footer → false', () => {
+    // The dangerous case the region-only fix missed: tail-8 INCLUDES this body
+    // line, so only structural ANCHORING (not the window) can reject it. The "●"
+    // response bullet is outside the spinner class, and the busy tokens are mid-line.
+    const pane = [
+      'earlier response text',
+      '● Then I checked "· Vibing…" and "↓ 7.9k tokens", esc to interrupt, step [1/418]',
       '────────────────────',
       '❯ ',
       '────────────────────',
       '  dev-aimaestrogw-holmes | 0 unread',
-      '  Opus 4.8 (1M context) | ctx 31% | $31.36',
+      '  Opus 4.8 (1M context) | ctx 31% | $1.00',
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n')
-    expect(paneShowsBusyFooter(idleFooterBusyBody)).toBe(false)
+    expect(paneShowsBusyFooter(pane)).toBe(false)
   })
 
-  it('region-scoped: a real footer padded down by trailing blank lines still matches', () => {
-    const paddedBusy = [
-      'some streamed response text',
-      '· Vibing… (1m 2s · ↓ 3.1k tokens)',
-      '', '', '', '',
-    ].join('\n')
+  it('region+anchor: a real busy footer (padded down by trailing blanks) still matches', () => {
+    const paddedBusy = ['some streamed response text', '✶ Frolicking… (18s · ↓ 531 tokens · thinking)', '', '', ''].join('\n')
     expect(paneShowsBusyFooter(paddedBusy)).toBe(true)
   })
 })
