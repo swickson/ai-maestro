@@ -116,16 +116,23 @@ RUN mkdir -p /home/claude/.npm-global/bin && chown -R claude:claude /home/claude
 
 # Install agent runtime CLIs globally AS THE claude USER (into the user prefix
 # above), so claude can later self-update them. The image is multi-runtime so
-# the same `ai-maestro-agent` image can host Claude, Gemini, or Codex agents —
-# which one launches at first start is determined by AI_TOOL (built from
-# body.program in createDockerAgent). Without all three baked in, agents whose
+# the same `ai-maestro-agent` image can host Claude, Gemini, Codex, or OpenCode
+# agents — which one launches at first start is determined by AI_TOOL (built from
+# body.program in createDockerAgent). Without all four baked in, agents whose
 # profile.runtime is anything other than `claude` silently fall back to a bare
 # shell because tmux send-keys "${AI_TOOL}" hits command-not-found.
+#
+# opencode-ai is PINNED (north-mini-code eval is reproducible against a known
+# decoder/contract; an unpinned mid-session self-update could shift the
+# opencode.db schema out from under lib/opencode-db-decoder.ts — the
+# self-update-corruption class). v1.17.8 = the version the Phase-1 decoder +
+# schema findings were captured against on bananajr.
 USER claude
 RUN npm install -g \
     @anthropic-ai/claude-code \
     @google/gemini-cli \
-    @openai/codex
+    @openai/codex \
+    opencode-ai@1.17.8
 USER root
 
 # Copy agent server code
@@ -161,7 +168,9 @@ RUN mkdir -p /home/claude/.claude \
              /home/claude/.aimaestro/chat-state \
              /home/claude/.agent-messaging/agents \
              /home/claude/.config/gh \
+             /home/claude/.config/opencode \
              /home/claude/.local/share/aimaestro/shell-helpers \
+             /home/claude/.local/share/opencode \
              /home/claude/.gemini \
              /home/claude/.codex && \
     chown -R claude:claude /home/claude/.claude \
