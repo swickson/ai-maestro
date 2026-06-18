@@ -1,9 +1,9 @@
 # OpenCode Containerized Harness — Design Spec
 
 **Status:** Draft for review (KAI, 2026-06-18)
-**Author:** KAI (dev-aimaestro-admin)
+**Spec author:** KAI (dev-aimaestro-admin)
+**Build author:** CelestIA (`dev-aimaestro-bananajr`) — assigned by Shane 2026-06-18; dev agent landing on bananajr, her host.
 **Requested by:** Shane, via Vance research brief (`north-mini-code-evaluation-2026-06-18.md`)
-**Author:** CelestIA (`dev-aimaestro-bananajr`) — assigned by Shane 2026-06-18; agent is a dev agent landing on bananajr, her host.
 **Reviewer:** KAI by default; **Watson** (`dev-aimaestro-holmes`) for any phase that runs **overnight** (Milo sleeps — keep the reviewer on an always-on host). Shane: sign-off.
 
 ---
@@ -40,7 +40,7 @@ North-Mini-Code was tool-trained on the OpenCode / SWE-Agent / mini-SWE-Agent ha
 ### OpenCode on-disk contract
 Confirmed against OpenCode docs + ccusage + issue #5238, **plus a real working install** Shane stood up on Holmes + bananajr (2026-06-18): official curl install script, OpenRouter key entered, `cohere/north-mini-code:free` selected, asked "what's the tech stack of this?" inside an ai-maestro checkout — it answered correctly. So real `auth.json`, `opencode.json`, and a populated `storage/` exist on bananajr **now** — Phase 1 captures the exact schemas from those (closes open Qs 1/2/4 empirically before any code).
 - **Install method:** Shane used the **official curl install script** (`curl -fsSL https://opencode.ai/install | bash`-style), which drops a prebuilt binary (typically under `~/.local/bin`). The npm package `opencode-ai` (binary `opencode`) is the alternative. Container (§4.1) uses whichever installs cleanly for the non-root `claude` user in Debian — confirm in Phase 2.
-- **Auth:** `~/.local/share/opencode/auth.json` — provider→key JSON, perms 600. Provider-key auth can be written directly (no interactive `opencode auth login` required — fits the existing `provisionCloud*` pattern, like `codex-auth.json`). *Exact schema to confirm during build (§7).* 
+- **Auth:** `~/.local/share/opencode/auth.json` — provider→key JSON, perms 600. Provider-key auth can be written directly (no interactive `opencode auth login` required — fits the existing `provisionCloud*` pattern, like `codex-auth.json`). *Exact schema to confirm during build (§7).*
 - **Config:** `~/.config/opencode/opencode.json` — provider + default model + options.
 - **Conversations:** `~/.local/share/opencode/storage/` as a **fan-out of per-message JSON files**:
   - `storage/message/{sessionID}/msg_{messageID}.json`
