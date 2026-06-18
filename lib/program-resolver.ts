@@ -47,7 +47,7 @@
 export const LAUNCH_ENV_SCRUB = 'unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION'
 
 /** Canonical agent classification. Source of truth for the AgentKind union. */
-export type AgentKind = 'claude' | 'codex' | 'gemini' | 'antigravity' | 'openclaw' | 'unknown'
+export type AgentKind = 'claude' | 'codex' | 'gemini' | 'antigravity' | 'opencode' | 'openclaw' | 'unknown'
 
 interface ProgramSpec {
   /** Lowercased substring tokens; first table row whose token matches wins. */
@@ -72,7 +72,7 @@ const PROGRAM_TABLE: ProgramSpec[] = [
   { matches: ['cursor'], binary: 'cursor' },
   { matches: ['antigravity'], binary: 'agy', kind: 'antigravity' }, // BEFORE gemini
   { matches: ['gemini'], binary: 'gemini', kind: 'gemini' },
-  { matches: ['opencode'], binary: 'opencode' },
+  { matches: ['opencode'], binary: 'opencode', kind: 'opencode' },
   // openclaw is discover-and-attach (clawdbot owns its own tmux sessions on
   // custom sockets); the maestro create primitive (tmux new-session, no -S
   // socket) structurally cannot launch it, so it carries a KIND but NO binary

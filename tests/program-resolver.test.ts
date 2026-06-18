@@ -70,7 +70,7 @@ describe('resolveKind (program → classification)', () => {
     ['openclaw', 'openclaw'], // first-class kind (display/AMP/meeting), even though not launchable
     ['aider', 'unknown'], // has a binary but no meeting/cloud kind → caller default
     ['cursor', 'unknown'],
-    ['opencode', 'unknown'],
+    ['opencode', 'opencode'], // cloud-deployable harness (SQLite chat); binary + kind
     ['vim', 'unknown'],
     [undefined, 'unknown'],
     [null, 'unknown'],
@@ -80,13 +80,14 @@ describe('resolveKind (program → classification)', () => {
   })
 
   it('respects a caller-supplied default for unclassified programs', () => {
-    // Cloud usage defaults to claude; aider/cursor/opencode have no kind.
+    // Cloud usage defaults to claude; aider/cursor have no kind.
     expect(resolveKind('aider', { default: 'claude' })).toBe('claude')
     expect(resolveKind('vim', { default: 'claude' })).toBe('claude')
     expect(resolveKind(undefined, { default: 'claude' })).toBe('claude')
     // …but a program WITH a kind ignores the default.
     expect(resolveKind('openclaw', { default: 'claude' })).toBe('openclaw')
     expect(resolveKind('antigravity', { default: 'claude' })).toBe('antigravity')
+    expect(resolveKind('opencode', { default: 'claude' })).toBe('opencode')
   })
 
   it('defaults to unknown when no opts provided', () => {

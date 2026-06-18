@@ -67,6 +67,23 @@ describe('resolveConversationDir', () => {
     expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.codex', 'sessions'))
   })
 
+  it('host OPENCODE agent: resolves to operator ~/.local/share/opencode (the opencode.db data dir), NOT ~/.claude/projects', () => {
+    const agent = {
+      id: '7c0de000-fake-opencode',
+      program: 'opencode',
+      workingDirectory: '/home/operator/Documents/Development/ai-maestro',
+      deployment: { type: 'local' as const },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    expect(dir).toBe(path.join(HOST_HOME, '.local', 'share', 'opencode'))
+    expect(dir).not.toMatch(/\.claude\/projects/)
+  })
+
+  it('host opencode resolves even without a workingDirectory (opencode.db is not cwd-keyed; newest session selected in-db)', () => {
+    const agent = { id: 'oc2', program: 'opencode', deployment: { type: 'local' as const } }
+    expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.local', 'share', 'opencode'))
+  })
+
   it('host CLAUDE path is unchanged by the program switch (regression guard for #223/#225)', () => {
     const agent = { id: 'h1', workingDirectory: '/home/operator/code/x', deployment: { type: 'local' as const } }
     expect(resolveConversationDir(agent, HOST_HOME)).toBe(path.join(HOST_HOME, '.claude', 'projects', '-home-operator-code-x'))
@@ -152,6 +169,20 @@ describe('resolveConversationDir', () => {
         'sessions',
       ),
     )
+  })
+
+  it('cloud OpenCode agent: derives from per-agent opencode-data dir (single-dir OPT-B mount; opencode.db sits at its root, no conversations/ subdir)', () => {
+    const agent = {
+      id: 'future-opencode-uuid',
+      program: 'opencode',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-future-opencode' } },
+    }
+    const dir = resolveConversationDir(agent, HOST_HOME)
+    expect(dir).toBe(
+      path.join(HOST_HOME, '.aimaestro', 'agents', 'future-opencode-uuid', 'opencode-data'),
+    )
+    expect(dir).not.toMatch(/conversations$/)
+    expect(dir).not.toMatch(/\.claude/)
   })
 
   it('cloud agent with no explicit program defaults to claude path', () => {

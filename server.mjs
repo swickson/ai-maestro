@@ -191,6 +191,20 @@ async function resolveAntigravityDbConversation(agent) {
   return loadNewestAntigravityConversation(path.join(dir, 'conversations'))
 }
 
+// OpenCode conversations live in a single SQLite db opencode.db (relational
+// project→session→message→part), NOT a JSONL transcript. Resolve + decode the
+// newest SESSION. Returns { path, mtime, messages } | null (null ⇒ no db). The
+// SAME shared loader the REST path uses (agents-chat-service), so the two can't
+// drift. conversationDir IS the data dir — opencode.db sits at its root (no
+// conversations/ subdir, unlike antigravity). See lib/opencode-db-decoder.ts.
+async function resolveOpencodeDbConversation(agent) {
+  const { resolveConversationDir } = await import('./lib/agent-paths.ts')
+  const { loadNewestOpencodeConversation } = await import('./lib/opencode-db-decoder.ts')
+  const dir = resolveConversationDir(agent)
+  if (!dir) return null
+  return loadNewestOpencodeConversation(dir)
+}
+
 /**
  * Read hook state file for an agent's working directory.
  */
@@ -344,6 +358,22 @@ async function getChatHistory(sessionName, agentId) {
     }
   }
 
+  // OpenCode: decode the full (user + assistant + tool) conversation from the
+  // single opencode.db (SQLite, newest session by time_updated) — a dedicated
+  // source. OpenCode has no JSONL transcript, so an empty decode just returns
+  // honest empty history below.
+  if (cloudProgram(agent) === 'opencode') {
+    const db = await resolveOpencodeDbConversation(agent)
+    if (db && db.messages.length > 0) {
+      return {
+        messages: db.messages.slice(-200),
+        hookState,
+        conversationFile: db.path,
+        lastModified: db.mtime?.toISOString?.(),
+      }
+    }
+  }
+
   // No on-disk transcript for the current session (missing dir, or the current
   // session's transcript isn't written yet — see #196). Return honest empty
   // history + hookState rather than silently serving a stale title-only stub.
@@ -426,10 +456,44 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
       }
     }
 
+    // OpenCode watches the single opencode.db (SQLite, WAL mode) — same shape as
+    // antigravity: live commits land in <db>-wal before checkpoint, so watch BOTH
+    // the main .db AND its -wal sibling, and re-decode the whole db (diff by count)
+    // in broadcastJsonlUpdates. No JSONL transcript for opencode.
+    if (sessionState.agentProgram === 'opencode') {
+      const db = await resolveOpencodeDbConversation(agent)
+      if (db) {
+        sessionState.jsonlFilePath = db.path
+        sessionState.opencodeDb = true
+        sessionState.opencodeMsgCount = db.messages.length
+        const walPath = `${db.path}-wal`
+        sessionState.opencodeWalPath = walPath
+        const fireOpencode = () => broadcastJsonlUpdates(sessionName, sessionState)
+        try { sessionState.jsonlMtimeMs = fs.statSync(db.path).mtimeMs } catch { sessionState.jsonlMtimeMs = 0 }
+        fs.watchFile(db.path, { interval: 1000 }, (curr) => {
+          if (curr.mtimeMs !== sessionState.jsonlMtimeMs) {
+            sessionState.jsonlMtimeMs = curr.mtimeMs
+            fireOpencode()
+          }
+        })
+        fs.watchFile(walPath, { interval: 1000 }, (curr) => {
+          // mtime+size signature: WAL grows on append (pre-checkpoint) and is
+          // truncated/reset on checkpoint — either transition means new commits.
+          const sig = `${curr.mtimeMs}:${curr.size}`
+          if (sig !== sessionState.opencodeWalSig) {
+            sessionState.opencodeWalSig = sig
+            fireOpencode()
+          }
+        })
+        sessionState.jsonlWatcher = true
+        console.log(`[Chat] Started opencode .db+wal watcher for ${sessionName}: ${db.path}`)
+      }
+    }
+
     // Watch the resolved path even if it doesn't exist yet (file.pending): a
     // late/deferred transcript will fire fs.watchFile's create event and rebind.
     const file = await resolveJsonlPath(agent)
-    if (!sessionState.antigravityDb) {
+    if (!sessionState.antigravityDb && !sessionState.opencodeDb) {
       if (!file || !file.path) return
 
       sessionState.jsonlFilePath = file.path
@@ -538,6 +602,29 @@ async function broadcastJsonlUpdates(sessionName, sessionState) {
       console.log(`[Chat] Broadcast ${fresh.length} antigravity messages to ${sentCount}/${sessionState.chatClients.size} clients for ${sessionName}`)
     } catch (err) {
       console.error(`[Chat] antigravity .db broadcast failed for ${sessionName}:`, err?.message)
+    }
+    return
+  }
+
+  // OpenCode: same SQLite-not-JSONL pattern as antigravity — re-decode the whole
+  // newest session and broadcast only messages new since the last decode (stable
+  // per-message uuids let the client merge).
+  if (sessionState.opencodeDb) {
+    try {
+      const { decodeOpencodeDb } = await import('./lib/opencode-db-decoder.ts')
+      const all = decodeOpencodeDb(sessionState.jsonlFilePath)
+      const prev = sessionState.opencodeMsgCount || 0
+      if (all.length <= prev) return
+      const fresh = all.slice(prev)
+      sessionState.opencodeMsgCount = all.length
+      const msg = JSON.stringify({ type: 'chat:messages', data: fresh })
+      let sentCount = 0
+      sessionState.chatClients.forEach(ws => {
+        if (ws.readyState === 1) { try { ws.send(msg); sentCount++ } catch {} }
+      })
+      console.log(`[Chat] Broadcast ${fresh.length} opencode messages to ${sentCount}/${sessionState.chatClients.size} clients for ${sessionName}`)
+    } catch (err) {
+      console.error(`[Chat] opencode .db broadcast failed for ${sessionName}:`, err?.message)
     }
     return
   }
@@ -664,13 +751,16 @@ function cleanupSession(sessionName, sessionState, reason = 'unknown', ptyAlread
     killPtyProcess(sessionState.ptyProcess, sessionName, ptyAlreadyExited)
   }
 
-  // Stop JSONL file watcher (+ the antigravity -wal sibling watcher, if any)
+  // Stop JSONL file watcher (+ the antigravity/opencode -wal sibling watcher, if any)
   if (sessionState.jsonlWatcher) {
     try {
       fs.unwatchFile(sessionState.jsonlFilePath)
     } catch { /* ignore */ }
     if (sessionState.antigravityWalPath) {
       try { fs.unwatchFile(sessionState.antigravityWalPath) } catch { /* ignore */ }
+    }
+    if (sessionState.opencodeWalPath) {
+      try { fs.unwatchFile(sessionState.opencodeWalPath) } catch { /* ignore */ }
     }
     sessionState.jsonlWatcher = null
   }
