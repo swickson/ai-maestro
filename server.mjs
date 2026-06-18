@@ -458,23 +458,32 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
 
     // OpenCode watches the single opencode.db (SQLite, WAL mode) — same shape as
     // antigravity: live commits land in <db>-wal before checkpoint, so watch BOTH
-    // the main .db AND its -wal sibling, and re-decode the whole db (diff by count)
-    // in broadcastJsonlUpdates. No JSONL transcript for opencode.
+    // the main .db AND its -wal sibling, and re-decode the newest session (diff by
+    // count) in broadcastJsonlUpdates. No JSONL transcript for opencode.
+    // COLD-START (#251 C1): the db may NOT exist yet (fresh agent — esp. a
+    // container before its first turn). Watch the EXPECTED path anyway —
+    // fs.watchFile fires on creation, so the first turn's db write rebinds live
+    // chat without a reconnect. Seed count/sessionId from whatever exists now
+    // (0/undefined until the db lands).
     if (sessionState.agentProgram === 'opencode') {
-      const db = await resolveOpencodeDbConversation(agent)
-      if (db) {
-        sessionState.jsonlFilePath = db.path
+      const { resolveConversationDir } = await import('./lib/agent-paths.ts')
+      const { OPENCODE_DB_FILENAME, decodeNewestOpencodeSession } = await import('./lib/opencode-db-decoder.ts')
+      const dir = resolveConversationDir(agent)
+      if (dir) {
+        const dbPath = path.join(dir, OPENCODE_DB_FILENAME)
+        sessionState.jsonlFilePath = dbPath
         sessionState.opencodeDb = true
-        sessionState.opencodeMsgCount = db.messages.length
-        // Seed the rollover baseline: OpenCode keeps many sessions in one db and
-        // "newest" can change mid-connection (new task). broadcastJsonlUpdates
-        // resets the diff count when this session id changes.
-        sessionState.opencodeSessionId = db.sessionId
-        const walPath = `${db.path}-wal`
+        const seed = decodeNewestOpencodeSession(dbPath) // null until the db exists
+        sessionState.opencodeMsgCount = seed?.messages.length || 0
+        // Rollover baseline: OpenCode keeps many sessions in one db and "newest"
+        // can change mid-connection (new task); broadcastJsonlUpdates resets the
+        // diff count when this session id changes.
+        sessionState.opencodeSessionId = seed?.sessionId
+        const walPath = `${dbPath}-wal`
         sessionState.opencodeWalPath = walPath
         const fireOpencode = () => broadcastJsonlUpdates(sessionName, sessionState)
-        try { sessionState.jsonlMtimeMs = fs.statSync(db.path).mtimeMs } catch { sessionState.jsonlMtimeMs = 0 }
-        fs.watchFile(db.path, { interval: 1000 }, (curr) => {
+        try { sessionState.jsonlMtimeMs = fs.statSync(dbPath).mtimeMs } catch { sessionState.jsonlMtimeMs = 0 }
+        fs.watchFile(dbPath, { interval: 1000 }, (curr) => {
           if (curr.mtimeMs !== sessionState.jsonlMtimeMs) {
             sessionState.jsonlMtimeMs = curr.mtimeMs
             fireOpencode()
@@ -490,7 +499,7 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
           }
         })
         sessionState.jsonlWatcher = true
-        console.log(`[Chat] Started opencode .db+wal watcher for ${sessionName}: ${db.path}`)
+        console.log(`[Chat] Started opencode .db+wal watcher for ${sessionName}: ${dbPath}`)
       }
     }
 

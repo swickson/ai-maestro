@@ -46,9 +46,20 @@ export async function getConversationMessages(
                      agent.sessions?.[0]?.workingDirectory ||
                      agent.preferences?.defaultWorkingDirectory
 
-  // Host agents need a workingDirectory to derive the JSONL path; cloud agents
-  // resolve via the bind-mounted per-agent dir without needing it.
-  if (!workingDir && agent.deployment?.type !== 'cloud') {
+  const program = cloudProgram(agent)
+
+  // Gate the workingDirectory requirement to EXACTLY the host programs whose
+  // resolveConversationDir consumes it — claude and gemini both fall to the
+  // cwd-keyed default branch (~/.claude/projects/<cwd> / ~/.gemini project key).
+  // codex/antigravity/opencode resolve via a FIXED cli-tree path with no
+  // workingDirectory (~/.codex/sessions, ~/.gemini/antigravity-cli,
+  // ~/.local/share/opencode), so gating them wrongly rejects valid agents and
+  // drifts from the WS path, which has no such guard (#251 C2 — host-opencode
+  // is the shape this PR added + tested). Cloud agents use the bind-mounted
+  // per-agent dir and never need it. The !conversationDir check below still
+  // catches a genuinely unresolvable claude/gemini agent.
+  const needsWorkingDir = program === 'claude' || program === 'gemini'
+  if (!workingDir && agent.deployment?.type !== 'cloud' && needsWorkingDir) {
     return invalidRequest('Agent has no working directory configured')
   }
 
@@ -73,7 +84,6 @@ export async function getConversationMessages(
 
   const sinceTime = since ? new Date(since).getTime() : 0
   const messages: any[] = []
-  const program = cloudProgram(agent)
   let currentConversation: { path: string; mtime: Date } | null = null
 
   // Antigravity: decode the FULL (user + assistant + tool) conversation from
