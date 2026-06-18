@@ -64,7 +64,7 @@ Relational, 4 tables matter. Conversation = `project` → `session` → `message
 - `text` → `{"type":"text","text":"…","time":{"start","end"}?}`  ← the actual chat content
 - `step-start` → `{"type":"step-start","snapshot":"<git-sha>"}`
 - `step-finish` → `{"type":"step-finish","reason":"stop","snapshot","tokens":{…},"cost"}`
-- **tool parts NOT present** in this simple Q&A session — need a tool-using session to characterize the tool part shape (opencode uses `type:"tool"` per docs). Shape is type-discriminated, so the normalizer dispatches on `part.data.type`.
+- **tool** → ✅ **LOCKED** from a real tool-using session on bananajr (bash/read/edit): `{"type":"tool","tool":"<name>","callID","state":{"status":"completed"|…,"input":{…tool-specific},"output","metadata","title"?,"time":{"start","end"}},"metadata"}`. Tool-specific `input`: bash → `input.command`; read → `input.filePath`; edit → `input.{filePath,oldString,newString}`. Normalizer dispatches on `part.data.type`. (Initial Q&A capture had no tool parts; the follow-up tool session closed this — matches spec §6.1.)
 
 **Normalizer plan (revised §6.1):** query `session` for newest-by-`time_updated` in the agent's project → join `message` (ordered by `time_created`/seq) → for each message gather `part` rows (ordered) → emit text parts as content, map tool parts to tool calls, attach role/model/tokens from `message.data`. Single shared `loadNewestOpencodeConversation(dataDir)` reading `opencode.db`, consumed by BOTH WS (`server.mjs`) and REST (`agents-chat-service.ts`).
 
@@ -80,11 +80,11 @@ Usage is sitting in columns/JSON in three redundant places: `session.tokens_*`/`
 
 - **§4.3 `resolveConversationDir`** — cloud + host branches should resolve to the **`opencode.db` path** (or data dir, decoder opens the db), NOT `…/storage`.
 - **§4.5 chat decoder** — rewrite from "glob `storage/message/*.json`" to a SQLite reader. Closest analog is `loadNewestAntigravityConversation` / `lib/antigravity-db-decoder.ts` — reuse the **dual `.db` + `-wal` watch** discipline (live turns land in `-wal` pre-checkpoint; watching only `.db` mtime misses them — the exact antigravity #233 lesson, [[feedback_sqlite_wal_watch_not_main_db]]).
-- **D5 model config** — empty config + DB-persisted model means container provisioning must set the model declaratively (Phase 2 confirm of opencode.json `model` field form).
+- **D5 model config** — empty config + DB-persisted model means container provisioning must set the model declaratively (Phase 2 confirm of `opencode.jsonc` `model` field form).
 - Everything else (D2 `kind:'opencode'`, D3 single data-dir mount, D4 direct auth.json provision, D6 one shared loader, mounts/migrate/reserved-paths) stands as written — the mount still carries `opencode.db`, so persistence design is unaffected.
 
 ---
 
 ## Recommendation
 
-Lock the corrected contract (SQLite, not JSON fan-out) with KAI/Shane, patch spec §2/§6.1/§4.3/§4.5, THEN build Phase 1 decoder against this real `opencode.db`. Do NOT build the normalizer against the obsolete fan-out contract. One open data-gap before the normalizer is final: capture a **tool-using** opencode session to lock the `type:"tool"` part shape.
+Lock the corrected contract (SQLite, not JSON fan-out) with KAI/Shane, patch spec §2/§6.1/§4.3/§4.5, THEN build Phase 1 decoder against this real `opencode.db`. Do NOT build the normalizer against the obsolete fan-out contract. ✅ The one prior data-gap (`type:"tool"` part shape) is now **CLOSED** — locked from a real tool-using session (see the `part` table above + spec §6.1). Contract fully settled.

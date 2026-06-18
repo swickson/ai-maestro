@@ -84,7 +84,7 @@ Keyed to the source. Items marked **[hard]** are the genuine design work; the re
 
 ### 4.1 Image (`agent-container/Dockerfile`)
 - Install OpenCode — either add `opencode-ai` to the npm block (`:125-128`) **or** run the official curl install script (the method Shane verified on host). Pick whichever lands a working `opencode` on PATH for the non-root `claude` user; prefer the npm path if it works (consistent with the other CLIs' user-owned npm prefix).
-- Pre-create + chown `~/.config/opencode` and `~/.local/share/opencode/storage` (`:159-173`).
+- Pre-create + chown `~/.config/opencode` and `~/.local/share/opencode` (`:159-173`) — the data dir holds `auth.json` + `opencode.db` (+wal+shm); there is **no `storage/` subdir** (corrected contract, §2).
 - No base-image changes (locale/TERM/PATH/CI are harness-agnostic).
 - **Verify + pin a version** (avoid the mid-session self-update-corruption class — see `reference_cloud_agent_self_update_break`); confirm OpenCode has no auto-updater needing a disable flag.
 
@@ -116,7 +116,7 @@ Keyed to the source. Items marked **[hard]** are the genuine design work; the re
 
 ### 4.6 On-wake / instructions / AMP
 - AMP bootstrap + inject-readiness are program-agnostic (`inject-readiness.ts:334-335` falls to capture-pane for non-claude). No change required for correctness; busy-detection is less authoritative than claude (acceptable for eval; Tier-2 if it graduates — characterize OpenCode's busy footer for `BUSY_FOOTER_PATTERNS`).
-- Instructions file: confirm OpenCode reads an `AGENTS.md`/`opencode.json` instructions field so the on-wake/mesh-primer text reaches the agent (§7).
+- Instructions file: confirm OpenCode reads an `AGENTS.md`/`opencode.jsonc` instructions field so the on-wake/mesh-primer text reaches the agent (§7).
 
 ---
 
@@ -127,7 +127,7 @@ Sequencing front-loads the one **[hard]** item (the chat decoder) onto the **eas
 - **Phase 0 — Spec sign-off (this doc).** ✅ Key in hand: `incoming/opencode_api_key` on Milo (gitignored, perms 600); bananajr + Holmes already have working installs with the key entered interactively. ✅ Author (CelestIA) + reviewer (KAI / Watson-overnight) assigned. Remaining: Shane sign-off on the spec.
 - **Phase 1 — Shared core (host-agnostic) + chat decoder [hard], tested on host.** Classification (`kind: 'opencode'`, `cloudProgram()`), the shared `loadNewestOpencodeConversation` + normalizer (SQLite reader over `opencode.db`), both host & cloud `resolveConversationDir` branches, and both WS + REST wirings. **Step 1 (empirical) — ✅ DONE (CelestIA, 2026-06-18):** real schemas captured from bananajr's `opencode.db`; Qs 1/2/4 closed; the SQLite-not-fan-out correction folded into §2/§6.1; `tool`-part shape locked from a real tool-using session. See `opencode-schema-findings.md`. Then develop the decoder **against bananajr's already-populated `opencode.db`** (the "tech stack" Q&A + tool-using sessions are real test data), iterate with zero container rebuilds, verify WS/REST parity (`reference_chat_two_paths_and_resolver`). Exit: a host OpenCode conversation renders correctly in chat via both paths. The risky work is now de-risked on the easy path.
 - **Phase 2 — Container launch.** Dockerfile bake (`opencode-ai`, pre-create dirs), create-with-`extraEnv` (`OPENROUTER_API_KEY`), `OPENCODE_DATA_DIR` wiring. Exit: a container agent launches `opencode` against OpenRouter and completes a coding turn (verified by attaching to the pane).
-- **Phase 3 — Container persistence + chat.** Provision (`auth.json`/`opencode.json`) + mount builders + `migrateAgentPersistence` + reserved paths. Exit: auth/config/sessions survive `/update-runtime` and `/recreate` (UUID/AMP stable; DiffIDs + real-history canary disciplines), **and** container conversations render in chat (decoder already proven in Phase 1, now just pointed at the mounted dir).
+- **Phase 3 — Container persistence + chat.** Provision (`auth.json`/`opencode.jsonc`) + mount builders + `migrateAgentPersistence` + reserved paths. Exit: auth/config/sessions survive `/update-runtime` and `/recreate` (UUID/AMP stable; DiffIDs + real-history canary disciplines), **and** container conversations render in chat (decoder already proven in Phase 1, now just pointed at the mounted dir).
 - **Phase 4 — Eval handoff.** Shane runs the graded backlog task set. Token-spend (Ziggy track) runs in parallel/after (§6.2).
 
 Each phase is a separate PR with the mandatory version bump (§Pre-PR). Build happens **off-Milo** (this box hosts Iron Syndicate meetings; `.next/` is shared — `feedback_next_build_shares_dir`); Phase 1's host decoder testing can use a throwaway local `opencode` on any dev box. Author TBD per §7 assignment; KAI authors the spec + reviews.
