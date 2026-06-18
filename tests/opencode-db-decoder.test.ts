@@ -23,6 +23,7 @@ import * as path from 'path'
 import Database from 'better-sqlite3'
 import {
   decodeOpencodeDb,
+  decodeNewestOpencodeSession,
   findOpencodeDb,
   loadNewestOpencodeConversation,
   OPENCODE_DB_FILENAME,
@@ -253,6 +254,62 @@ describe('decodeOpencodeDb', () => {
   it('returns [] for a db with no sessions', () => {
     const dbPath = writeDb('nosessions.db', [], [])
     expect(decodeOpencodeDb(dbPath)).toEqual([])
+  })
+})
+
+describe('decodeNewestOpencodeSession (session-id for rollover detection)', () => {
+  it('returns the newest session id alongside its messages', () => {
+    const dbPath = writeDb(
+      'sid.db',
+      [
+        { id: 'ses_old', time_updated: 100 },
+        { id: 'ses_new', time_updated: 999 },
+      ],
+      [
+        {
+          id: 'm_old',
+          session_id: 'ses_old',
+          time_created: 50,
+          data: { role: 'user' },
+          parts: [{ id: 'po', time_created: 50, data: { type: 'text', text: 'old' } }],
+        },
+        {
+          id: 'm_new',
+          session_id: 'ses_new',
+          time_created: 500,
+          data: { role: 'user' },
+          parts: [{ id: 'pn', time_created: 500, data: { type: 'text', text: 'new' } }],
+        },
+      ],
+    )
+    const res = decodeNewestOpencodeSession(dbPath)
+    expect(res).not.toBeNull()
+    expect(res!.sessionId).toBe('ses_new') // newest by time_updated — the rollover anchor
+    expect(res!.messages).toHaveLength(1)
+    expect(res!.messages[0].message.content[0].text).toBe('new')
+  })
+
+  it('returns null for a db with no sessions (caller skips broadcast)', () => {
+    const dbPath = writeDb('sid-empty.db', [], [])
+    expect(decodeNewestOpencodeSession(dbPath)).toBeNull()
+  })
+
+  it('loadNewestOpencodeConversation surfaces the session id for the watcher baseline', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-sid-'))
+    const dbPath = path.join(dataDir, OPENCODE_DB_FILENAME)
+    const db = new Database(dbPath)
+    db.exec(`
+      CREATE TABLE session (id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL);
+    `)
+    db.prepare('INSERT INTO session VALUES (?, ?)').run('ses_abc', 10)
+    db.prepare('INSERT INTO message VALUES (?, ?, ?, ?)').run('m1', 'ses_abc', 1, JSON.stringify({ role: 'user' }))
+    db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?)').run('p1', 'm1', 'ses_abc', 1, JSON.stringify({ type: 'text', text: 'hi' }))
+    db.close()
+    const res = loadNewestOpencodeConversation(dataDir)
+    expect(res?.sessionId).toBe('ses_abc')
+    fs.rmSync(dataDir, { recursive: true, force: true })
   })
 })
 

@@ -466,6 +466,10 @@ function startJsonlWatcher(sessionName, sessionState, agentId) {
         sessionState.jsonlFilePath = db.path
         sessionState.opencodeDb = true
         sessionState.opencodeMsgCount = db.messages.length
+        // Seed the rollover baseline: OpenCode keeps many sessions in one db and
+        // "newest" can change mid-connection (new task). broadcastJsonlUpdates
+        // resets the diff count when this session id changes.
+        sessionState.opencodeSessionId = db.sessionId
         const walPath = `${db.path}-wal`
         sessionState.opencodeWalPath = walPath
         const fireOpencode = () => broadcastJsonlUpdates(sessionName, sessionState)
@@ -611,8 +615,17 @@ async function broadcastJsonlUpdates(sessionName, sessionState) {
   // per-message uuids let the client merge).
   if (sessionState.opencodeDb) {
     try {
-      const { decodeOpencodeDb } = await import('./lib/opencode-db-decoder.ts')
-      const all = decodeOpencodeDb(sessionState.jsonlFilePath)
+      const { decodeNewestOpencodeSession } = await import('./lib/opencode-db-decoder.ts')
+      const decoded = decodeNewestOpencodeSession(sessionState.jsonlFilePath)
+      if (!decoded) return
+      // Session rollover: the agent started a new task, so a different session is
+      // now newest. Reset the diff baseline — otherwise slice(prev) mis-slices
+      // against the new (shorter/different) message list.
+      if (decoded.sessionId !== sessionState.opencodeSessionId) {
+        sessionState.opencodeSessionId = decoded.sessionId
+        sessionState.opencodeMsgCount = 0
+      }
+      const all = decoded.messages
       const prev = sessionState.opencodeMsgCount || 0
       if (all.length <= prev) return
       const fresh = all.slice(prev)

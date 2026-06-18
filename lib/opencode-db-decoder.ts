@@ -102,13 +102,21 @@ function unixToIso(value: number | bigint | undefined): string | undefined {
 
 /**
  * Decode the newest conversation (session) in an OpenCode `opencode.db` into
- * ordered, Claude-shaped messages. Tool parts fold into their assistant turn as
- * `↳ <tool>` lines (mirrors the antigravity tool-step fold). Returns [] for an
- * unreadable/empty DB or one with no sessions — never throws into the caller.
+ * ordered, Claude-shaped messages PLUS the selected `sessionId`. Tool parts fold
+ * into their assistant turn as `↳ <tool>` lines (mirrors the antigravity
+ * tool-step fold). Returns null for an unreadable/empty DB or one with no
+ * sessions — never throws into the caller.
+ *
+ * The `sessionId` lets the live-update path (server.mjs) detect SESSION
+ * ROLLOVER: OpenCode keeps many sessions in one DB and "newest" can change
+ * mid-connection (the agent starts a new task), so a diff-by-count baseline must
+ * reset when the newest session id changes — else `slice(prev)` mis-slices.
  *
  * @param dbPath absolute path to the `opencode.db` file
  */
-export function decodeOpencodeDb(dbPath: string): NormalizedMessage[] {
+export function decodeNewestOpencodeSession(
+  dbPath: string,
+): { sessionId: string; messages: NormalizedMessage[] } | null {
   let Database: typeof import('better-sqlite3')
   try {
     // Lazy require: a missing/unbuildable native module degrades to no-decode
@@ -117,7 +125,7 @@ export function decodeOpencodeDb(dbPath: string): NormalizedMessage[] {
     Database = require('better-sqlite3')
   } catch (err) {
     console.warn('[opencode-db] better-sqlite3 unavailable; decode skipped:', (err as Error)?.message)
-    return []
+    return null
   }
 
   let db: import('better-sqlite3').Database | null = null
@@ -130,7 +138,7 @@ export function decodeOpencodeDb(dbPath: string): NormalizedMessage[] {
     const session = db
       .prepare('SELECT id, time_updated FROM session ORDER BY time_updated DESC LIMIT 1')
       .get() as OpencodeSessionRow | undefined
-    if (!session) return []
+    if (!session) return null
 
     const messageRows = db
       .prepare(
@@ -165,10 +173,10 @@ export function decodeOpencodeDb(dbPath: string): NormalizedMessage[] {
       })
     }
 
-    return messages
+    return { sessionId: String(session.id), messages }
   } catch (err) {
     console.warn(`[opencode-db] failed to decode ${dbPath}:`, (err as Error)?.message)
-    return []
+    return null
   } finally {
     try {
       db?.close()
@@ -176,6 +184,18 @@ export function decodeOpencodeDb(dbPath: string): NormalizedMessage[] {
       /* ignore */
     }
   }
+}
+
+/**
+ * Decode the newest conversation in an OpenCode `opencode.db` into ordered,
+ * Claude-shaped messages. Thin wrapper over {@link decodeNewestOpencodeSession}
+ * for callers that don't need the session id. Returns [] when there's nothing to
+ * decode — never throws.
+ *
+ * @param dbPath absolute path to the `opencode.db` file
+ */
+export function decodeOpencodeDb(dbPath: string): NormalizedMessage[] {
+  return decodeNewestOpencodeSession(dbPath)?.messages ?? []
 }
 
 /**
@@ -208,8 +228,9 @@ export function findOpencodeDb(dataDir: string): { path: string; mtime: Date } |
  */
 export function loadNewestOpencodeConversation(
   dataDir: string,
-): { path: string; mtime: Date; messages: NormalizedMessage[] } | null {
+): { path: string; mtime: Date; messages: NormalizedMessage[]; sessionId?: string } | null {
   const found = findOpencodeDb(dataDir)
   if (!found) return null
-  return { ...found, messages: decodeOpencodeDb(found.path) }
+  const decoded = decodeNewestOpencodeSession(found.path)
+  return { ...found, messages: decoded?.messages ?? [], sessionId: decoded?.sessionId }
 }
