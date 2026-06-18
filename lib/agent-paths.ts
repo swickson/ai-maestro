@@ -53,13 +53,17 @@ export { resolveBinary as resolveStartCommand } from './program-resolver'
 /**
  * Cloud-agent provider — which per-program bind-mount source a cloud agent
  * needs. Narrowed to the cloud-deployable kinds; host-only programs
- * (aider/cursor/opencode), openclaw (discover-and-attach), and unknown have
- * no cloud mount and resolve to 'claude'. Backed by the shared kind table so
- * the antigravity-before-gemini precedence lives in exactly one place.
+ * (aider/cursor), openclaw (discover-and-attach), and unknown have no cloud
+ * mount and resolve to 'claude'. Backed by the shared kind table so the
+ * antigravity-before-gemini precedence lives in exactly one place.
  */
-export function cloudProgram(agent: AgentPathInput): 'claude' | 'gemini' | 'codex' | 'antigravity' {
+export function cloudProgram(
+  agent: AgentPathInput
+): 'claude' | 'gemini' | 'codex' | 'antigravity' | 'opencode' {
   const kind = resolveKind(agent.program, { default: 'claude' })
-  return kind === 'gemini' || kind === 'codex' || kind === 'antigravity' ? kind : 'claude'
+  return kind === 'gemini' || kind === 'codex' || kind === 'antigravity' || kind === 'opencode'
+    ? kind
+    : 'claude'
 }
 
 function isCloudAgent(agent: AgentPathInput): boolean {
@@ -115,6 +119,15 @@ export function resolveConversationDir(
         // (All host threads.rollout_path values resolve under ~/.codex/sessions
         // with no config override — verified on bananajr 2026-06-10.)
         return path.join(agentDir, 'codex-app-data', 'sessions')
+      case 'opencode':
+        // OpenCode (v1.x) stores conversations in a SINGLE SQLite db
+        // `opencode.db` (relational project→session→message→part), NOT a JSONL
+        // transcript or a storage/*.json fan-out. The whole ~/.local/share/opencode
+        // data dir (holds opencode.db + auth.json) is bind-mounted single-source
+        // (OPT-B) at <agentDir>/opencode-data/ → /home/claude/.local/share/opencode/.
+        // Return the data dir; the dedicated decoder (lib/opencode-db-decoder.ts)
+        // opens opencode.db inside it. See docs/OPENCODE-HARNESS-SPEC.md.
+        return path.join(agentDir, 'opencode-data')
       case 'claude':
       default:
         return path.join(agentDir, 'claude-projects', CONTAINER_CWD_ENCODED)
@@ -144,6 +157,14 @@ export function resolveConversationDir(
       // and session_meta.payload.cwd is recorded — so cwd-pinned selection is a
       // feasible future refinement if cross-session bleed becomes a problem.
       return path.join(hostHome, '.codex', 'sessions')
+    case 'opencode':
+      // ~/.local/share/opencode/opencode.db — the operator's OWN single OpenCode
+      // data dir (holds opencode.db + auth.json). Shared across host agents (one
+      // operator home; the spec's single-test-rig caveat — multiple host
+      // opencode agents collide in the same db), so this lights up the Phase-1
+      // decoder test rig, not a host product path. Same db shape as cloud, just a
+      // different root. The decoder selects the newest session by time_updated.
+      return path.join(hostHome, '.local', 'share', 'opencode')
     // NOTE: host GEMINI (~/.gemini/tmp/<project>/chats/session-*.jsonl) has the
     // same blind spot, but the project key is the literal from ~/.gemini/projects.json
     // (cwd-derived on host, NOT the cloud's fixed 'workspace'), and there is no

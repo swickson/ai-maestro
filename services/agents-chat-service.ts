@@ -20,6 +20,7 @@ import { capturePaneFromContainer } from '@/lib/container-utils'
 import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
 import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
 import { loadNewestAntigravityConversation } from '@/lib/antigravity-db-decoder'
+import { loadNewestOpencodeConversation } from '@/lib/opencode-db-decoder'
 import { normalizeCodexLine } from '@/lib/codex-message-normalizer'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -45,9 +46,20 @@ export async function getConversationMessages(
                      agent.sessions?.[0]?.workingDirectory ||
                      agent.preferences?.defaultWorkingDirectory
 
-  // Host agents need a workingDirectory to derive the JSONL path; cloud agents
-  // resolve via the bind-mounted per-agent dir without needing it.
-  if (!workingDir && agent.deployment?.type !== 'cloud') {
+  const program = cloudProgram(agent)
+
+  // Gate the workingDirectory requirement to EXACTLY the host programs whose
+  // resolveConversationDir consumes it — claude and gemini both fall to the
+  // cwd-keyed default branch (~/.claude/projects/<cwd> / ~/.gemini project key).
+  // codex/antigravity/opencode resolve via a FIXED cli-tree path with no
+  // workingDirectory (~/.codex/sessions, ~/.gemini/antigravity-cli,
+  // ~/.local/share/opencode), so gating them wrongly rejects valid agents and
+  // drifts from the WS path, which has no such guard (#251 C2 — host-opencode
+  // is the shape this PR added + tested). Cloud agents use the bind-mounted
+  // per-agent dir and never need it. The !conversationDir check below still
+  // catches a genuinely unresolvable claude/gemini agent.
+  const needsWorkingDir = program === 'claude' || program === 'gemini'
+  if (!workingDir && agent.deployment?.type !== 'cloud' && needsWorkingDir) {
     return invalidRequest('Agent has no working directory configured')
   }
 
@@ -72,7 +84,6 @@ export async function getConversationMessages(
 
   const sinceTime = since ? new Date(since).getTime() : 0
   const messages: any[] = []
-  const program = cloudProgram(agent)
   let currentConversation: { path: string; mtime: Date } | null = null
 
   // Antigravity: decode the FULL (user + assistant + tool) conversation from
@@ -83,6 +94,23 @@ export async function getConversationMessages(
   // .pb-only conversations that have no decodable .db.
   if (program === 'antigravity') {
     const decoded = loadNewestAntigravityConversation(path.join(conversationDir, 'conversations'))
+    if (decoded && decoded.messages.length > 0) {
+      currentConversation = { path: decoded.path, mtime: decoded.mtime }
+      for (const msg of decoded.messages) {
+        if (since && msg.timestamp && new Date(msg.timestamp).getTime() <= sinceTime) continue
+        messages.push(msg)
+      }
+    }
+  }
+
+  // OpenCode: decode the FULL (user + assistant + tool) conversation from the
+  // single opencode.db (SQLite, newest session by time_updated) as a DEDICATED
+  // source — SAME shared loader the WS path uses (server.mjs), so the two can't
+  // drift. conversationDir IS the data dir (opencode.db lives at its root — no
+  // conversations/ subdir, unlike antigravity). OpenCode has no JSONL transcript,
+  // so there's no fallback: an empty decode just yields an empty conversation.
+  if (program === 'opencode') {
+    const decoded = loadNewestOpencodeConversation(conversationDir)
     if (decoded && decoded.messages.length > 0) {
       currentConversation = { path: decoded.path, mtime: decoded.mtime }
       for (const msg of decoded.messages) {
