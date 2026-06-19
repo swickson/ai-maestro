@@ -28,6 +28,12 @@ import {
   buildCloudGeminiReadthroughMounts,
   buildCloudAntigravityAppDataMount,
   buildCloudCodexAppDataMount,
+  buildCloudOpenCodeDataMount,
+  buildCloudOpenCodeConfigMount,
+  provisionCloudOpenCodeConfig,
+  provisionCloudOpenCodeAuth,
+  OPENCODE_DATA_DIR,
+  OPENCODE_CONFIG_DIR,
   buildZiggyCodeMount,
   buildZiggyEnvOverlayMount,
   provisionCloudCodexZiggyMcpEntry,
@@ -1567,6 +1573,210 @@ describe('provisionCloudCodexAuth', () => {
   })
 })
 
+describe('OpenCode cloud provisioning (Phase 2)', () => {
+  const uuid = '77777777-7777-7777-7777-777777777777'
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-opencode-'))
+  })
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  const writeHostAuth = (key = 'sk-or-v1-test') => {
+    const dir = path.join(tmpHome, '.local', 'share', 'opencode')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'auth.json'),
+      JSON.stringify({ openrouter: { type: 'api', key } }) + '\n', { mode: 0o600 })
+  }
+
+  describe('subdir name constants', () => {
+    it('uses opencode-data / opencode-config as per-agent host subdir names', () => {
+      expect(OPENCODE_DATA_DIR).toBe('opencode-data')
+      expect(OPENCODE_CONFIG_DIR).toBe('opencode-config')
+    })
+  })
+
+  describe('provisionCloudOpenCodeConfig', () => {
+    it('writes opencode-config/opencode.jsonc pinning the north-mini-code eval model (D5)', () => {
+      const { configPath } = provisionCloudOpenCodeConfig(uuid, tmpHome)
+      expect(configPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'opencode-config', 'opencode.jsonc'))
+      const body = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      expect(body.model).toBe('openrouter/cohere/north-mini-code:free')
+      expect(body.$schema).toBe('https://opencode.ai/config.json')
+    })
+
+    it('sets the HIGH reasoning-effort variant on the default "build" agent (Shane ruling; verified config form)', () => {
+      // Top-level `variant` is rejected by opencode ("Unrecognized key"); the
+      // only config path that binds to the bare/interactive launch is the
+      // per-agent AgentConfig.variant on the default "build" agent. Empirically
+      // a bare `opencode run` with this form produced a session with
+      // model.variant="high" (no --variant flag).
+      const { configPath } = provisionCloudOpenCodeConfig(uuid, tmpHome)
+      const body = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      expect(body.agent.build.variant).toBe('high')
+      expect(body.agent.build.model).toBe('openrouter/cohere/north-mini-code:free')
+      // and there is NO invalid top-level variant key
+      expect(body.variant).toBeUndefined()
+    })
+
+    it('writes the config with restrictive 0600 perms', () => {
+      const { configPath } = provisionCloudOpenCodeConfig(uuid, tmpHome)
+      expect(fs.statSync(configPath).mode & 0o777).toBe(0o600)
+    })
+
+    it('creates the per-UUID opencode-config dir if missing', () => {
+      const dir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'opencode-config')
+      expect(fs.existsSync(dir)).toBe(false)
+      provisionCloudOpenCodeConfig(uuid, tmpHome)
+      expect(fs.existsSync(dir)).toBe(true)
+    })
+
+    it('preserves an existing opencode.jsonc across re-runs (operator /config model edit survives)', () => {
+      const dir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'opencode-config')
+      fs.mkdirSync(dir, { recursive: true })
+      const configPath = path.join(dir, 'opencode.jsonc')
+      const edited = '{"$schema":"https://opencode.ai/config.json","model":"openrouter/anthropic/claude-3.5"}\n'
+      fs.writeFileSync(configPath, edited)
+      provisionCloudOpenCodeConfig(uuid, tmpHome)
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(edited)
+    })
+  })
+
+  describe('provisionCloudOpenCodeAuth', () => {
+    it('bootstraps auth.json from host ~/.local/share/opencode/auth.json when present (Option A operator-driven)', () => {
+      writeHostAuth('sk-or-v1-from-host')
+      const { authPath, bootstrapped } = provisionCloudOpenCodeAuth(uuid, tmpHome)
+      expect(authPath).toBe(path.join(tmpHome, '.aimaestro', 'agents', uuid, 'opencode-data', 'auth.json'))
+      expect(bootstrapped).toBe(true)
+      expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).openrouter.key).toBe('sk-or-v1-from-host')
+    })
+
+    it('leaves auth.json ABSENT when host has no auth.json (no malformed-{} placeholder, codex #158 contract)', () => {
+      const { authPath, bootstrapped } = provisionCloudOpenCodeAuth(uuid, tmpHome)
+      expect(bootstrapped).toBe(false)
+      expect(fs.existsSync(authPath)).toBe(false)
+    })
+
+    it('re-seeds from host on a later run after the operator authenticates (absent-dest is seedable)', () => {
+      provisionCloudOpenCodeAuth(uuid, tmpHome)
+      writeHostAuth('sk-or-v1-after-login')
+      const { authPath, bootstrapped } = provisionCloudOpenCodeAuth(uuid, tmpHome)
+      expect(bootstrapped).toBe(true)
+      expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).openrouter.key).toBe('sk-or-v1-after-login')
+    })
+
+    it('preserves an in-container rotated per-agent auth.json across re-runs (rotation independence)', () => {
+      writeHostAuth('sk-or-v1-host-NEW')
+      const dataDir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'opencode-data')
+      fs.mkdirSync(dataDir, { recursive: true })
+      const authPath = path.join(dataDir, 'auth.json')
+      const rotated = JSON.stringify({ openrouter: { type: 'api', key: 'sk-or-v1-rotated' } }) + '\n'
+      fs.writeFileSync(authPath, rotated)
+      const result = provisionCloudOpenCodeAuth(uuid, tmpHome)
+      expect(result.bootstrapped).toBe(false)
+      expect(fs.readFileSync(authPath, 'utf8')).toBe(rotated)
+    })
+
+    it('writes the seeded file with restrictive 0600 perms', () => {
+      writeHostAuth()
+      const { authPath } = provisionCloudOpenCodeAuth(uuid, tmpHome)
+      expect(fs.statSync(authPath).mode & 0o777).toBe(0o600)
+    })
+
+    it('creates the per-UUID opencode-data dir if missing', () => {
+      const dir = path.join(tmpHome, '.aimaestro', 'agents', uuid, 'opencode-data')
+      expect(fs.existsSync(dir)).toBe(false)
+      provisionCloudOpenCodeAuth(uuid, tmpHome)
+      expect(fs.existsSync(dir)).toBe(true)
+    })
+  })
+
+  describe('buildCloudOpenCodeDataMount', () => {
+    it('returns a single-dir bind of opencode-data onto /home/claude/.local/share/opencode (matches resolveConversationDir)', () => {
+      const m = buildCloudOpenCodeDataMount(uuid, '/home/operator')
+      expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/opencode-data`)
+      expect(m.containerPath).toBe('/home/claude/.local/share/opencode')
+      expect(m.readOnly).toBeUndefined()
+    })
+    it('passes validateMounts (shellable in a docker -v flag)', () => {
+      expect(validateMounts([buildCloudOpenCodeDataMount(uuid, '/home/operator')], 'system')).toBeNull()
+    })
+    it('containerPath is covered by the reserved /home/claude/.local root', () => {
+      const m = buildCloudOpenCodeDataMount(uuid, '/home/operator')
+      const matched = OPERATOR_RESERVED_CONTAINER_PATH_ROOTS.find(
+        r => m.containerPath === r || m.containerPath.startsWith(`${r}/`)
+      )
+      expect(matched).toBe('/home/claude/.local')
+    })
+  })
+
+  describe('buildCloudOpenCodeConfigMount', () => {
+    it('returns a single-dir bind of opencode-config onto /home/claude/.config/opencode', () => {
+      const m = buildCloudOpenCodeConfigMount(uuid, '/home/operator')
+      expect(m.hostPath).toBe(`/home/operator/.aimaestro/agents/${uuid}/opencode-config`)
+      expect(m.containerPath).toBe('/home/claude/.config/opencode')
+      expect(m.readOnly).toBeUndefined()
+    })
+    it('passes validateMounts (shellable in a docker -v flag)', () => {
+      expect(validateMounts([buildCloudOpenCodeConfigMount(uuid, '/home/operator')], 'system')).toBeNull()
+    })
+    it('containerPath is the reserved /home/claude/.config/opencode root itself (no operator-shadow gap)', () => {
+      const m = buildCloudOpenCodeConfigMount(uuid, '/home/operator')
+      const matched = OPERATOR_RESERVED_CONTAINER_PATH_ROOTS.find(
+        r => m.containerPath === r || m.containerPath.startsWith(`${r}/`)
+      )
+      expect(matched).toBe('/home/claude/.config/opencode')
+    })
+  })
+
+  describe('OPERATOR_RESERVED_CONTAINER_PATH_ROOTS — opencode config', () => {
+    it('reserves /home/claude/.config/opencode (only .config/gh was reserved before, not all of .config)', () => {
+      expect(OPERATOR_RESERVED_CONTAINER_PATH_ROOTS).toContain('/home/claude/.config/opencode')
+    })
+    it('does NOT reserve all of /home/claude/.config (a sibling .config dir is not shadowed)', () => {
+      expect(OPERATOR_RESERVED_CONTAINER_PATH_ROOTS).not.toContain('/home/claude/.config')
+    })
+  })
+
+  describe('buildCloudCommonMounts includes both opencode mounts', () => {
+    it('always adds the opencode data + config mounts (multi-runtime image — harmless for non-opencode agents)', () => {
+      const mounts = buildCloudCommonMounts('a1', { hostHome: '/home/tester' })
+      expect(mounts.some(m => m.containerPath === '/home/claude/.local/share/opencode')).toBe(true)
+      expect(mounts.some(m => m.containerPath === '/home/claude/.config/opencode')).toBe(true)
+    })
+  })
+
+  describe('cloudInstructionsContainerPath — opencode', () => {
+    it('maps opencode to ~/.config/opencode/AGENTS.md (its AGENTS.md convention)', () => {
+      expect(cloudInstructionsContainerPath('opencode')).toBe('/home/claude/.config/opencode/AGENTS.md')
+    })
+  })
+
+  describe('migrateAgentPersistence carries opencode dirs forward', () => {
+    it('copies opencode-data/ (auth + opencode.db) and opencode-config/ across recreate-with-persistFromAgentId', () => {
+      const fromId = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      const toId = '11111111-2222-3333-4444-555555555555'
+      const fromData = path.join(tmpHome, '.aimaestro', 'agents', fromId, 'opencode-data')
+      const fromConfig = path.join(tmpHome, '.aimaestro', 'agents', fromId, 'opencode-config')
+      fs.mkdirSync(fromData, { recursive: true })
+      fs.mkdirSync(fromConfig, { recursive: true })
+      fs.writeFileSync(path.join(fromData, 'auth.json'), '{"openrouter":{"type":"api","key":"sk-or-pred"}}\n')
+      fs.writeFileSync(path.join(fromData, 'opencode.db'), 'SQLITE-BYTES')
+      fs.writeFileSync(path.join(fromConfig, 'opencode.jsonc'), '{"model":"openrouter/cohere/north-mini-code:free"}\n')
+
+      migrateAgentPersistence(fromId, toId, tmpHome)
+
+      const toData = path.join(tmpHome, '.aimaestro', 'agents', toId, 'opencode-data')
+      const toConfig = path.join(tmpHome, '.aimaestro', 'agents', toId, 'opencode-config')
+      expect(JSON.parse(fs.readFileSync(path.join(toData, 'auth.json'), 'utf8')).openrouter.key).toBe('sk-or-pred')
+      expect(fs.readFileSync(path.join(toData, 'opencode.db'), 'utf8')).toBe('SQLITE-BYTES')
+      expect(fs.existsSync(path.join(toConfig, 'opencode.jsonc'))).toBe(true)
+    })
+  })
+})
+
 describe('provisionCloudGeminiAuth', () => {
   const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   let tmpHome: string
@@ -2513,6 +2723,17 @@ describe('buildAiToolCommand', () => {
   it('appends model after programArgs', () => {
     const result = buildAiToolCommand({ program: 'claude', permissionMode: 'fullAutonomy', model: 'claude-sonnet-4-6' })
     expect(result).toBe('claude --permission-mode bypassPermissions --model claude-sonnet-4-6')
+  })
+
+  it('does NOT append --model for opencode — model lives in opencode.jsonc, not a CLI flag (D5)', () => {
+    // opencode's --model is a flag on `opencode run` ONLY, not the interactive
+    // TUI the container launches; appending it bakes an unrunnable AI_TOOL
+    // (`opencode --model …`). The provisioned opencode.jsonc is the model
+    // source-of-truth. Regression guard for the create-path + update-runtime
+    // inline composers, which mirror this `program !== 'opencode'` guard.
+    const result = buildAiToolCommand({ program: 'opencode', model: 'openrouter/cohere/north-mini-code:free' })
+    expect(result).toBe('opencode')
+    expect(result).not.toContain('--model')
   })
 
   it('treats claude-code program name as claude-compatible (receives permission flags)', () => {
