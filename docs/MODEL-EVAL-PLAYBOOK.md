@@ -24,7 +24,7 @@ This single rule generates the entire architecture below. A model's self-reporte
 
 ## 2. Setup — zero blast radius
 
-1. **Harness:** the containerized OpenCode agent pointed at OpenRouter (see the harness spec). Set the candidate via `opencode.jsonc` `model:` (e.g. `openrouter/<provider>/<model>`); `variant: high` for the model's best shot. No rebuild between candidates.
+1. **Harness:** the containerized OpenCode agent pointed at OpenRouter (see the harness spec). Set the candidate **model** via `opencode.jsonc` `model:` (e.g. `openrouter/<provider>/<model>`). For the model's best shot, bind the **variant** via the agent's build config — `agent.build.variant: "high"` — **not** in `opencode.jsonc` (a top-level `variant` key there is rejected as *Unrecognized key*; empirically locked in Phase 2). No rebuild between candidates.
 2. **Isolated clone:** the candidate works on a **fresh git clone** with its origin reset and **no push credentials** — it commits locally only. Zero blast radius to the real repo.
 3. **Fresh, model-verified one-shot per attempt:** run each task in a **fresh bounded session** (`opencode run "<prompt>"`), not one sprawling session accumulating context. Some harnesses cold-start to a default model — **read the model back from `opencode.db` every run and confirm** it is the candidate before counting the output. A wrong-model turn is a void run.
 4. **Grade on the host, never inside the run.** The orchestrator re-runs `tsc` and the test suite itself and reads the real exit code (see §3 traps).
@@ -41,7 +41,15 @@ This single rule generates the entire architecture below. A model's self-reporte
 | **Grading** | From **real** `tsc` + test runs. The candidate's **own** tests are **discounted** — they false-green over edges. |
 | **Independent correctness sweep** | After green, the gate-author independently inspects for correctness the tests did not assert — **especially untouched-but-dependent callers** on cross-module tasks. |
 
-**False-green traps to defend against (these have bitten real runs):**
+### Validate the gate *before* the candidate runs
+
+A gate you haven't proven is not a gate. This is the linchpin that makes a "gate-green-but-wrong, the sweep caught it" finding **interpretable** rather than anecdotal — you demonstrated the gate's blind spot on a *known* seam-broken reference before the candidate touched anything. Before any candidate run, confirm three states against reference implementations **you** write:
+
+1. **Baseline (unfixed code) → gate FAILS.** Proves the gate actually tests the new contract and isn't vacuously green.
+2. **Reference-correct (full fix) → gate PASSES *and* sweep PASSES.** Proves the gate is satisfiable and the sweep has no false positives.
+3. **Seam-broken (primary change correct, one dependent caller left on the old behavior) → gate PASSES *blind* + sweep CATCHES.** Proves both the gate's blindness to unenumerated seams **and** that the independent sweep is load-bearing.
+
+**False-green traps to defend against** (WAL-mtime and the old-behavior-test bit real runs; pipe-masking is guarded pre-emptively):
 - **Pipe-masked exit status.** `tsc … | head` returns the *pipe's* status, not `tsc`'s — a failing typecheck reads as success. Always `cmd > log 2>&1; echo EXIT=$?`.
 - **Old-behavior tests.** An existing test that asserts the *old* behavior goes **red on the correct fix** and is **silent on every new seam**. Patching that one assertion to green gives false confidence. Run the **full** suite, and read what each red is actually telling you.
 - **`.db` mtime ≠ liveness.** SQLite WAL means the main `.db` file mtime can stay frozen while live writes land in `-wal`. Judge a run's progress by message-count / commits, not file mtime.
@@ -116,7 +124,7 @@ A candidate that doesn't clear "general worker-tier author" can still earn a **n
 
 ## 8. Worked example — north-mini-code:free (2026-06-19)
 
-The run that produced this playbook. Ladder R0→R6, both orderings, Claude-authored gate, graded from real `tsc`/`vitest`, isolated clone.
+The run that produced this playbook. Ladder R0→R6, both orderings, Claude-authored gate, graded from real `tsc`/`vitest`, isolated clone. *(Artifact mapping, for anyone reading the clone: `eval-batch1/` ≈ R1 pure-utils, the four rungs in `eval-batch2/` ≈ the R2–R5 classes, and `eval-rung5/` = the R6 live cross-module task.)*
 
 - **R0–R1:** sloppy on trivials (shipped non-compiling code committed-as-done; false-green self-tests); **counterintuitively better on hard/directed tasks** than trivial ones.
 - **R1 (pure utils):** viable behind the gate (all attempts reached green). Test-first paid (0 fix rounds vs 1). But both orderings shipped an identical latent bug the gate didn't test → **green ≠ correct; the gate's coverage is the ceiling.**
@@ -129,11 +137,12 @@ The run that produced this playbook. Ladder R0→R6, both orderings, Claude-auth
 
 ## 9. Running the next candidate — checklist
 
-1. Name the model; set `opencode.jsonc` `model:` (+ `variant: high`). **No rebuild.**
+1. Name the model; set `opencode.jsonc` `model:`. Bind `variant: "high"` via `agent.build.variant` (not `opencode.jsonc`). **No rebuild.**
 2. Fresh isolated clone, no push creds.
 3. Capable model authors the per-task objective gate (identical across orderings).
-4. Climb the ladder (§4), both orderings, fresh model-verified one-shot per attempt.
-5. Grade on the host (§3 traps); independent seam sweep after green.
-6. Fill the scorecard per attempt: iterations-to-green, edge-bugs-caught, convergence, final correctness, quiet-seam count, **net cost vs capable-author-solo**, model-verified-each-run.
-7. Apply the three decision lenses (§6) and emit a **lane assignment** (§7), with the token-cost context stated.
-8. Keep the clone + per-batch `RESULTS.md` as the evidence record; tear down the eval agent + container.
+4. **Validate the gate before the candidate runs** (§3): baseline → fails, reference-correct → passes + sweep passes, seam-broken → passes blind + sweep catches.
+5. Climb the ladder (§4), both orderings, fresh model-verified one-shot per attempt.
+6. Grade on the host (§3 traps); independent seam sweep after green.
+7. Fill the scorecard per attempt: iterations-to-green, edge-bugs-caught, convergence, final correctness, quiet-seam count, **net cost vs capable-author-solo**, model-verified-each-run.
+8. Apply the three decision lenses (§6) and emit a **lane assignment** (§7), with the token-cost context stated.
+9. Keep the clone + per-batch `RESULTS.md` as the evidence record; tear down the eval agent + container.
