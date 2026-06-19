@@ -2725,6 +2725,17 @@ describe('buildAiToolCommand', () => {
     expect(result).toBe('claude --permission-mode bypassPermissions --model claude-sonnet-4-6')
   })
 
+  it('does NOT append --model for opencode — model lives in opencode.jsonc, not a CLI flag (D5)', () => {
+    // opencode's --model is a flag on `opencode run` ONLY, not the interactive
+    // TUI the container launches; appending it bakes an unrunnable AI_TOOL
+    // (`opencode --model …`). The provisioned opencode.jsonc is the model
+    // source-of-truth. Regression guard for the create-path + update-runtime
+    // inline composers, which mirror this `program !== 'opencode'` guard.
+    const result = buildAiToolCommand({ program: 'opencode', model: 'openrouter/cohere/north-mini-code:free' })
+    expect(result).toBe('opencode')
+    expect(result).not.toContain('--model')
+  })
+
   it('treats claude-code program name as claude-compatible (receives permission flags)', () => {
     const result = buildAiToolCommand({ program: 'claude-code', permissionMode: 'trustEdits' })
     expect(result).toBe('claude-code --permission-mode acceptEdits')

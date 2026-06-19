@@ -129,7 +129,13 @@ export function buildAiToolCommand(body: Pick<DockerCreateRequest, 'program' | '
     const sanitizedArgs = body.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
     if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
   }
-  if (body.model) {
+  if (body.model && program !== 'opencode') {
+    // opencode's --model is a flag on `opencode run` ONLY, not the interactive
+    // TUI the container launches — appending it bakes an unrunnable AI_TOOL
+    // (`opencode --model …`). The provisioned opencode.jsonc is opencode's
+    // model source-of-truth (D5); body.model is correctly ignored for it.
+    // (Future: per-agent model could flow into agent.<agent>.model in the
+    // provisioned config rather than a CLI flag.)
     aiTool += ` --model ${body.model}`
   }
   if (body.prompt) {
@@ -2458,7 +2464,11 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     const sanitizedArgs = body.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
     if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
   }
-  if (body.model) {
+  if (body.model && program !== 'opencode') {
+    // opencode --model is run-subcommand-only (not the interactive TUI) — see
+    // buildAiToolCommand. Appending it for an opencode agent created WITH a
+    // model on the record bakes an unrunnable `opencode --model …` AI_TOOL;
+    // opencode.jsonc is the model source-of-truth. Mirrors the yolo guard above.
     aiTool += ` --model ${body.model}`
   }
   if (body.prompt) {
@@ -3320,7 +3330,11 @@ export async function updateContainerMountsAndExtraEnv(
     const sanitizedArgs = agent.programArgs.replace(/[^a-zA-Z0-9\s\-_.=/:,~@]/g, '').trim()
     if (sanitizedArgs) aiTool += ` ${sanitizedArgs}`
   }
-  if (agent.model) {
+  if (agent.model && program !== 'opencode') {
+    // opencode --model is run-subcommand-only — appending it on /update-runtime
+    // rebuild from a persisted agent.model would bake an unrunnable
+    // `opencode --model …` AI_TOOL. opencode.jsonc is the model source-of-truth.
+    // Mirrors the create-path + buildAiToolCommand guards.
     aiTool += ` --model ${agent.model}`
   }
 
