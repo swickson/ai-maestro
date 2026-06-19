@@ -160,6 +160,7 @@ export const OPERATOR_RESERVED_CONTAINER_PATH_ROOTS: readonly string[] = [
   `${CONTAINER_HOME}/.gemini`,           // settings, oauth, tmp/<project>
   `${CONTAINER_HOME}/.codex`,            // config.toml, version.json, auth.json
   `${CONTAINER_HOME}/.config/gh`,        // gh credentials
+  `${CONTAINER_HOME}/.config/opencode`,  // opencode.jsonc model pin (buildCloudOpenCodeConfigMount)
   `${CONTAINER_HOME}/.gitconfig`,        // per-agent git identity (buildCloudGitConfigMount, §11.6)
   CONTAINER_AITEAM,                      // shared orchestrator-owned plan (buildCloudAiTeamMount, §11.1)
   CONTAINER_TRANSPORT_REPO,              // per-wave bare transport repo (buildCloudTransportRepoMount, §11.4)
@@ -962,6 +963,142 @@ export function buildCloudCodexAppDataMount(
   }
 }
 
+// ── OpenCode (opencode-ai) cloud provisioning ───────────────────────────────
+//
+// OpenCode (v1.x, binary `opencode`) launches against OpenRouter for the
+// north-mini-code eval (PR #250 spec). Unlike codex/gemini it splits its state
+// across TWO XDG roots:
+//   - DATA   ~/.local/share/opencode/ → auth.json (the OpenRouter API key) +
+//            opencode.db (+ -wal/-shm; the SQLite conversation store the Phase-1
+//            decoder reads) + log/ + snapshot/ + repos/.
+//   - CONFIG ~/.config/opencode/      → opencode.jsonc (the declarative `model`
+//            field that pins cohere/north-mini-code:free).
+// Both are bind-mounted single-dir (OPT-B), mirroring codex-app-data: inode-safe
+// under opencode's atomic sqlite WAL-checkpoint + auth rewrites (a file-level
+// mount would stale on the rename — see [[feedback_docker_file_mount_inode]]),
+// and persists opencode.db across /recreate. The data-mount target
+// (CONTAINER_HOME/.local/share/opencode) matches resolveConversationDir's
+// cloud opencode branch so the chat reader + WS watcher find opencode.db.
+// See docs/OPENCODE-HARNESS-SPEC.md + reference_opencode_sqlite_native.
+
+// Per-agent host subdir names under ~/.aimaestro/agents/<id>/.
+export const OPENCODE_DATA_DIR = 'opencode-data'
+export const OPENCODE_CONFIG_DIR = 'opencode-config'
+
+// The declarative eval model + reasoning-effort variant. D5 locked empirically
+// (host test, binary-level = host==container):
+//   - bare `opencode` honors the opencode.jsonc top-level `model` field in
+//     SLASH-JOINED providerID/modelID form, so the container launches `opencode`
+//     BARE (no -m flag in AI_TOOL) and reads the model from here.
+//   - the reasoning-effort `variant` (Shane: HIGH, give north-mini-code its best
+//     shot for the eval) CANNOT be set top-level — opencode rejects a top-level
+//     `variant` key ("Unrecognized key"), and `--variant` is a flag on
+//     `opencode run` ONLY, not the interactive TUI the container launches. The
+//     ONLY config form that reaches the bare launch is the per-agent
+//     AgentConfig.variant on the DEFAULT agent ("build"). Verified: a bare
+//     `opencode run` with `agent.build.{model,variant:"high"}` produced a real
+//     session with model.variant="high" (no CLI flag) — so the container stays
+//     bare `opencode` and the variant rides in config alongside the model pin.
+const OPENCODE_EVAL_MODEL = 'openrouter/cohere/north-mini-code:free'
+const OPENCODE_EVAL_VARIANT = 'high'
+// The default opencode agent the interactive TUI launches into (D5 header
+// `> build · …`); the variant must be set on this agent to bind to the launch.
+const OPENCODE_DEFAULT_AGENT = 'build'
+
+// Provision the per-agent OpenCode config: write opencode.jsonc with the
+// declarative `model` field so the container's bare `opencode` resolves to
+// cohere/north-mini-code:free without a -m flag (D5). Written ONCE
+// (existsSync-guarded) so an operator's in-container /config model edit
+// survives re-runs + /recreate (migrateAgentPersistence carries opencode-config/
+// forward). Deliberately does NOT seed from the host ~/.config/opencode — that
+// dir is a per-machine scratch (can hold an unrelated node_modules/package.json,
+// as on bananajr); the model pin is the only config the container needs.
+export function provisionCloudOpenCodeConfig(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { configPath: string } {
+  const configDir = path.join(hostHome, '.aimaestro', 'agents', agentId, OPENCODE_CONFIG_DIR)
+  fs.mkdirSync(configDir, { recursive: true })
+  const configPath = path.join(configDir, 'opencode.jsonc')
+  if (!fs.existsSync(configPath)) {
+    const config = {
+      $schema: 'https://opencode.ai/config.json',
+      // Top-level model = the default for every context (D5: bare TUI reads it).
+      model: OPENCODE_EVAL_MODEL,
+      // Per-agent block on the default "build" agent carries the reasoning-effort
+      // variant — the only config path that binds variant to the bare launch
+      // (top-level `variant` is rejected; --variant is run-subcommand-only).
+      agent: {
+        [OPENCODE_DEFAULT_AGENT]: {
+          model: OPENCODE_EVAL_MODEL,
+          variant: OPENCODE_EVAL_VARIANT,
+        },
+      },
+    }
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
+  }
+  return { configPath }
+}
+
+// Provision per-container OpenCode auth: copy the host operator's
+// ~/.local/share/opencode/auth.json (the OpenRouter API key, shape
+// {"openrouter":{"type":"api","key":...}}) into the per-agent data dir so the
+// fresh cloud agent inherits a working OpenRouter login. Operator workflow:
+// authenticate opencode once on the host (the key lands in auth.json), every
+// subsequent create inherits it — the same Option-A operator-driven shape as
+// provisionCloudCodexAuth / provisionCloudGeminiAuth. seedFromHostFile owns
+// dest-existence: a per-agent key rotated in-container is preserved; an
+// absent/empty dest re-seeds from the host on /recreate.
+//
+// If the host has no auth.json, it is left ABSENT (no malformed-{} placeholder,
+// per the codex #158 contract). Unlike codex there is no interactive
+// device-login fallback — an OpenRouter api key is non-interactive — so absent
+// means the agent can't reach the model until the operator authenticates on the
+// host and re-provisions. That surfaces the missing-credential cause rather than
+// masking it behind a cryptic in-container error.
+export function provisionCloudOpenCodeAuth(
+  agentId: string,
+  hostHome: string = os.homedir()
+): { authPath: string; bootstrapped: boolean } {
+  const dataDir = path.join(hostHome, '.aimaestro', 'agents', agentId, OPENCODE_DATA_DIR)
+  fs.mkdirSync(dataDir, { recursive: true })
+  const authPath = path.join(dataDir, 'auth.json')
+  const bootstrapped = seedFromHostFile(
+    path.join(hostHome, '.local', 'share', 'opencode', 'auth.json'),
+    authPath,
+  )
+  return { authPath, bootstrapped }
+}
+
+// Single-dir bind mount for OpenCode's ~/.local/share/opencode data tree
+// (auth.json + opencode.db + -wal/-shm + log/snapshot/repos). Whole-dir mount
+// (OPT-B) so opencode's atomic sqlite checkpoint + auth rotation rewrites stay
+// inode-safe and the db (conversation history) persists across /recreate.
+// containerPath sits under the already-reserved CONTAINER_HOME/.local root.
+export function buildCloudOpenCodeDataMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, OPENCODE_DATA_DIR),
+    containerPath: path.posix.join(CONTAINER_HOME, '.local', 'share', 'opencode'),
+  }
+}
+
+// Single-dir bind mount for OpenCode's ~/.config/opencode dir (opencode.jsonc).
+// containerPath CONTAINER_HOME/.config/opencode is added to
+// OPERATOR_RESERVED_CONTAINER_PATH_ROOTS (only .config/gh was reserved before —
+// not all of .config) so an operator mount can't shadow the model pin.
+export function buildCloudOpenCodeConfigMount(
+  agentId: string,
+  hostHome: string = os.homedir()
+): SandboxMount {
+  return {
+    hostPath: path.join(hostHome, '.aimaestro', 'agents', agentId, OPENCODE_CONFIG_DIR),
+    containerPath: path.posix.join(CONTAINER_HOME, '.config', 'opencode'),
+  }
+}
+
 // Provision per-container Gemini CLI auth: at agent-create time, copy the
 // host operator's ~/.gemini/oauth_creds.json into the per-agent dir so the
 // fresh cloud agent inherits a valid Google OAuth login and skips the
@@ -1377,6 +1514,16 @@ export function migrateAgentPersistence(
     // files migrate, then provisionCloudCodex* consolidate them into
     // codex-app-data/ in the new UUID dir.
     'codex-app-data',
+    // OpenCode data dir — single-dir OPT-B mount. Carries forward auth.json
+    // (OpenRouter key) + opencode.db (FULL conversation history) so an
+    // opencode agent's login + chat survive /recreate UUID rotation. Mirrors
+    // codex-app-data. The config dir is migrated separately below.
+    'opencode-data',
+    // OpenCode config dir — opencode.jsonc model pin. Carries forward so an
+    // operator's in-container /config model edit survives /recreate (and the
+    // model pin is present even if provisionCloudOpenCodeConfig's existsSync
+    // guard would otherwise re-write the default).
+    'opencode-config',
   ]
   for (const name of dirAssets) {
     const src = path.join(fromDir, name)
@@ -1652,6 +1799,14 @@ export function cloudInstructionsContainerPath(program: string | undefined): str
   switch (cloudProgram({ program } as Parameters<typeof cloudProgram>[0])) {
     case 'codex':
       return path.posix.join(CONTAINER_HOME, '.codex', 'AGENTS.md')
+    case 'opencode':
+      // OpenCode reads global instructions from ~/.config/opencode/AGENTS.md
+      // (its AGENTS.md convention) — overlays a file inside the already-mounted
+      // opencode-config dir (nested file-over-dir, like codex's AGENTS.md inside
+      // .codex). Documented path; empirical confirm deferred to Phase 4 (eval
+      // agents are unprofiled and carry no instructions.md, so this is a no-op
+      // for them — the gated mount only adds when a source file exists).
+      return path.posix.join(CONTAINER_HOME, '.config', 'opencode', 'AGENTS.md')
     case 'gemini':
     case 'antigravity':
       return path.posix.join(CONTAINER_HOME, '.gemini', 'GEMINI.md')
@@ -1779,6 +1934,8 @@ export function buildCloudCommonMounts(
     ...buildCloudGeminiReadthroughMounts(agentId, hostHome),
     buildCloudAntigravityAppDataMount(agentId, hostHome),
     buildCloudCodexAppDataMount(agentId, hostHome),
+    buildCloudOpenCodeDataMount(agentId, hostHome),
+    buildCloudOpenCodeConfigMount(agentId, hostHome),
     ...(useZiggy ? [buildZiggyCodeMount(ziggyCodePath), buildZiggyEnvOverlayMount(name)] : []),
     buildCloudRestorationSentinelMount(agentId, hostHome),
     // §11.1 profiled-agent mounts (gated; absent for unprofiled = today's shape)
@@ -2288,7 +2445,13 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   // wake-line would fail with `command not found: antigravity`. PR-3 hotfix.
   const program = body.program || 'claude'
   let aiTool = resolveStartCommand(program)
-  if (body.yolo) {
+  if (body.yolo && program !== 'opencode') {
+    // --dangerously-skip-permissions is a claude flag; opencode does not accept
+    // it and would bake an unrunnable AI_TOOL (command would error at launch).
+    // opencode's own permission model is config-driven (Q6, Phase 4), not a CLI
+    // flag, so a yolo opencode agent simply launches bare. (codex/gemini also
+    // don't take the flag, but that is pre-existing behavior — scoped to
+    // opencode here, flagged for a separate cleanup.)
     aiTool += ' --dangerously-skip-permissions'
   }
   if (body.programArgs) {
@@ -2435,6 +2598,16 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     provisionCloudCodexAuth(agentId)
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud codex auth:', err instanceof Error ? err.message : err)
+  }
+  try {
+    provisionCloudOpenCodeConfig(agentId)
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud opencode config:', err instanceof Error ? err.message : err)
+  }
+  try {
+    provisionCloudOpenCodeAuth(agentId)
+  } catch (err) {
+    console.warn('[Docker Service] Could not provision cloud opencode auth:', err instanceof Error ? err.message : err)
   }
   if (useZiggy) {
     try {
@@ -3197,6 +3370,23 @@ export async function updateContainerMountsAndExtraEnv(
     provisionCloudCodexAuth(agentId)
   } catch (err) {
     console.warn('[update-runtime] Could not provision cloud codex auth:', err instanceof Error ? err.message : err)
+  }
+  // (Re-)provision OpenCode config + auth on update-runtime. Idempotent
+  // (existsSync / seedFromHostFile dest-existence guarded). Load-bearing for the
+  // identity-preserving image-swap path: an EXISTING agent flipped onto the
+  // opencode harness via /update-runtime gets its opencode.jsonc model pin +
+  // auth.json seeded here (mirrors the codex provisioning above). Also ensures
+  // the per-agent opencode-data/-config dirs exist server-owned before docker
+  // run, so docker can't materialize the bind sources root-owned.
+  try {
+    provisionCloudOpenCodeConfig(agentId)
+  } catch (err) {
+    console.warn('[update-runtime] Could not provision cloud opencode config:', err instanceof Error ? err.message : err)
+  }
+  try {
+    provisionCloudOpenCodeAuth(agentId)
+  } catch (err) {
+    console.warn('[update-runtime] Could not provision cloud opencode auth:', err instanceof Error ? err.message : err)
   }
   // (Re-)provision Codex Ziggy MCP entry if ziggy=true. Idempotent — the
   // helper short-circuits when the [mcp_servers.ziggy] block already exists
