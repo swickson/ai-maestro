@@ -19,7 +19,7 @@ import { resolveActiveTranscript } from '@/lib/conversation-resolver'
 import { capturePaneFromContainer } from '@/lib/container-utils'
 import { normalizeGeminiLine } from '@/lib/gemini-message-normalizer'
 import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
-import { loadNewestAntigravityConversation } from '@/lib/antigravity-db-decoder'
+import { loadNewestAntigravityChat } from '@/lib/antigravity-db-decoder'
 import { loadNewestOpencodeConversation } from '@/lib/opencode-db-decoder'
 import { normalizeCodexLine } from '@/lib/codex-message-normalizer'
 import * as fs from 'fs'
@@ -86,14 +86,16 @@ export async function getConversationMessages(
   const messages: any[] = []
   let currentConversation: { path: string; mtime: Date } | null = null
 
-  // Antigravity: decode the FULL (user + assistant + tool) conversation from
-  // the newest conversations/*.db (SQLite plaintext-protobuf, #232) as a
-  // DEDICATED source — kept separate from the generic JSONL resolver, which
-  // intentionally ignores .pb/.db and serves history.jsonl (user prompts only).
-  // Falls through to that JSONL user-prompt path below for old, encrypted
-  // .pb-only conversations that have no decodable .db.
+  // Antigravity: decode the FULL (user + assistant + tool) conversation as a
+  // DEDICATED source spanning BOTH on-disk formats — the plaintext SQLite
+  // conversations/*.db (#232) and the newer brain/<uuid>/…/transcript_full.jsonl
+  // (agy 1.0.1+, #256), newest-mtime-wins. Kept separate from the generic JSONL
+  // resolver, which intentionally ignores .pb/.db and serves history.jsonl (user
+  // prompts only). Falls through to that user-prompt path below only for old,
+  // encrypted .pb-only conversations with neither a decodable .db nor a brain
+  // transcript.
   if (program === 'antigravity') {
-    const decoded = loadNewestAntigravityConversation(path.join(conversationDir, 'conversations'))
+    const decoded = loadNewestAntigravityChat(conversationDir)
     if (decoded && decoded.messages.length > 0) {
       currentConversation = { path: decoded.path, mtime: decoded.mtime }
       for (const msg of decoded.messages) {

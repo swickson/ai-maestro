@@ -5,9 +5,14 @@
  *   - OLD (≤ ~2026-06-09): `<uuid>.pb`  — ENCRYPTED, opaque (no plaintext,
  *     no protobuf structure). Genuinely unrecoverable; the chat path falls
  *     back to history.jsonl (user prompts only) for these.
- *   - NEW (~2026-06-10+):  `<uuid>.db`  — SQLite, with PLAINTEXT protobuf in
+ *   - `.db` era (~2026-06-10): `<uuid>.db` — SQLite, with PLAINTEXT protobuf in
  *     `steps.step_payload`. The FULL user+assistant+tool conversation lives
  *     here and IS decodable. This module decodes it (#232).
+ *   - NOW (agy ~1.0.1, ~2026-06-19): `<uuid>.pb` back to OPAQUE; the plaintext
+ *     conversation moved to `brain/<uuid>/…/transcript_full.jsonl` (JSONL).
+ *     Decoded by `decodeAntigravityTranscript` below; `loadNewestAntigravityChat`
+ *     spans both formats newest-mtime-wins (#256). Token usage did NOT survive
+ *     this change (gen_metadata gone) — tracked in #256, not this chat path.
  *
  * This supersedes the earlier "protobuf black box, assistant side
  * unrecoverable" conclusion (#219/#222) — that held for the encrypted `.pb`
@@ -665,4 +670,197 @@ export function loadNewestAntigravityConversation(
   const newest = findNewestAntigravityDb(conversationsDir)
   if (!newest) return null
   return { ...newest, messages: decodeAntigravityDb(newest.path) }
+}
+
+// ── brain/ JSONL transcript (post-`.db` format, agy ~1.0.1+) ──────────────────
+//
+// antigravity-cli changed conversation storage a THIRD time (GH #256): the
+// current CLI (agy 1.0.1, fleet-wide ~2026-06-19) no longer writes the plaintext
+// SQLite `conversations/<uuid>.db` the section above decodes. It reverted the
+// `conversations/<uuid>.pb` to an OPAQUE blob and moved the PLAINTEXT
+// conversation to a per-conversation JSONL transcript at:
+//   brain/<uuid>/.system_generated/logs/transcript_full.jsonl
+// one JSON object per line. Observed `type`s (verified on Charlotte + Optic,
+// both 1.0.1):
+//   USER_INPUT        (source USER_EXPLICIT) → user; `content` wrapped in
+//                       <USER_REQUEST>…</USER_REQUEST> (stripped here)
+//   PLANNER_RESPONSE  (source MODEL)         → assistant; `content` = visible
+//                       text, `thinking` = reasoning (ignored for chat),
+//                       `tool_calls[]` = {name, args:{toolSummary,toolAction,…}}
+//                       dispatched BEFORE the content step
+//   EPHEMERAL_MESSAGE / CONVERSATION_HISTORY (source SYSTEM) → skipped (reminders/
+//                       context, not conversation)
+//   VIEW_FILE / RUN_COMMAND (source MODEL)   → tool RESULTS (verbose prose blobs);
+//                       skipped — the clean tool label comes from the dispatching
+//                       PLANNER_RESPONSE.tool_calls instead
+// Tool labels fold into the assistant bubble as `↳ <label>` lines, mirroring the
+// `.db` decoder's two-sided output. Token usage is NOT recoverable from this
+// format (the `.db` gen_metadata table is gone; opaque `.pb` carries none) — that
+// regression is tracked separately (#256), out of this chat path.
+
+const TX_REL_LOG = ['.system_generated', 'logs', 'transcript_full.jsonl']
+
+/**
+ * Pull the real user message out of an antigravity USER_INPUT `content`. The
+ * actual turn is wrapped in <USER_REQUEST>…</USER_REQUEST>; the harness APPENDS
+ * sidecar sections after it (<ADDITIONAL_METADATA> with local time, ephemeral
+ * reminders) that are NOT what the user typed — so prefer the wrapped inner text.
+ * Falls back to the leading prose (cut at the first sidecar tag) when no wrapper
+ * is present.
+ */
+function extractUserText(raw: string): string {
+  const m = raw.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i)
+  if (m) return m[1].trim()
+  return raw.split(/\n?\s*<(?:ADDITIONAL_METADATA|EPHEMERAL_MESSAGE|USER_REQUEST)\b/i)[0].trim()
+}
+
+/**
+ * Decode one `brain/<uuid>/.system_generated/logs/transcript_full.jsonl` into
+ * ordered Claude-shape messages. USER_INPUT → user, PLANNER_RESPONSE.content →
+ * assistant, with each turn's `tool_calls` folded into the following assistant
+ * bubble as `↳ <label>` lines (orphan tool dispatches with no content turn flush
+ * as their own thin assistant bubble so nothing is lost). Returns [] for an
+ * unreadable/empty/absent transcript — never throws into the caller.
+ */
+export function decodeAntigravityTranscript(transcriptPath: string): NormalizedMessage[] {
+  const fs = require('fs') as typeof import('fs')
+  let content: string
+  try {
+    content = fs.readFileSync(transcriptPath, 'utf8')
+  } catch {
+    return []
+  }
+
+  const messages: NormalizedMessage[] = []
+  let pendingTools: string[] = []
+  let idx = 0
+
+  const flushOrphanTools = (ts?: string) => {
+    if (pendingTools.length === 0) return
+    messages.push({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: pendingTools.map((l) => `↳ ${l}`).join('\n') }] },
+      ...(ts ? { timestamp: ts } : {}),
+      uuid: `antigravity-tx-${idx++}`,
+    })
+    pendingTools = []
+  }
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let o: any
+    try {
+      o = JSON.parse(trimmed)
+    } catch {
+      continue // tolerate a partially-written final line on a live transcript
+    }
+    if (!o || typeof o !== 'object') continue
+    const type = o.type
+    const ts = typeof o.created_at === 'string' ? o.created_at : undefined
+
+    if (type === 'USER_INPUT') {
+      // A user turn closes any open tool dispatch that never produced content.
+      flushOrphanTools(ts)
+      const text = typeof o.content === 'string' ? extractUserText(o.content) : ''
+      if (!text) continue
+      messages.push({
+        type: 'user',
+        message: { content: [{ type: 'text', text }] },
+        ...(ts ? { timestamp: ts } : {}),
+        uuid: `antigravity-tx-${idx++}`,
+      })
+      continue
+    }
+
+    if (type === 'PLANNER_RESPONSE') {
+      if (Array.isArray(o.tool_calls)) {
+        for (const tc of o.tool_calls) {
+          const label = tc?.args?.toolSummary || tc?.args?.toolAction || tc?.name
+          if (label) pendingTools.push(String(label))
+        }
+      }
+      const text = typeof o.content === 'string' ? o.content.trim() : ''
+      if (!text) continue // pure thinking/tool-dispatch step — tools stay buffered
+      const toolLines = pendingTools.map((l) => `↳ ${l}`)
+      pendingTools = []
+      const full = toolLines.length ? `${text}\n${toolLines.join('\n')}` : text
+      messages.push({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: full }] },
+        ...(ts ? { timestamp: ts } : {}),
+        uuid: `antigravity-tx-${idx++}`,
+      })
+      continue
+    }
+    // EPHEMERAL_MESSAGE / CONVERSATION_HISTORY / VIEW_FILE / RUN_COMMAND → skip
+  }
+  flushOrphanTools()
+  return messages
+}
+
+/**
+ * Find the newest `brain/<uuid>/.system_generated/logs/transcript_full.jsonl`
+ * (by mtime) under an antigravity `brain/` dir, or null if there are none (dir
+ * absent, or no transcript written yet — cold-start / pre-first-turn). The
+ * caller passes the `brain/` dir; each child is a per-conversation `<uuid>` dir.
+ */
+export function findNewestAntigravityTranscript(brainDir: string): { path: string; mtime: Date } | null {
+  const fs = require('fs') as typeof import('fs')
+  const path = require('path') as typeof import('path')
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(brainDir)
+  } catch {
+    return null
+  }
+  let best: { path: string; mtime: Date } | null = null
+  for (const name of entries) {
+    const full = path.join(brainDir, name, ...TX_REL_LOG)
+    try {
+      const stat = fs.statSync(full)
+      if (!stat.isFile()) continue
+      if (!best || stat.mtime > best.mtime) best = { path: full, mtime: stat.mtime }
+    } catch {
+      /* no transcript for this conversation dir — skip */
+    }
+  }
+  return best
+}
+
+/**
+ * Resolve + decode the newest antigravity conversation for the chat panel,
+ * spanning BOTH on-disk formats: the plaintext SQLite `conversations/<uuid>.db`
+ * (#232) and the newer `brain/<uuid>/…/transcript_full.jsonl` (#256). Pass the
+ * antigravity-cli ROOT dir (host `~/.gemini/antigravity-cli` or cloud
+ * `<agentDir>/antigravity-app-data`) — both `conversations/` and `brain/` sit
+ * directly under it.
+ *
+ * Precedence = NEWEST-WINS BY MTIME, brain-preferred on a tie. Rationale
+ * (documented per KAI's #256 ask): agy 1.0.1 writes ONLY brain (no `.db`), but an
+ * agent that ran on the `.db`-era version AND on 1.0.1 carries a STALE June `.db`
+ * alongside its CURRENT brain transcript. A strict `.db`-first order would surface
+ * the stale conversation; newest-mtime surfaces whichever source the agent is
+ * actually writing now, and stays correct if a future agy revives the `.db`. The
+ * `>=` tie-break favors brain because that's the live format today. Returns null
+ * when neither source exists (caller falls back to the history.jsonl user-prompt
+ * path). Never throws.
+ */
+export function loadNewestAntigravityChat(
+  conversationRootDir: string
+): { path: string; mtime: Date; messages: NormalizedMessage[]; source: 'db' | 'transcript' } | null {
+  const path = require('path') as typeof import('path')
+  const dbCand = findNewestAntigravityDb(path.join(conversationRootDir, 'conversations'))
+  const txCand = findNewestAntigravityTranscript(path.join(conversationRootDir, 'brain'))
+
+  let use: 'db' | 'transcript' | null = null
+  if (dbCand && txCand) use = txCand.mtime >= dbCand.mtime ? 'transcript' : 'db'
+  else if (txCand) use = 'transcript'
+  else if (dbCand) use = 'db'
+  if (!use) return null
+
+  if (use === 'transcript') {
+    return { ...txCand!, messages: decodeAntigravityTranscript(txCand!.path), source: 'transcript' }
+  }
+  return { ...dbCand!, messages: decodeAntigravityDb(dbCand!.path), source: 'db' }
 }
