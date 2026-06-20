@@ -10,10 +10,10 @@ Combined implementation plan for two interdependent features: automatic memory r
 
 | Phase | Owner(s) | Focus |
 |---|---|---|
-| **Phase 1** — Data Layer | a peer dev (dev-host) (dev-<team>-<role>) | Types, registries, REST APIs, tests |
-| **Phase 2** — Gateway Integration | a peer dev (prod-host) (dev-<team>-<role>) + the gateway agent (dev-<team>-<role>) | Gateway enrichment, resolve calls, memory middleware |
+| **Phase 1** — Data Layer | a peer dev (dev-host) | Types, registries, REST APIs, tests |
+| **Phase 2** — Gateway Integration | a peer dev (prod-host) + the gateway agent | Gateway enrichment, resolve calls, memory middleware |
 | **Phase 3** — Outbound Routing + Retrieval | a peer dev (prod-host) + the gateway agent | DM routing, memory injection, caching |
-| **Phase 4** — Dashboard UI | the lead (dev-<team>-<role>) | User management page, memory retrieval visibility |
+| **Phase 4** — Dashboard UI | the lead | User management page, memory retrieval visibility |
 
 **Dependency chain:** Phase 2 depends on Phase 1 APIs. Phase 3 depends on Phase 2 gateway enrichment. Phase 4 can start in parallel with Phase 3 (only needs Phase 1 APIs).
 

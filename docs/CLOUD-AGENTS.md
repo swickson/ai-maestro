@@ -1,7 +1,7 @@
 # Cloud (Sandboxed) Agents
 
 **Status:** Design + operator guide
-**Authors:** a peer dev (prod-host) (dev-<team>-<role>), a peer dev (dev-host) (dev-<team>-<role>), the lead (dev-<team>-<role>)
+**Authors:** a peer dev (prod-host), a peer dev (dev-host), the lead
 **Related:** [#6](https://github.com/swickson/ai-maestro/issues/6) (wakeAgent fallthrough bug, prerequisite), [#52](https://github.com/swickson/ai-maestro/issues/52) (mount spec + operator flow)
 
 ---
@@ -26,8 +26,8 @@ For agents whose work lives entirely inside their working directory (or a parent
 
 | Agent | Mounts |
 | --- | --- |
-| an agent, an agent | `/home/<user>/agents/<agent>` (rw) |
-| an agent, an agent | `the strategic working dir` (rw) + `the application repo` (ro) + `the project website` (ro) |
+| two agents | `/home/<user>/agents/<agent>` (rw) |
+| two agents | `the strategic working dir` (rw) + `the application repo` (ro) + `the project website` (ro) |
 
 Read-only on sibling references prevents an agent scoped to one project from accidentally writing into a peer project.
 

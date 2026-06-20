@@ -680,7 +680,7 @@ export function loadNewestAntigravityConversation(
 // `conversations/<uuid>.pb` to an OPAQUE blob and moved the PLAINTEXT
 // conversation to a per-conversation JSONL transcript at:
 //   brain/<uuid>/.system_generated/logs/transcript_full.jsonl
-// one JSON object per line. Observed `type`s (verified on an agent + an agent,
+// one JSON object per line. Observed `type`s (verified on two agents,
 // both 1.0.1):
 //   USER_INPUT        (source USER_EXPLICIT) → user; `content` wrapped in
 //                       <USER_REQUEST>…</USER_REQUEST> (stripped here)

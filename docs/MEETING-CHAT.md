@@ -2,7 +2,7 @@
 
 **Version:** v0.27.1
 **Date:** 2026-04-01
-**Authors:** the lead (dev-<team>-<role>), a peer dev (dev-host) (dev-<team>-<role>), a peer dev (prod-host) (dev-<team>-<role>)
+**Authors:** the lead, a peer dev (dev-host), a peer dev (prod-host)
 
 ---
 

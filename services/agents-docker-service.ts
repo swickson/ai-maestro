@@ -398,7 +398,7 @@ export function buildAmpCommonMounts(
     // so they can participate in the team kanban + meeting flows from inside
     // the container. Without this, only meeting-send.sh worked (manually
     // installed in some operators' ~/.local/bin/) and meeting-task.sh was
-    // universally absent fleet-wide (an agent + an agent + cross-host empirical
+    // universally absent fleet-wide (two agents + cross-host empirical
     // 2026-05-06). The bind mount targets a known container path that gets
     // prepended to CONTAINER_PATH below — sister pattern to the shell-helpers
     // mount above. Sister to PR #98 / kanban 9c40609b.
@@ -1613,7 +1613,7 @@ export function buildCloudClaudeReadthroughMounts(
 // Gemini CLI writes conversation JSONL to ~/.gemini/tmp/<project>/chats/
 // where <project> is the value from ~/.gemini/projects.json keyed by cwd
 // (CONTAINER_CWD_GEMINI_PROJECT = "workspace" for the standard /workspace
-// bind). Empirically pinned via the prod host an agent/an agent 2026-05-11 (kanban
+// bind). Empirically pinned via the prod host two agents 2026-05-11 (kanban
 // d937c33d). Applied to ALL cloud agents regardless of program — the mount
 // is harmless for non-Gemini agents (claude/codex never write under
 // .gemini/tmp/), keeping the mount-set shape uniform.
