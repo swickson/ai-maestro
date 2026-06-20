@@ -837,7 +837,7 @@ export function findNewestAntigravityTranscript(brainDir: string): { path: strin
  * directly under it.
  *
  * Precedence = NEWEST-WINS BY MTIME, brain-preferred on a tie. Rationale
- * (documented per KAI's #256 ask): agy 1.0.1 writes ONLY brain (no `.db`), but an
+ * (documented per the lead's #256 ask): agy 1.0.1 writes ONLY brain (no `.db`), but an
  * agent that ran on the `.db`-era version AND on 1.0.1 carries a STALE June `.db`
  * alongside its CURRENT brain transcript. A strict `.db`-first order would surface
  * the stale conversation; newest-mtime surfaces whichever source the agent is
