@@ -71,6 +71,7 @@ import {
   buildCloudTransportRepoMount,
   buildCloudCommonMounts,
   buildCloudCommonPrecreateDirs,
+  ensureCloudWorkDir,
   cloudInstructionsContainerPath,
   cloudInstructionsSourcePath,
   provisionCloudInstructions,
@@ -599,6 +600,58 @@ describe('buildCloudClaudePersistMounts', () => {
 
   it('passes the SandboxMount validator', () => {
     expect(validateMounts(buildCloudClaudePersistMounts(uuid, home), 'system')).toBeNull()
+  })
+})
+
+describe('ensureCloudWorkDir (#253 root-owned /workspace)', () => {
+  let base: string
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-workdir-'))
+  })
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true })
+  })
+
+  it('creates an absent workDir so docker cannot materialize it root-owned', () => {
+    const wd = path.join(base, 'agents', 'charlotte', 'workspace')
+    expect(fs.existsSync(wd)).toBe(false)
+    ensureCloudWorkDir(wd)
+    expect(fs.statSync(wd).isDirectory()).toBe(true)
+  })
+
+  it('creates the workDir recursively when parent dirs are absent', () => {
+    const wd = path.join(base, 'a', 'b', 'c', 'workspace')
+    ensureCloudWorkDir(wd)
+    expect(fs.statSync(wd).isDirectory()).toBe(true)
+  })
+
+  it('leaves an existing non-root-owned workDir and its contents untouched', () => {
+    // Test runs as the uid-1000 server, so a dir it creates has uid !== 0; the
+    // helper must NOT chown or otherwise disturb a populated, correctly-owned dir.
+    const wd = path.join(base, 'existing')
+    fs.mkdirSync(wd, { recursive: true })
+    const sentinel = path.join(wd, 'cloned-repo.txt')
+    fs.writeFileSync(sentinel, 'operator content')
+    const before = fs.statSync(wd)
+    ensureCloudWorkDir(wd)
+    expect(fs.readFileSync(sentinel, 'utf8')).toBe('operator content')
+    expect(fs.statSync(wd).uid).toBe(before.uid)
+    expect(fs.statSync(wd).gid).toBe(before.gid)
+  })
+
+  it('is a no-op for the /tmp fallback and an unset workingDirectory', () => {
+    // '' / undefined falls back to '/tmp' at the call site; neither, nor an
+    // explicit '/tmp', may ever be created or chowned.
+    expect(() => ensureCloudWorkDir(undefined)).not.toThrow()
+    expect(() => ensureCloudWorkDir('')).not.toThrow()
+    expect(() => ensureCloudWorkDir('/tmp')).not.toThrow()
+  })
+
+  it('is non-fatal when the workDir cannot be created (mirrors the precreate loop)', () => {
+    const file = path.join(base, 'afile')
+    fs.writeFileSync(file, 'x')
+    // mkdir under a regular file fails; the helper must warn, not throw.
+    expect(() => ensureCloudWorkDir(path.join(file, 'workspace'))).not.toThrow()
   })
 })
 

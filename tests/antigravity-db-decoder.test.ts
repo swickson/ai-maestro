@@ -21,6 +21,9 @@ import {
   decodeAntigravityDb,
   findNewestAntigravityDb,
   loadNewestAntigravityConversation,
+  decodeAntigravityTranscript,
+  findNewestAntigravityTranscript,
+  loadNewestAntigravityChat,
   extractGenUsage,
   extractAntigravityUsage,
   usageIdentityRate,
@@ -408,5 +411,183 @@ describe('extractGenUsage / extractAntigravityUsage — token accounting', () =>
       checked: 2,
       ok: 1,
     })
+  })
+})
+
+// ── brain/ JSONL transcript (agy 1.0.1+, #256) ───────────────────────────────
+//
+// agy 1.0.1 dropped the plaintext .db and moved the conversation to
+// brain/<uuid>/.system_generated/logs/transcript_full.jsonl. These tests pin the
+// (type → role) map, <USER_REQUEST> unwrapping + sidecar-tail drop, tool_calls
+// folding, skip-set, orphan-tool flush, malformed-line tolerance, newest-by-mtime
+// selection, and the cross-format newest-wins precedence of loadNewestAntigravityChat.
+
+const TS0 = '2026-06-19T21:00:00Z'
+const userInput = (text: string, tail = '') => ({
+  type: 'USER_INPUT', source: 'USER_EXPLICIT', status: 'DONE', created_at: TS0,
+  content: `<USER_REQUEST>\n${text}\n</USER_REQUEST>${tail}`,
+})
+const plannerContent = (content: string) => ({
+  type: 'PLANNER_RESPONSE', source: 'MODEL', status: 'DONE', created_at: TS0, content, thinking: 'reasoning…',
+})
+const plannerTools = (tools: Array<{ name: string; toolSummary?: string; toolAction?: string }>) => ({
+  type: 'PLANNER_RESPONSE', source: 'MODEL', status: 'DONE', created_at: TS0, thinking: 'planning…',
+  tool_calls: tools.map((t) => ({ name: t.name, args: { toolSummary: t.toolSummary, toolAction: t.toolAction } })),
+})
+
+function writeTranscriptFile(name: string, objs: any[]): string {
+  const p = path.join(tmpDir, name)
+  fs.writeFileSync(p, objs.map((o) => JSON.stringify(o)).join('\n') + '\n')
+  return p
+}
+
+describe('decodeAntigravityTranscript (#256)', () => {
+  it('maps USER_INPUT→user / PLANNER_RESPONSE.content→assistant, unwraps <USER_REQUEST>, drops sidecar tail', () => {
+    const p = writeTranscriptFile('t-basic.jsonl', [
+      userInput('Hello there', '\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-06-19T21:00:00Z\n</ADDITIONAL_METADATA>'),
+      plannerContent('Hi! How can I help?'),
+    ])
+    const msgs = decodeAntigravityTranscript(p)
+    expect(msgs.map((m) => m.type)).toEqual(['user', 'assistant'])
+    expect(msgs[0].message.content[0].text).toBe('Hello there') // no </USER_REQUEST> / metadata leak
+    expect(msgs[1].message.content[0].text).toBe('Hi! How can I help?')
+    expect(msgs[0].timestamp).toBe(TS0)
+  })
+
+  it('folds a turn’s tool_calls into the following assistant bubble as ↳ lines', () => {
+    const p = writeTranscriptFile('t-tools.jsonl', [
+      userInput('check'),
+      plannerTools([{ name: 'view_file', toolSummary: 'View contract' }, { name: 'run_command', toolSummary: 'Check AMP inbox' }]),
+      plannerContent('All set.'),
+    ])
+    const msgs = decodeAntigravityTranscript(p)
+    expect(msgs.map((m) => m.type)).toEqual(['user', 'assistant'])
+    expect(msgs[1].message.content[0].text).toBe('All set.\n↳ View contract\n↳ Check AMP inbox')
+  })
+
+  it('falls back toolAction→name when toolSummary is absent', () => {
+    const p = writeTranscriptFile('t-toollabel.jsonl', [
+      plannerTools([{ name: 'view_file', toolAction: 'Viewing the file' }, { name: 'grep_search' }]),
+      plannerContent('done'),
+    ])
+    expect(decodeAntigravityTranscript(p)[0].message.content[0].text).toBe('done\n↳ Viewing the file\n↳ grep_search')
+  })
+
+  it('skips EPHEMERAL_MESSAGE / CONVERSATION_HISTORY / VIEW_FILE / RUN_COMMAND', () => {
+    const p = writeTranscriptFile('t-skips.jsonl', [
+      { type: 'EPHEMERAL_MESSAGE', source: 'SYSTEM', status: 'DONE', content: 'reminder' },
+      { type: 'CONVERSATION_HISTORY', source: 'SYSTEM', status: 'DONE' },
+      { type: 'VIEW_FILE', source: 'MODEL', status: 'DONE', content: 'Created At: …\nverbose blob' },
+      { type: 'RUN_COMMAND', source: 'MODEL', status: 'ERROR', content: 'Created At: …\nerror blob' },
+      plannerContent('Only this shows.'),
+    ])
+    const msgs = decodeAntigravityTranscript(p)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0].message.content[0].text).toBe('Only this shows.')
+  })
+
+  it('flushes an orphan tool dispatch (no content turn) as its own assistant bubble', () => {
+    const p = writeTranscriptFile('t-orphan.jsonl', [
+      plannerTools([{ name: 'view_file', toolSummary: 'View notebook' }]),
+      userInput('next question'),
+    ])
+    const msgs = decodeAntigravityTranscript(p)
+    expect(msgs.map((m) => m.type)).toEqual(['assistant', 'user'])
+    expect(msgs[0].message.content[0].text).toBe('↳ View notebook')
+    expect(msgs[1].message.content[0].text).toBe('next question')
+  })
+
+  it('tolerates a malformed final line and returns [] for an absent file', () => {
+    const p = path.join(tmpDir, 't-malformed.jsonl')
+    fs.writeFileSync(p, JSON.stringify(plannerContent('good')) + '\n{ truncated…')
+    expect(decodeAntigravityTranscript(p).map((m) => m.message.content[0].text)).toEqual(['good'])
+    expect(decodeAntigravityTranscript(path.join(tmpDir, 'nope.jsonl'))).toEqual([])
+  })
+})
+
+// Build a per-test antigravity root with conversations/ + brain/ subdirs.
+function makeChatRoot(label: string): string {
+  const root = path.join(tmpDir, `root-${label}`)
+  fs.mkdirSync(path.join(root, 'conversations'), { recursive: true })
+  fs.mkdirSync(path.join(root, 'brain'), { recursive: true })
+  return root
+}
+function addDbToRoot(root: string, name: string, steps: Array<{ step_type: number; payload: Buffer }>, mtimeMs?: number): string {
+  const dbPath = path.join(root, 'conversations', name)
+  const db = new Database(dbPath)
+  db.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)')
+  const ins = db.prepare('INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)')
+  steps.forEach((s, i) => ins.run(i, s.step_type, s.payload))
+  db.close()
+  if (mtimeMs !== undefined) fs.utimesSync(dbPath, new Date(mtimeMs), new Date(mtimeMs))
+  return dbPath
+}
+function addTranscriptToRoot(root: string, convUuid: string, objs: any[], mtimeMs?: number): string {
+  const dir = path.join(root, 'brain', convUuid, '.system_generated', 'logs')
+  fs.mkdirSync(dir, { recursive: true })
+  const p = path.join(dir, 'transcript_full.jsonl')
+  fs.writeFileSync(p, objs.map((o) => JSON.stringify(o)).join('\n') + '\n')
+  if (mtimeMs !== undefined) fs.utimesSync(p, new Date(mtimeMs), new Date(mtimeMs))
+  return p
+}
+
+describe('findNewestAntigravityTranscript (#256)', () => {
+  it('picks the newest transcript by mtime across conversation dirs; null when absent', () => {
+    const root = makeChatRoot('newest-tx')
+    addTranscriptToRoot(root, 'older', [plannerContent('old')], 1_000_000_000_000)
+    const newP = addTranscriptToRoot(root, 'newer', [plannerContent('new')], 2_000_000_000_000)
+    expect(findNewestAntigravityTranscript(path.join(root, 'brain'))!.path).toBe(newP)
+    // absent brain dir, and a brain/ with a conv dir but no transcript → null
+    expect(findNewestAntigravityTranscript(path.join(tmpDir, 'no-such-brain'))).toBeNull()
+    const empty = makeChatRoot('empty-brain')
+    fs.mkdirSync(path.join(empty, 'brain', 'convX'), { recursive: true })
+    expect(findNewestAntigravityTranscript(path.join(empty, 'brain'))).toBeNull()
+  })
+})
+
+describe('loadNewestAntigravityChat (#256) — cross-format newest-wins', () => {
+  const dbSteps = [
+    { step_type: 14, payload: userPayload('db user') },
+    { step_type: 15, payload: assistantPayload('db assistant') },
+  ]
+  const txObjs = [userInput('tx user'), plannerContent('tx assistant')]
+
+  it('uses the brain transcript when only it exists', () => {
+    const root = makeChatRoot('tx-only')
+    addTranscriptToRoot(root, 'c1', txObjs)
+    const res = loadNewestAntigravityChat(root)!
+    expect(res.source).toBe('transcript')
+    expect(res.messages.map((m) => m.message.content[0].text)).toEqual(['tx user', 'tx assistant'])
+  })
+
+  it('uses the .db when only it exists (legacy agent)', () => {
+    const root = makeChatRoot('db-only')
+    addDbToRoot(root, 'c1.db', dbSteps)
+    expect(loadNewestAntigravityChat(root)!.source).toBe('db')
+  })
+
+  it('prefers the newer source by mtime — brain newer wins', () => {
+    const root = makeChatRoot('brain-newer')
+    addDbToRoot(root, 'c1.db', dbSteps, 1_000_000_000_000)
+    addTranscriptToRoot(root, 'c1', txObjs, 2_000_000_000_000)
+    expect(loadNewestAntigravityChat(root)!.source).toBe('transcript')
+  })
+
+  it('prefers the newer source by mtime — stale brain, fresh .db → .db wins', () => {
+    const root = makeChatRoot('db-newer')
+    addDbToRoot(root, 'c1.db', dbSteps, 2_000_000_000_000)
+    addTranscriptToRoot(root, 'c1', txObjs, 1_000_000_000_000)
+    expect(loadNewestAntigravityChat(root)!.source).toBe('db')
+  })
+
+  it('breaks an mtime tie in favor of brain (the live 1.0.1 format)', () => {
+    const root = makeChatRoot('tie')
+    addDbToRoot(root, 'c1.db', dbSteps, 1_500_000_000_000)
+    addTranscriptToRoot(root, 'c1', txObjs, 1_500_000_000_000)
+    expect(loadNewestAntigravityChat(root)!.source).toBe('transcript')
+  })
+
+  it('returns null when neither source exists (caller falls back to history.jsonl)', () => {
+    expect(loadNewestAntigravityChat(makeChatRoot('neither'))).toBeNull()
   })
 })

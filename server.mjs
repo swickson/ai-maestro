@@ -178,17 +178,19 @@ async function resolveJsonlPath(agent) {
   return resolveActiveTranscript(agent)
 }
 
-// Antigravity conversations live in conversations/<uuid>.db (SQLite plaintext-
-// protobuf), NOT a JSONL transcript. Resolve + decode the newest one. Returns
-// { path, mtime, messages } | null (null ⇒ no decodable .db; caller falls back
-// to the history.jsonl user-prompt path). Dedicated source kept separate from
-// the generic JSONL resolver. See #232 + lib/antigravity-db-decoder.ts.
+// Antigravity stores conversations in two on-disk formats: the plaintext SQLite
+// conversations/<uuid>.db (#232) and the newer brain/<uuid>/…/transcript_full.jsonl
+// (agy 1.0.1+, #256) — neither a plain JSONL transcript. Resolve + decode the
+// newest across both (newest-mtime-wins, brain-preferred on tie). Returns
+// { path, mtime, messages, source } | null (null ⇒ no decodable source; caller
+// falls back to the history.jsonl user-prompt path). Dedicated source kept
+// separate from the generic JSONL resolver. See lib/antigravity-db-decoder.ts.
 async function resolveAntigravityDbConversation(agent) {
   const { resolveConversationDir } = await import('./lib/agent-paths.ts')
-  const { loadNewestAntigravityConversation } = await import('./lib/antigravity-db-decoder.ts')
+  const { loadNewestAntigravityChat } = await import('./lib/antigravity-db-decoder.ts')
   const dir = resolveConversationDir(agent)
   if (!dir) return null
-  return loadNewestAntigravityConversation(path.join(dir, 'conversations'))
+  return loadNewestAntigravityChat(dir)
 }
 
 // OpenCode conversations live in a single SQLite db opencode.db (relational

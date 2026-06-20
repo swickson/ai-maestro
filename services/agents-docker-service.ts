@@ -1989,6 +1989,62 @@ export function buildCloudCommonPrecreateDirs(
   ]
 }
 
+// The container's `claude` user — and the host AI Maestro server user by
+// convention — is uid/gid 1000; bind-mount sources must be owned by it so the
+// in-container claude can write.
+const CONTAINER_UID = 1000
+const CONTAINER_GID = 1000
+
+// The agent's workingDirectory bind (-v ${workDir}:/workspace) is deliberately
+// EXCLUDED from buildCloudCommonPrecreateDirs (whose sources are AMP/identity
+// dirs). But a PLAIN cloud agent (no profile) whose workingDirectory host path
+// does not pre-exist hits the same root-owned-bind class: docker materializes
+// the missing -v source as root:root, so the container's claude (uid 1000)
+// cannot git clone / mkdir into /workspace (#253). Profiled agents escape it
+// only because their mount dirs are pre-created elsewhere.
+//
+// This ensures the resolved workDir exists and is uid-1000-owned BEFORE docker
+// run. Called from the shared sites — createDockerAgent and
+// updateContainerMountsAndExtraEnv (recreate routes through create) — so the
+// three paths stay in parity. Idempotent and conservative:
+//   - skip the '/tmp' fallback (workingDirectory unset): never create/chown a
+//     shared system dir;
+//   - absent  -> mkdir as the uid-1000 server + chown 1000:1000 (covers a
+//     root-run server whose mkdir would otherwise be root-owned);
+//   - present -> chown 1000:1000 ONLY if currently root-owned (the bug's prior
+//     victims), NON-recursively, so a populated workDir that already has a
+//     correct/non-root owner is never disturbed out from under it.
+// Mirrors the per-agent manual remediation (docker exec -u0 chown 1000:1000
+// /workspace) but automatically, host-side, before the container exists.
+export function ensureCloudWorkDir(workingDirectory?: string): void {
+  // '' / undefined falls back to '/tmp' at the call site, which must never be
+  // created or chowned; only act on an explicitly-requested custom workDir.
+  if (!workingDirectory || workingDirectory === '/tmp') return
+  const workDir = workingDirectory
+  try {
+    const st = fs.existsSync(workDir) ? fs.statSync(workDir) : null
+    if (!st) {
+      fs.mkdirSync(workDir, { recursive: true })
+      try {
+        fs.chownSync(workDir, CONTAINER_UID, CONTAINER_GID)
+      } catch (err) {
+        console.warn(
+          `[Docker Service] Created workDir ${workDir} but could not chown to ${CONTAINER_UID}:${CONTAINER_GID}:`,
+          err,
+        )
+      }
+      return
+    }
+    // Existing dir: only correct a root-materialized one; never chown a dir that
+    // already has a non-root owner (could be the operator's populated workspace).
+    if (st.uid === 0) {
+      fs.chownSync(workDir, CONTAINER_UID, CONTAINER_GID)
+    }
+  } catch (err) {
+    console.warn(`[Docker Service] Could not ensure cloud workDir ${workDir} is uid-${CONTAINER_UID} owned:`, err)
+  }
+}
+
 // Container PATH that puts the AMP CLI (mounted at /home/claude/.local/bin)
 // + the repo-script CLI dir (meeting-send / meeting-task / meeting-read,
 // mounted at /home/claude/.local/share/aimaestro/cli) ahead of the standard
@@ -2560,6 +2616,9 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
       console.warn(`[Docker Service] Could not pre-create mount source ${m.hostPath}:`, err)
     }
   }
+  // #253: the workingDirectory bind is excluded from the loop above; ensure it
+  // exists + is uid-1000-owned so docker can't materialize /workspace root-owned.
+  ensureCloudWorkDir(body.workingDirectory)
 
   // If this create is the back half of a recreate flow, copy the predecessor's
   // persisted claude/gh state into the new UUID dir BEFORE provisioning runs
@@ -3360,6 +3419,9 @@ export async function updateContainerMountsAndExtraEnv(
       console.warn(`[update-runtime] Could not pre-create mount source ${m.hostPath}:`, err)
     }
   }
+  // #253: parity with createDockerAgent — ensure the workingDirectory bind
+  // source exists + is uid-1000-owned before the recreate's docker run.
+  ensureCloudWorkDir(agent.workingDirectory)
 
   // Clear any stale restoration sentinel from the previous container's run
   // BEFORE docker stop. Without this, the new container coming up after
