@@ -85,6 +85,24 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Install the PostgreSQL 16 SERVER (initdb/pg_ctl/postgres) from the PGDG apt
+# repo. Debian bookworm ships only postgresql-15; the in-container ephemeral-PG
+# bootstrap (docs/CLOUD-AGENT-DB-ISOLATION.md) must MAJOR-pin to 16 to match the
+# CI merge gate (n4safety .github/workflows/test.yml:82 = image: postgres:16).
+# Major-pin only, NOT exact-patch — CI's floating :16 tag itself tracks minors.
+# `postgresql-client` is already installed above; this adds the server binaries
+# under /usr/lib/postgresql/16/bin (the bootstrap script scopes that onto PATH).
+# create_main_cluster=false: we never use postgresql-common's default cluster —
+# the bootstrap initdb's its own throwaway datadir under /var/tmp as the claude
+# user — so suppress the auto-created /var/lib/postgresql/16/main on install.
+RUN echo "create_main_cluster = false" > /etc/postgresql-common/createcluster.conf \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-16 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Oh My Zsh + uv-managed cpython 3.12 as the claude user. uv binary
 # now lives at /usr/local/bin/uv (system PATH); cpython 3.12 lands under
 # /home/claude/.local/share/uv/python/ via uv's default install-dir logic
@@ -141,6 +159,14 @@ COPY claude-home-merge.cjs ./
 COPY restoration-gate.cjs ./
 COPY runtime-check.cjs ./
 RUN chmod +x agent-server.js
+
+# In-container ephemeral-Postgres bootstrap (docs/CLOUD-AGENT-DB-ISOLATION.md).
+# Lands in /usr/local/bin — a system path NOT shadowed by the per-agent
+# ~/.local/bin bind-mount (same reasoning as uv/gh above). Ships in every
+# image but NO-OPs unless INCONTAINER_PG_BOOTSTRAP=1 is set per-agent via
+# extraEnv; the worker on-wake clause invokes it after `npm ci`.
+COPY incontainer-pg-bootstrap.sh /usr/local/bin/incontainer-pg-bootstrap.sh
+RUN chmod +x /usr/local/bin/incontainer-pg-bootstrap.sh
 
 # Create workspace directory
 RUN mkdir -p /workspace && \
