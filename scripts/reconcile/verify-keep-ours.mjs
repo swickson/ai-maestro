@@ -34,9 +34,9 @@ const same = (a, b, f) => { try { execSync(`git diff --quiet ${a} ${b} -- "${f}"
 const fail = [];
 const note = (m) => console.log(m);
 
-// --- 1a. Host-agnostic upstream base (Watson, Holmes review): the pinned SHA IS the base.
+// --- 1a. Host-agnostic upstream base (peer dev (prod-host), prod-host review): the pinned SHA IS the base.
 // Do NOT derive via `git merge-base <branch> origin/main` — that throws on any checkout where
-// origin != the 23blocks upstream or the reconcile branch is remote-only (Holmes, swickson CI),
+// origin != the 23blocks upstream or the reconcile branch is remote-only (the prod host, swickson CI),
 // disabling the gate exactly where it's the permanent guard. --is-ancestor still catches a wrong base. ---
 const BASE = EXPECT_BASE;
 try { execSync(`git cat-file -e ${EXPECT_BASE}`, { env: GENV }); }

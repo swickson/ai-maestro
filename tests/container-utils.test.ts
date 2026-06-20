@@ -10,7 +10,7 @@
  * panes. The notify route's cloud branches need a `docker exec`-based
  * equivalent before sending keys to a copy-mode-stuck pane (which would
  * otherwise hang the request and drop the payload — verified empirically
- * 2026-04-28 on Holmes/Rollie).
+ * 2026-04-28 on the prod host / an agent).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'

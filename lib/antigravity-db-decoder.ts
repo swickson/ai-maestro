@@ -559,7 +559,7 @@ export function extractAntigravityUsage(dbPath: string): AntigravityUsage | null
 }
 
 /**
- * The cross-language emit contract (LOCKED 2026-06-16 with KAI + Sam).
+ * The cross-language emit contract (LOCKED 2026-06-16 with the lead + an agent).
  *
  * Part 1 (this module, TS) is the SOLE source of truth for antigravity token
  * counting; the Ziggy spend pipeline (Python, github.com/swickson/ziggy
@@ -680,7 +680,7 @@ export function loadNewestAntigravityConversation(
 // `conversations/<uuid>.pb` to an OPAQUE blob and moved the PLAINTEXT
 // conversation to a per-conversation JSONL transcript at:
 //   brain/<uuid>/.system_generated/logs/transcript_full.jsonl
-// one JSON object per line. Observed `type`s (verified on Charlotte + Optic,
+// one JSON object per line. Observed `type`s (verified on two agents,
 // both 1.0.1):
 //   USER_INPUT        (source USER_EXPLICIT) → user; `content` wrapped in
 //                       <USER_REQUEST>…</USER_REQUEST> (stripped here)
@@ -837,7 +837,7 @@ export function findNewestAntigravityTranscript(brainDir: string): { path: strin
  * directly under it.
  *
  * Precedence = NEWEST-WINS BY MTIME, brain-preferred on a tie. Rationale
- * (documented per KAI's #256 ask): agy 1.0.1 writes ONLY brain (no `.db`), but an
+ * (documented per the lead's #256 ask): agy 1.0.1 writes ONLY brain (no `.db`), but an
  * agent that ran on the `.db`-era version AND on 1.0.1 carries a STALE June `.db`
  * alongside its CURRENT brain transcript. A strict `.db`-first order would surface
  * the stale conversation; newest-mtime surfaces whichever source the agent is

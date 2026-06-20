@@ -13,10 +13,10 @@
  *
  * ChatView expects the Claude shape: `{type, message:{content:[blocks]},
  * timestamp, uuid}` where content blocks are `{type:'text', text:'...'}`.
- * Normalizing in the service layer (per Watson 2026-05-11 spec) keeps
+ * Normalizing in the service layer (per a peer dev (prod-host) 2026-05-11 spec) keeps
  * ChatView provider-agnostic — no client-side branching on `program`.
  *
- * Empirically pinned via Holmes Mason/Optic 2026-05-11 (kanban d937c33d).
+ * Empirically pinned via the prod host (agents) 2026-05-11 (kanban d937c33d).
  */
 
 export interface NormalizedMessage {

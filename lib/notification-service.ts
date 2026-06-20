@@ -4,7 +4,7 @@
  * Sends instant notifications to agents when messages are delivered.
  * Eliminates the need for polling-based message discovery.
  *
- * RFC: Message Delivery Notifications (Lola, 2026-01-24)
+ * RFC: Message Delivery Notifications (an agent, 2026-01-24)
  */
 
 import { getAgent, getAgentByName } from '@/lib/agent-registry'
@@ -312,7 +312,7 @@ export async function flushDeferredNotifications(
 // fire-and-forgets that POST then process.exit()s, intentionally cutting it so it
 // can't blow the hook deadline (ai-maestro-hook.cjs). So a busy-deferred wake to a
 // passively-waiting agent may never resurface if its idle broadcast was cut — which
-// is exactly what was observed on the Holmes .57 canary (0 resurface, real agent).
+// is exactly what was observed on the prod host .57 canary (0 resurface, real agent).
 // This periodic sweep re-flushes every pending session on a timer; the flush re-gates
 // via readHookState, which reads the RELIABLY-written hook-state FILE (the same signal
 // PR-B's busy gate trusts), so resurface is guaranteed within ~one interval of the

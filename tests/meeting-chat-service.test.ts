@@ -40,16 +40,16 @@ describe('meeting-chat-service', () => {
     it('creates a message with all required fields', () => {
       const msg = postChatMessage({
         meetingId: TEST_MEETING_ID,
-        from: 'shane',
-        fromAlias: 'Shane',
+        from: 'operator',
+        fromAlias: 'the operator',
         fromType: 'human',
         message: 'Hello team!',
       })
 
       expect(msg.id).toBeTruthy()
       expect(msg.meetingId).toBe(TEST_MEETING_ID)
-      expect(msg.from).toBe('shane')
-      expect(msg.fromAlias).toBe('Shane')
+      expect(msg.from).toBe('operator')
+      expect(msg.fromAlias).toBe('the operator')
       expect(msg.fromType).toBe('human')
       expect(msg.message).toBe('Hello team!')
       expect(msg.mentions).toEqual([])
@@ -60,23 +60,23 @@ describe('meeting-chat-service', () => {
     it('stores mentions and mentionAll', () => {
       const msg = postChatMessage({
         meetingId: TEST_MEETING_ID,
-        from: 'shane',
-        fromAlias: 'Shane',
+        from: 'operator',
+        fromAlias: 'the operator',
         fromType: 'human',
-        message: '@kai @celestia review this',
-        mentions: ['kai', 'celestia'],
+        message: '@alice @bob review this',
+        mentions: ['alice', 'bob'],
         mentionAll: false,
       })
 
-      expect(msg.mentions).toEqual(['kai', 'celestia'])
+      expect(msg.mentions).toEqual(['alice', 'bob'])
       expect(msg.mentionAll).toBe(false)
     })
 
     it('appends to JSONL file', () => {
       postChatMessage({
         meetingId: TEST_MEETING_ID,
-        from: 'shane',
-        fromAlias: 'Shane',
+        from: 'operator',
+        fromAlias: 'the operator',
         fromType: 'human',
         message: 'First message',
       })
@@ -84,7 +84,7 @@ describe('meeting-chat-service', () => {
       postChatMessage({
         meetingId: TEST_MEETING_ID,
         from: 'agent-1',
-        fromAlias: 'Kai',
+        fromAlias: 'Alice',
         fromType: 'agent',
         message: 'Second message',
       })

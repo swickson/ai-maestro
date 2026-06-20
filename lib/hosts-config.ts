@@ -256,8 +256,8 @@ export function isSelf(hostId: string): boolean {
 
   // Fallback: check if hostId matches a cached host whose URL/aliases
   // resolve to this machine. This catches stale hostnames (e.g. when
-  // the machine was previously known as 'milo-dock.internal' but is
-  // now 'shanes-m3-pro-mbp'). The cachedHosts guard prevents recursion
+  // the laptop was previously known by its docked hostname but is
+  // now on its wireless hostname). The cachedHosts guard prevents recursion
   // during initial loadHostsConfig() -> validateHosts() -> isSelf() chain.
   if (cachedHosts !== null) {
     // Find host by id OR by alias (handles old hostnames like dock vs WiFi)

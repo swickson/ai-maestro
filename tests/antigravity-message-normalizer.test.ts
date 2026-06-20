@@ -16,14 +16,14 @@ import { normalizeAntigravityLine } from '@/lib/antigravity-message-normalizer'
 describe('normalizeAntigravityLine (#219)', () => {
   it('maps a history.jsonl line (display + ms timestamp) to a USER message', () => {
     const msg = normalizeAntigravityLine({
-      display: 'You are dev-allianceos-han, read GEMINI.md',
+      display: 'You are dev-<team>-<role>, read GEMINI.md',
       timestamp: 1779482879705,
       workspace: '/workspace',
       conversationId: '57d9416c-dede-4ea5-b71d-694b426eb76a',
     })
     expect(msg).not.toBeNull()
     expect(msg!.type).toBe('user')
-    expect(msg!.message.content).toEqual([{ type: 'text', text: 'You are dev-allianceos-han, read GEMINI.md' }])
+    expect(msg!.message.content).toEqual([{ type: 'text', text: 'You are dev-<team>-<role>, read GEMINI.md' }])
     // ms-epoch → ISO string (1779482879705 = 2026-05-22T…Z)
     expect(msg!.timestamp).toBe(new Date(1779482879705).toISOString())
     expect(msg!.timestamp).toMatch(/^2026-/)
@@ -33,12 +33,12 @@ describe('normalizeAntigravityLine (#219)', () => {
 
   it('handles a line with no conversationId (early/system prompts)', () => {
     const msg = normalizeAntigravityLine({
-      display: 'echo \'[MESSAGE] From: luke\'',
+      display: 'echo \'[MESSAGE] From: an-agent\'',
       timestamp: 1779482925044,
       workspace: '/workspace',
     })
     expect(msg!.type).toBe('user')
-    expect(msg!.message.content[0].text).toContain('[MESSAGE] From: luke')
+    expect(msg!.message.content[0].text).toContain('[MESSAGE] From: an-agent')
     expect(msg!.uuid).toBe('antigravity-1779482925044')
   })
 

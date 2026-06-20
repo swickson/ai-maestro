@@ -57,7 +57,7 @@ export async function POST(
 
   // Determine if the agent is remote — check local registry first, then body.hostUrl
   // IMPORTANT: Check both hostId AND hostUrl, because hostId can be stale after a
-  // hostname change (e.g. milo-dock.internal → shanes-m3-pro-mbp) while hostUrl
+  // hostname change (e.g. the laptop's hostname change) while hostUrl
   // still points to this machine's Tailscale IP. Without the hostUrl check,
   // the agent appears "remote" and we'd proxy to ourselves in an infinite loop.
   const agent = getAgent(id)

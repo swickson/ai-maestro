@@ -12,7 +12,7 @@
  * dispatch (text content, tool-part folding into the turn, step-start/step-finish
  * skipped), newest-session-by-time_updated selection, empty-turn skipping, and
  * graceful empty-result on a missing/garbage db. The decode shapes mirror real
- * rows captured from a bananajr install (a "tech stack" Q&A + a bash/read/edit
+ * rows captured from a dev-host install (a "tech stack" Q&A + a bash/read/edit
  * tool session).
  */
 

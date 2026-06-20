@@ -70,10 +70,28 @@ This script updates ALL version references across the codebase:
 □ 1. TESTS PASS: yarn test
 □ 2. BUMP VERSION: ./scripts/bump-version.sh patch
 □ 3. BUILD PASSES: yarn build
-□ 4. COMMIT version bump with your changes
+□ 4. LEAK SCAN: LEAK_DENYLIST="$(cat ~/.aimaestro/leak-denylist.txt)" scripts/leak-scan.sh
+□ 5. COMMIT version bump with your changes
 ```
 
 **This is NON-NEGOTIABLE.** Every PR to main MUST include a version bump. No exceptions.
+
+---
+
+## Public-Repo Hygiene (MANDATORY)
+
+`swickson/ai-maestro` is a **PUBLIC** fork of a public upstream — it **cannot be made private**, so committed content must stay generic. **Never commit private operator/mesh data** to docs, code, comments, test fixtures, or scripts:
+
+- **No agent names** (use role-labels: "the orchestrator", "a worker agent", "the ops agent").
+- **No host machine names** (use "the dev host" / "the prod host" / "the laptop").
+- **No client/project names** (use "the project" / "a second project" / `<project>`).
+- **No operator identity** — name, handle, email, or home paths (`/Users/<user>/`, `/home/<user>/`).
+- **No real Tailscale mesh IPs** (example IPs like `100.80.12.6` in docs are fine; the *real* mesh IPs are not).
+- **No mesh addresses** (`dev-<team>-<role>@<org>...` shape only) or org/domain (`<org>`).
+
+**KEEP (these are public, not leaks):** the `swickson/` GitHub org in URLs/remotes, the `23blocks` product/upstream brand, the product names `ai-maestro`/`AI Maestro`/`Ziggy`/`aimaestro.local`, and the agent-name-generation alias pools (the generic `…IA`/`…AI` name options in `FEMALE_ALIASES`/`MALE_ALIASES`).
+
+**Enforcement (the recurrence guard):** `scripts/leak-scan.sh` + the `leak-scan` CI workflow fail any PR that commits private tokens. The denylist of actual private names lives in the **`LEAK_DENYLIST` CI secret** (and `~/.aimaestro/leak-denylist.txt` locally) — **never committed** (that would re-leak it). Run the scan locally before every PR (checklist step 4).
 
 ---
 

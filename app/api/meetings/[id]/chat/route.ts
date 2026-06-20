@@ -139,7 +139,7 @@ export async function POST(
   const meeting = getMeeting(meetingId)
 
   // If the meeting exists locally, handle it here.
-  // Watson's Stream A storage service will provide the actual write logic.
+  // A peer dev (prod-host)'s Stream A storage service will provide the actual write logic.
   // For now, write to the shared log and broadcast via WebSocket.
   if (meeting) {
     // Import the chat storage service dynamically (Stream A will provide this)

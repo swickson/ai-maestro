@@ -117,7 +117,7 @@ export function resolveConversationDir(
         // <agentDir>/codex-app-data/ → /home/claude/.codex/. Returns the
         // sessions subdir so the chat-history reader scans the rollout files.
         // (All host threads.rollout_path values resolve under ~/.codex/sessions
-        // with no config override — verified on bananajr 2026-06-10.)
+        // with no config override — verified on the dev host 2026-06-10.)
         return path.join(agentDir, 'codex-app-data', 'sessions')
       case 'opencode':
         // OpenCode (v1.x) stores conversations in a SINGLE SQLite db
@@ -153,7 +153,7 @@ export function resolveConversationDir(
       // LIMITATION: ~/.codex is the operator's SHARED dir; selectTranscriptFile
       // picks the newest-mtime rollout, which could belong to a different host
       // codex session if the operator runs codex in another cwd. Empirically the
-      // recent rollouts all carry the agent's cwd (verified vs dev-n4safety-builder),
+      // recent rollouts all carry the agent's cwd (verified vs dev-<team>-<role>),
       // and session_meta.payload.cwd is recorded — so cwd-pinned selection is a
       // feasible future refinement if cross-session bleed becomes a problem.
       return path.join(hostHome, '.codex', 'sessions')

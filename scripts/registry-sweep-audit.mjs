@@ -7,7 +7,7 @@
  *   - Cross-host duplicate UUIDs (PR #101 invariant — should be empty mesh-wide)
  *   - Intra-host duplicate UUIDs (PR #101 invariant — should be empty per host)
  *   - Stale lastActive (> 30 days, configurable)
- *   - AllianceOS quartet (tagged "migration-pending, defer" — NOT cleanup candidates)
+ *   - Deferred agents (DEFER_PREFIX match, tagged "migration-pending" — NOT cleanup candidates)
  *   - Soft-deleted records (when --local mode reads this host's registry.json)
  *
  * Outputs to OUT_DIR/:
@@ -28,21 +28,11 @@
  *   node scripts/registry-sweep-audit.mjs --stale-days 14   # override stale threshold
  */
 
-import { promises as fs } from 'fs'
+import { promises as fs, readFileSync } from 'fs'
 import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
 
-// Tailscale IPs everywhere — never `localhost`. When this script runs from
-// any of the three hosts, `localhost` resolves to the running host, causing
-// false-positive cross-host duplicate findings (Watson empirical PR #106).
-const HOSTS = [
-  { name: 'milo',     url: 'http://100.83.160.34:23000' },
-  { name: 'bananajr', url: 'http://100.112.62.82:23000' },
-  { name: 'holmes',   url: 'http://100.81.151.18:23000' },
-]
-
-const ALLIANCEOS_PREFIX = 'dev-allianceos-'
 const REGISTRY_PATH = path.join(os.homedir(), '.aimaestro', 'agents', 'registry.json')
 
 const ARGS = process.argv.slice(2)
@@ -63,10 +53,40 @@ const SOFT_DELETED_CUTOFF_MS = NOW.getTime() - SOFT_DELETED_RETENTION_DAYS * 864
 const stamp = NOW.toISOString().replace(/[:.]/g, '-').replace('Z', '')
 const OUT_DIR = getFlag('out') || `./sweep-audit-${stamp}`
 
+// Mesh hosts come from the operator's local config (~/.aimaestro/hosts.json),
+// never hardcoded. Use the hosts' reachable URLs (on a Tailscale mesh, the
+// Tailscale URL — never `localhost`, which resolves to the running host and
+// yields false-positive cross-host duplicates). Override with
+// `--hosts name=url,name=url`. Empty (no config, no flag) → nothing to audit.
+function loadHosts() {
+  const flag = getFlag('hosts')
+  if (typeof flag === 'string') {
+    return flag.split(',').map((s) => {
+      const [name, url] = s.split('=')
+      return { name, url }
+    }).filter((h) => h.name && h.url)
+  }
+  try {
+    const raw = JSON.parse(readFileSync(path.join(os.homedir(), '.aimaestro', 'hosts.json'), 'utf-8'))
+    const list = Array.isArray(raw) ? raw : (raw.hosts || [])
+    return list.map((h) => ({ name: h.name || h.id, url: h.url })).filter((h) => h.name && h.url)
+  } catch {
+    console.warn('[registry-sweep] no ~/.aimaestro/hosts.json and no --hosts flag — no hosts to audit (pass --hosts name=url,...)')
+    return []
+  }
+}
+const HOSTS = loadHosts()
+
+// Agents matching this prefix are tagged "defer" (e.g. a team mid-migration) and
+// excluded from cleanup candidates. Configure per-run via --defer-prefix or the
+// DEFER_PREFIX env var; empty (default) = no agents deferred. Kept generic so the
+// audit is reusable across teams.
+const DEFER_PREFIX = getFlag('defer-prefix') || process.env.DEFER_PREFIX || ''
+
 // Structural fingerprint — only fields whose change implies a delete-safety state shift.
 // Excludes lastActive (heartbeat-volatile, would drift every tick) and other transient
 // fields. Sorted by id for determinism. Phase 3 drift-check compares this fingerprint
-// against the snapshot before each delete and aborts on mismatch (Watson catch PR #106).
+// against the snapshot before each delete and aborts on mismatch (a peer dev (prod-host) catch PR #106).
 function fingerprint(data) {
   const agents = Array.isArray(data) ? data : (data.agents || [])
   const structural = agents
@@ -105,9 +125,9 @@ async function readLocalRegistry() {
 
 function classifyApiAgent(agent) {
   const reasons = []
-  const isAllianceOS = agent.name && agent.name.startsWith(ALLIANCEOS_PREFIX)
-  if (isAllianceOS) {
-    reasons.push('allianceos: migration-pending (defer, NOT cleanup)')
+  const isDeferred = DEFER_PREFIX && agent.name && agent.name.startsWith(DEFER_PREFIX)
+  if (isDeferred) {
+    reasons.push('deferred: migration-pending (NOT cleanup)')
     return { reasons, action: 'defer-migration' }
   }
   const idleDays = daysAgo(agent.lastActive)
@@ -123,12 +143,12 @@ function classifyApiAgent(agent) {
 }
 
 function classifyLocalAgent(agent) {
-  const isAllianceOS = agent.name && agent.name.startsWith(ALLIANCEOS_PREFIX)
+  const isDeferred = DEFER_PREFIX && agent.name && agent.name.startsWith(DEFER_PREFIX)
   if (agent.deletedAt) {
     const ageDays = daysAgo(agent.deletedAt)
-    if (isAllianceOS) {
+    if (isDeferred) {
       return {
-        reasons: [`allianceos soft-deleted ${ageDays}d ago — defer until migration plan settled`],
+        reasons: [`deferred: soft-deleted ${ageDays}d ago — held until migration settled`],
         action: 'defer-migration',
       }
     }

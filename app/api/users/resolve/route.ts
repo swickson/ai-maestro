@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/services/users-service'
 
-// GET /api/users/resolve?alias=gosub
+// GET /api/users/resolve?alias=<user>
 // GET /api/users/resolve?platform=discord&platformUserId=123
 // GET /api/users/resolve?displayName=Jane+Doe
 export async function GET(request: NextRequest) {

@@ -11,7 +11,7 @@
 //   handMerge     — allowed to differ from both; ENUMERATED, never a catch-all.
 //                   Gate-blind (intra-file regressions hide here) → mandatory per-file review.
 //
-// Output: scripts/reconcile/reland-manifest.json (the gate's input + CelestIA's restore worklist).
+// Output: scripts/reconcile/reland-manifest.json (the gate's input + the peer dev (dev-host)'s restore worklist).
 
 import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
@@ -34,7 +34,7 @@ const sh = (c) => execSync(c, { encoding: 'utf8', env: GENV }).trim();
 
 // --- Host-agnostic upstream base: the pinned SHA IS the base. Do NOT derive via
 // `git merge-base <branch> origin/main` — that throws wherever origin != 23blocks upstream
-// or the reconcile branch is remote-only (Holmes, swickson CI). --is-ancestor still validates. ---
+// or the reconcile branch is remote-only (the prod host, swickson CI). --is-ancestor still validates. ---
 const BASE = EXPECT_BASE;
 try { execSync(`git cat-file -e ${EXPECT_BASE}`, { env: GENV }); }
 catch { console.error(`FATAL: pinned upstream base ${EXPECT_BASE} not present (fetch the 23blocks upstream commit).`); process.exit(1); }
@@ -69,7 +69,7 @@ function empirical(f) {
 }
 
 // --- Explicit INTENDED overrides (from RECONCILIATION-PLAN §6, §9 completeness corrections,
-//     RELAND-PLAN 2026-06-06, and CelestIA's pre-stage findings). These encode the human
+//     RELAND-PLAN 2026-06-06, and the peer dev (dev-host)'s pre-stage findings). These encode the human
 //     disposition; the empirical bucket is only the default when a file isn't named here. ---
 
 // keepOurs forced: files the merge mis-resolved (took upstream / dropped) that must be restored to ours.
@@ -103,18 +103,18 @@ const FORCE_KEEP_OURS = [
 ];
 
 // handMerge forced: surgical files with WANTED merged changes (do NOT full-restore) + append-disjoint tests.
-// These WILL differ from both sides after CelestIA's surgical edits — classified up front so the
+// These WILL differ from both sides after the peer dev (dev-host)'s surgical edits — classified up front so the
 // "adoptUpstream must==upstream" check doesn't falsely fail them post-edit.
 const FORCE_HAND_MERGE = [
   'agent-container/Dockerfile',               // restore 2 COPY lines + /restoration-ready mkdir-chown; keep other merged changes
   'services/sessions-service.ts',             // 3 surgical restores (cloud-skip, history-skip, registry-preference) + keep UUID@host fallback
   'lib/meeting-inject-queue.ts',              // re-add antigravity AgentKind + gpt branch into upstream's PR#25/#50 rewrite
   'app/teams/[id]/page.tsx',                  // restore &meeting=new URL param onto upstream base
-  'scripts/cron-wake-hardin.sh',             // restore-then-scrub (Decision-7: no hardcoded operator data) → differs from ours
+  'scripts/cron-wake-agent.sh',             // restore-then-scrub (Decision-7: no hardcoded operator data) → differs from ours
   'tests/services/sessions-service.test.ts',  // §9 P2 append-disjoint (theirs +22 additive)
   'tests/meeting-inject-utils.test.ts',       // §9 P2 append-disjoint
   // Tests binding to keepOurs/handMerge sources — taking theirs risks dropping coverage of
-  // symbols we restore. Append-disjoint (per §9 precedent); CelestIA decides restore-vs-append per-file.
+  // symbols we restore. Append-disjoint (per §9 precedent); the peer dev (dev-host) decides restore-vs-append per-file.
   'tests/agent-utils.test.ts',                // §6 MERGE_BOTH append-disjoint; agent-utils.ts is keepOurs
   'tests/amp-canonical-json.test.ts',         // §6 attachments KEEP_OURS overlay blocks
   'tests/meeting-inject-queue.test.ts',       // §6 ESCALATE bind-to-source (meeting-inject-queue.ts handMerge)
@@ -124,17 +124,17 @@ const FORCE_HAND_MERGE = [
 // Files left in adoptUpstream but FLAGGED for human review (ESCALATE feature calls, not mechanical).
 // Surfaced in the manifest so the reviewer consciously ratifies rather than silently trusting.
 const REVIEW_FLAGGED_ADOPT_UPSTREAM = [
-  'components/team-meeting/MeetingChatPanel.tsx', // §3.2 ESCALATE — taking theirs = Shane decision-2 (adopt rendering); routes/plumbing stay ours
+  'components/team-meeting/MeetingChatPanel.tsx', // §3.2 ESCALATE — taking theirs = operator decision-2 (adopt rendering); routes/plumbing stay ours
   'components/team-meeting/MeetingRoom.tsx',      // §3.2 ESCALATE — same
-  // server.mjs (Watson, Holmes review): adoptUpstream is a 966+/92- WHOLESALE swap of the most
+  // server.mjs (peer dev (prod-host), prod-host review): adoptUpstream is a 966+/92- WHOLESALE swap of the most
   // constraint-laden host file (WS upgrade handler + session pooling per CLAUDE.md). Upstream's
   // terminal-history path differs architecturally from ours (inline `capture-pane -e` 5000-line +
   // delayed-broadcast-join redraw-dedup vs ours' runtime.capturePane() 2000-line no-escape) and
   // pairs with a KEEP_OURS client (TerminalView/useTerminal). The gate asserts ==upstream but
   // CANNOT judge whether adoptUpstream was the right CALL. NOT a dropped-fix (the single
   // history-complete emit is unconditional-after-150ms, covers both ours' try+catch paths), but
-  // the server↔client terminal contract is HARD-GATED on Watson's HOST local-tmux canary
-  // (scrollback + Ctrl+L discriminator) — cloud-Hale canary does not exercise the host server.mjs path.
+  // the server↔client terminal contract is HARD-GATED on the peer dev (prod-host)'s HOST local-tmux canary
+  // (scrollback + Ctrl+L discriminator) — the cloud-agent canary does not exercise the host server.mjs path.
   'server.mjs',
 ];
 

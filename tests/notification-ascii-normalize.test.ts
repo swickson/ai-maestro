@@ -13,13 +13,13 @@ import { asciiNormalizeNotification } from '@/lib/notification-service'
  */
 describe('asciiNormalizeNotification', () => {
   it('strips the emoji priority prefix and leaves clean ASCII', () => {
-    const out = asciiNormalizeNotification('🟠 [HIGH] [MESSAGE] From: watson - deployed - check your inbox')
-    expect(out).toBe('[HIGH] [MESSAGE] From: watson - deployed - check your inbox')
+    const out = asciiNormalizeNotification('🟠 [HIGH] [MESSAGE] From: alice - deployed - check your inbox')
+    expect(out).toBe('[HIGH] [MESSAGE] From: alice - deployed - check your inbox')
     expect(/[^\x20-\x7E]/.test(out)).toBe(false)
   })
 
-  it('maps em/en dashes to hyphens (Watson subject style)', () => {
-    expect(asciiNormalizeNotification('KNOB LIVE — Holmes deployed 0.31.29')).toBe('KNOB LIVE - Holmes deployed 0.31.29')
+  it('maps em/en dashes to hyphens (peer subject style)', () => {
+    expect(asciiNormalizeNotification('KNOB LIVE — host deployed 0.31.29')).toBe('KNOB LIVE - host deployed 0.31.29')
     expect(asciiNormalizeNotification('a–b')).toBe('a-b')
   })
 
@@ -36,7 +36,7 @@ describe('asciiNormalizeNotification', () => {
   })
 
   it('leaves already-ASCII text unchanged (minus trim)', () => {
-    const s = '[MESSAGE] From: celestia - M2 follow-up ready (both guards) - check your inbox'
+    const s = '[MESSAGE] From: alice - M2 follow-up ready (both guards) - check your inbox'
     expect(asciiNormalizeNotification(s)).toBe(s)
   })
 })

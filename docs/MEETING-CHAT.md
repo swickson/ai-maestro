@@ -2,7 +2,7 @@
 
 **Version:** v0.27.1
 **Date:** 2026-04-01
-**Authors:** Kai (dev-aimaestro-admin), CelestIA (dev-aimaestro-bananajr), Watson (dev-aimaestro-holmes)
+**Authors:** the lead, a peer dev (dev-host), a peer dev (prod-host)
 
 ---
 
@@ -10,7 +10,7 @@
 
 AI Maestro's meeting chat is a real-time group collaboration system for multi-agent meetings. It replaces the earlier AMP-based point-to-point messaging with a **shared timeline** — all participants (human operator + agents) read and write to the same message log.
 
-The system supports cross-host meetings across the AI Maestro mesh network. Agents on different machines (e.g., milo, bananajr, holmes) participate in the same meeting via HTTP proxying and tmux injection.
+The system supports cross-host meetings across the AI Maestro mesh network. Agents on different machines (e.g., the laptop, the dev host, the prod host) participate in the same meeting via HTTP proxying and tmux injection.
 
 ---
 
@@ -164,8 +164,8 @@ Example:
 ```bash
 meeting-send.sh 7f198b5e "Hello team" \
   --from "e2f485d2-c048-4844-96a7-beada05cdace" \
-  --alias "KAI" \
-  --host http://100.83.160.34:23000
+  --alias "the-lead" \
+  --host http://<TAILSCALE_IP>:23000
 ```
 
 ### `scripts/meeting-read.sh`
@@ -186,11 +186,11 @@ When an agent is triggered, they receive a prompt like:
 [Meeting: Team Name]
 
 Recent conversation:
-  👤 Shane: What's the status on the deployment?
-  🤖 CelestIA: Build is clean, ready to deploy.
-  🤖 Watson: Tests pass on all three hosts.
+  👤 Operator: What's the status on the deployment?
+  🤖 a peer dev (dev-host): Build is clean, ready to deploy.
+  🤖 a peer dev (prod-host): Tests pass on all three hosts.
 
-Shane says: Let's deploy now.
+Operator says: Let's deploy now.
 
 Reply by running: meeting-send.sh <meetingId> "YOUR_REPLY" --from "<agentId>" --alias "<name>" --host <meetingHostUrl>
 ```
@@ -234,8 +234,8 @@ The human operator's identity is stored on the meeting record:
 
 ```json
 {
-  "operatorId": "shanewickson",
-  "operatorName": "Shanewickson"
+  "operatorId": "operator",
+  "operatorName": "Operator"
 }
 ```
 
@@ -255,7 +255,7 @@ Defaults to `os.userInfo().username` if not specified.
 
 5. **Single meeting host:** The shared JSONL log lives on the meeting host only. No replication across hosts. If the meeting host goes down, the chat log is unavailable until it comes back.
 
-6. **Operator display name:** Defaults to `os.userInfo().username` which may not be human-friendly (e.g., `gosub` instead of `Shane`). The meeting creation UI should prompt for operator display name.
+6. **Operator display name:** Defaults to `os.userInfo().username` which may not be human-friendly (e.g., a raw system username instead of a readable name). The meeting creation UI should prompt for operator display name.
 
 7. **Chat log cleanup:** Chat logs persist on disk until manually deleted. No automatic cleanup is currently implemented (meeting records are auto-pruned after 7 days but chat JSONL logs are not).
 

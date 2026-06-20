@@ -1,8 +1,8 @@
 # OpenCode Harness — Phase 1 Step 1: Empirical Schema Findings
 
-**Author:** CelestIA (dev-aimaestro-bananajr) · 2026-06-18
+**Author:** a peer dev (dev-host) (dev-<team>-<role>) · 2026-06-18
 **Task:** PR #250 spec, Phase 1 Step 1 — capture real on-disk schemas, close open Qs 1/2/4 before building the decoder.
-**Source:** the real working install Shane stood up on bananajr (opencode **v1.17.8**, official curl installer).
+**Source:** the real working install the operator stood up on the dev host (opencode **v1.17.8**, official curl installer).
 
 ---
 
@@ -12,13 +12,13 @@ The spec (§2 "Verified facts", §6.1) says OpenCode stores conversations as a *
 - `storage/message/{sessionID}/msg_{messageID}.json`
 - `storage/session/{projectHash}/{sessionID}.json`
 
-**Reality on bananajr (opencode v1.17.8): there is NO `storage/` directory at all.** Conversations live in a single **SQLite database** `~/.local/share/opencode/opencode.db` (+ `-wal` + `-shm`), with relational tables. This is the antigravity `.pb`→`.db` migration story repeating: the JSON-fan-out era was an older opencode (what the ccusage docs / issue #5238 described); v1.x migrated to SQLite. The DB has **35 schema migrations** through 2026-06-12 (incl. `20260601010001_normalize_storage_paths`, `20260510033149_session_usage`) — fully SQLite-native, not a transitional state.
+**Reality on the dev host (opencode v1.17.8): there is NO `storage/` directory at all.** Conversations live in a single **SQLite database** `~/.local/share/opencode/opencode.db` (+ `-wal` + `-shm`), with relational tables. This is the antigravity `.pb`→`.db` migration story repeating: the JSON-fan-out era was an older opencode (what the ccusage docs / issue #5238 described); v1.x migrated to SQLite. The DB has **35 schema migrations** through 2026-06-12 (incl. `20260601010001_normalize_storage_paths`, `20260510033149_session_usage`) — fully SQLite-native, not a transitional state.
 
 **Net effect:** this is *good* news — cleaner than a fan-out, relational, with usage data sitting in typed columns, and we already own a proven in-repo SQLite-decode pattern (`lib/antigravity-db-decoder.ts`, better-sqlite3, dual `.db`/`-wal` watch). But it **reshapes the decoder** (§6.1 is now a SQLite query, not a JSON globber) and several touchpoints (§4.3, §4.5). Contract must be re-locked before building.
 
 ---
 
-## Install layout (real, bananajr)
+## Install layout (real, the dev host)
 
 | Item | Path | Notes |
 |------|------|-------|
@@ -46,13 +46,13 @@ Top-level keyed by **providerID**; value = `{ "type": "api", "key": "<key>" }`. 
   - `session.model` column = `{"id":"cohere/north-mini-code:free","providerID":"openrouter","variant":"high"}`
   - each message `data.model` = `{"providerID":"openrouter","modelID":"cohere/north-mini-code:free","variant":"high"}`
 - **String form (answers Q2 directly):** model id = `cohere/north-mini-code:free`; provider = `openrouter` as a **separate field** — NOT slash-concatenated `openrouter/cohere/north-mini-code:free`.
-- **Implication for D5 (build, Phase 2):** since interactive selection persists to the DB (not viable for a fresh container), we must set the default model declaratively. opencode's config `model` field uses the slash-joined `provider/model` form (`openrouter/cohere/north-mini-code:free`) per opencode docs — to confirm in Phase 2. The empty config here is because Shane picked the model in the TUI; a provisioned container can't rely on that.
+- **Implication for D5 (build, Phase 2):** since interactive selection persists to the DB (not viable for a fresh container), we must set the default model declaratively. opencode's config `model` field uses the slash-joined `provider/model` form (`openrouter/cohere/north-mini-code:free`) per opencode docs — to confirm in Phase 2. The empty config here is because the operator picked the model in the TUI; a provisioned container can't rely on that.
 
 ## Q4 — message JSON schema ✅ RESOLVED
 
 Relational, 4 tables matter. Conversation = `project` → `session` → `message` → `part`.
 
-**`project`** (1 row): `id` = 40-char hash of worktree (`6d9f2904…` for `/home/gosub/Documents/Development/ai-maestro`), `worktree` (root path), `vcs`, `time_created`. *This is the "projectHash" — derived from the worktree path.*
+**`project`** (1 row): `id` = 40-char hash of worktree (`6d9f2904…` for `/home/<user>/Documents/Development/ai-maestro`), `worktree` (root path), `vcs`, `time_created`. *This is the "projectHash" — derived from the worktree path.*
 
 **`session`**: `id` (`ses_…`), `project_id` FK, `directory` (cwd), `title`, `version`, `agent` (`"build"`), `model` (JSON, above), `time_created`/`time_updated`, **rolled-up usage columns**: `cost`, `tokens_input`, `tokens_output`, `tokens_reasoning`, `tokens_cache_read`, `tokens_cache_write`. → **Session multiplexing rule (§6.1 open):** newest session by `time_updated`, scoped to the agent's `project_id`/`directory`.
 
@@ -64,7 +64,7 @@ Relational, 4 tables matter. Conversation = `project` → `session` → `message
 - `text` → `{"type":"text","text":"…","time":{"start","end"}?}`  ← the actual chat content
 - `step-start` → `{"type":"step-start","snapshot":"<git-sha>"}`
 - `step-finish` → `{"type":"step-finish","reason":"stop","snapshot","tokens":{…},"cost"}`
-- **tool** → ✅ **LOCKED** from a real tool-using session on bananajr (bash/read/edit): `{"type":"tool","tool":"<name>","callID","state":{"status":"completed"|…,"input":{…tool-specific},"output","metadata","title"?,"time":{"start","end"}},"metadata"}`. Tool-specific `input`: bash → `input.command`; read → `input.filePath`; edit → `input.{filePath,oldString,newString}`. Normalizer dispatches on `part.data.type`. (Initial Q&A capture had no tool parts; the follow-up tool session closed this — matches spec §6.1.)
+- **tool** → ✅ **LOCKED** from a real tool-using session on the dev host (bash/read/edit): `{"type":"tool","tool":"<name>","callID","state":{"status":"completed"|…,"input":{…tool-specific},"output","metadata","title"?,"time":{"start","end"}},"metadata"}`. Tool-specific `input`: bash → `input.command`; read → `input.filePath`; edit → `input.{filePath,oldString,newString}`. Normalizer dispatches on `part.data.type`. (Initial Q&A capture had no tool parts; the follow-up tool session closed this — matches spec §6.1.)
 
 **Normalizer plan (revised §6.1):** query `session` for newest-by-`time_updated` in the agent's project → join `message` (ordered by `time_created`/seq) → for each message gather `part` rows (ordered) → emit text parts as content, map tool parts to tool calls, attach role/model/tokens from `message.data`. Single shared `loadNewestOpencodeConversation(dataDir)` reading `opencode.db`, consumed by BOTH WS (`server.mjs`) and REST (`agents-chat-service.ts`).
 
@@ -87,4 +87,4 @@ Usage is sitting in columns/JSON in three redundant places: `session.tokens_*`/`
 
 ## Recommendation
 
-Lock the corrected contract (SQLite, not JSON fan-out) with KAI/Shane, patch spec §2/§6.1/§4.3/§4.5, THEN build Phase 1 decoder against this real `opencode.db`. Do NOT build the normalizer against the obsolete fan-out contract. ✅ The one prior data-gap (`type:"tool"` part shape) is now **CLOSED** — locked from a real tool-using session (see the `part` table above + spec §6.1). Contract fully settled.
+Lock the corrected contract (SQLite, not JSON fan-out) with the lead/the operator, patch spec §2/§6.1/§4.3/§4.5, THEN build Phase 1 decoder against this real `opencode.db`. Do NOT build the normalizer against the obsolete fan-out contract. ✅ The one prior data-gap (`type:"tool"` part shape) is now **CLOSED** — locked from a real tool-using session (see the `part` table above + spec §6.1). Contract fully settled.

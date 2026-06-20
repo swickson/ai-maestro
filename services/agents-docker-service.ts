@@ -45,7 +45,7 @@ export interface DockerCreateRequest {
   mounts?: SandboxMount[]
   extraEnv?: Record<string, string>
   // When true, attach the container to the `ziggy_default` docker network,
-  // overlay-mount a per-agent .env at /home/gosub/code/ziggy/.env, and add a
+  // overlay-mount a per-agent .env at /home/<user>/code/ziggy/.env, and add a
   // [mcp_servers.ziggy] entry to the per-agent codex config.toml so Codex
   // launches the Ziggy MCP server as a STDIO subprocess. Requires
   // /opt/stacks/ai-maestro/agent-envs/<name>.env to exist on the host with
@@ -115,7 +115,7 @@ const CONTAINER_AITEAM_SRC = '/ai-team-src'      // §1 instruction-source dir, 
  * updateContainerMountsAndExtraEnv) deliberately continue to route the
  * program through resolveStartCommand() so the antigravity→`agy` binary
  * remap (PR-3 hotfix) is not lost. Migrating those sites to permissionMode
- * is a separate, behavior-changing decision (see KAI flag in the
+ * is a separate, behavior-changing decision (see the lead flag in the
  * reconciliation report) — do NOT silently rewire them here.
  */
 export function buildAiToolCommand(body: Pick<DockerCreateRequest, 'program' | 'permissionMode' | 'yolo' | 'programArgs' | 'model' | 'prompt'>): string {
@@ -319,8 +319,8 @@ export function validateZiggyCodePath(ziggyCodePath: unknown, ctx: string): stri
 // INSIDE the read-only ziggy code mount. A FILE bind-mount requires its target
 // (the mountpoint) to already exist in the source — docker/OCI will not create a
 // file inside a read-only mount, so if the resolved ziggy checkout has no `.env`
-// at its root, the container fails to start with an OCI mount error (Hutch's real
-// M3-Nodie symptom). WARN (not hard-fail): the default dev-tree source has one,
+// at its root, the container fails to start with an OCI mount error (the ops agent's real
+// M3-an agent symptom). WARN (not hard-fail): the default dev-tree source has one,
 // the operator can drop a placeholder, and docker-run surfaces the hard failure
 // anyway — this is the durable, discoverable pre-flight signal for the class.
 // `resolvedSource` is the EFFECTIVE bind source (sandbox.ziggyCodePath or the
@@ -387,7 +387,7 @@ export function buildAmpCommonMounts(
     // line ~50; without this mount, every cloud agent hits "common.sh not
     // found" the moment it touches aimaestro-agent.sh. RO because the helper
     // scripts are identity-of-host-side state, not per-agent. Filed as
-    // kanban 9c40609b 2026-04-28 by CelestIA after Luke (allianceos) repro.
+    // kanban 9c40609b 2026-04-28 by a peer dev after an agent (a-second-project) repro.
     {
       hostPath: path.join(hostHome, '.local', 'share', 'aimaestro', 'shell-helpers'),
       containerPath: path.posix.join(CONTAINER_HOME, '.local', 'share', 'aimaestro', 'shell-helpers'),
@@ -398,7 +398,7 @@ export function buildAmpCommonMounts(
     // so they can participate in the team kanban + meeting flows from inside
     // the container. Without this, only meeting-send.sh worked (manually
     // installed in some operators' ~/.local/bin/) and meeting-task.sh was
-    // universally absent fleet-wide (Optic + Hardin + cross-host empirical
+    // universally absent fleet-wide (two agents + cross-host empirical
     // 2026-05-06). The bind mount targets a known container path that gets
     // prepended to CONTAINER_PATH below — sister pattern to the shell-helpers
     // mount above. Sister to PR #98 / kanban 9c40609b.
@@ -434,8 +434,8 @@ export function buildAmpCommonMounts(
 // agents created BEFORE the operator ran `<cli> login` would carry their
 // `{}` placeholder forward across /recreate (migrateAgentPersistence copies
 // it; this guard then short-circuited the re-bootstrap), forcing operators
-// to manually `rm` the per-agent file before recreate. Watson surfaced
-// during PR #103 Mason cross-test 2026-05-01.
+// to manually `rm` the per-agent file before recreate. a peer dev surfaced
+// during PR #103 an agent cross-test 2026-05-01.
 //
 // Mode 0o600 on the destination matches the source's typical perms (CLI
 // credential files are operator-private). Per-agent file is written into
@@ -565,8 +565,8 @@ export function provisionCloudClaudeConfig(
   // Shape-aware merge (kanban 406ff85d, sister to PR #112's gemini fix):
   // when migrateAgentPersistence carries forward a predecessor claude-home.json
   // that pre-dates the theme=dark seed (kanban 41dd54b9), the bare existsSync
-  // guard short-circuited and the seed never re-applied — Holmes empirical
-  // 2026-05-06 (Watson Hale post-recreate finding). Now we read existing
+  // guard short-circuited and the seed never re-applied — the prod host empirical
+  // 2026-05-06 (a peer dev an agent post-recreate finding). Now we read existing
   // contents, inject `theme: "dark"` only if missing, preserve everything
   // else the operator may have set (model preferences, hand-edits).
   // Operator-set theme (any string) is preserved — claude supports multiple
@@ -610,13 +610,13 @@ export function provisionCloudClaudeConfig(
   // setup case) AND no migrated predecessor file is present.
   //
   // seedFromHostFile fully owns dest-existence semantics (kanban 02a8ebda
-  // + Watson Mason post-#104 finding): real rotated creds at dest are
+  // + a peer dev an agent post-#104 finding): real rotated creds at dest are
   // preserved, but an empty `{}` placeholder migrated forward from a
   // pre-bootstrap predecessor IS re-seeded from the (now-populated) host
   // source. This restores the post-hoc-host-login → recreate propagation
   // path that the previous outer existsSync guard short-circuited.
   //
-  // Shane's preference was "single shared host file mounted into all
+  // the operator's preference was "single shared host file mounted into all
   // containers"; chose per-agent-copy override per his explicit invitation
   // to override if isolation makes more sense — same shape as PR #96 +
   // codex-auth.json (kanban 354a5174) for protocol consistency.
@@ -682,14 +682,14 @@ export function buildCloudClaudeSettingsMount(
 // canonical "oauth-personal" string is verified in @google/gemini-cli
 // bundle (8 occurrences across chunk-EA775AOR, chunk-GOUPAQ35, etc.) and
 // matches the value the gemini interactive auth-picker writes when an
-// operator selects "Login with Google" (kanban 1f911653 Hardin empirical
+// operator selects "Login with Google" (kanban 1f911653 an agent empirical
 // 2026-05-01: oauth_creds bootstrap alone was necessary-but-not-sufficient).
 //
 // Per-agent isolation: the seed file lives under ~/.aimaestro/agents/<id>/,
 // bind-mounted RW at /home/claude/.gemini/settings.json by
 // buildCloudGeminiSettingsMount. Host operator's ~/.gemini is never touched.
 //
-// Shape-aware staleness detection (kanban 61aac9db, Watson Mason empirical
+// Shape-aware staleness detection (kanban 61aac9db, a peer dev an agent empirical
 // 2026-05-02): on /recreate of a pre-PR-#108 cloud agent, migrateAgentPersistence
 // carries the predecessor's stale-shape gemini-settings.json forward into the
 // new UUID dir BEFORE this function runs. The previous `if (!existsSync) seed`
@@ -727,7 +727,7 @@ export function provisionCloudGeminiConfig(
       // Defensive: tolerate operator/legacy garbage where security or
       // security.auth is set to a non-object (string, number, null). Without
       // this, the spread `{...security}` would inline string indices into the
-      // result and break gemini's settings reader (Watson polish note).
+      // result and break gemini's settings reader (a peer dev polish note).
       const securityRaw = settings.security
       const security: Record<string, unknown> =
         securityRaw && typeof securityRaw === 'object' && !Array.isArray(securityRaw)
@@ -880,7 +880,7 @@ export function provisionCloudCodexConfig(
 // host operator's ~/.codex/auth.json into the per-agent dir so the fresh
 // cloud agent inherits a valid OpenAI/ChatGPT login and skips the
 // "Welcome to Codex / Sign in" picker on first launch (kanban 354a5174,
-// Option A operator-driven Device Code per Shane 2026-05-01).
+// Option A operator-driven Device Code per the operator 2026-05-01).
 //
 // Operator workflow: run `codex login` once on the host, every subsequent
 // cloud-agent create inherits the credentials. Codex rewrites auth.json on
@@ -892,15 +892,15 @@ export function provisionCloudCodexConfig(
 // predecessor file is present, leave auth.json ABSENT (#158) — do NOT
 // write an empty {}, which reaches Codex inside the container as a
 // malformed credential and throws the cryptic "email and plan type are
-// required for chatgpt authentication" error (Watson, Nodie create
+// required for chatgpt authentication" error (a peer dev, an agent create
 // 2026-05-27), masking the real cause (no `codex login` on the host).
 // With the file absent, Codex falls through to its own first-run
 // device-code sign-in picker — the natural happy-path for a fresh host
-// (matches what Shane did manually inside Nodie's container). Post-hoc
+// (matches what the operator did manually inside an agent's container). Post-hoc
 // host login still propagates: seedFromHostFile owns dest-existence
 // semantics and treats an absent dest the same as the old empty-{}
 // placeholder it replaces, so the next /recreate re-seeds from the host
-// (Watson Mason post-#104 finding, kanban 02a8ebda follow-up).
+// (a peer dev an agent post-#104 finding, kanban 02a8ebda follow-up).
 export function provisionCloudCodexAuth(
   agentId: string,
   hostHome: string = os.homedir()
@@ -949,7 +949,7 @@ export function provisionCloudCodexAuth(
 //     /recreate (the gap that lost R2D2's history). All 128 host
 //     threads.rollout_path values resolve under ~/.codex/sessions with no
 //     config override, so the whole-dir mount covers transcripts + all sqlite
-//     in one surface — verified on bananajr 2026-06-10.
+//     in one surface — verified on the dev host 2026-06-10.
 //
 //   - Version-proof against codex storage-shape drift. The sqlite filenames
 //     are version-numbered (logs_2/state_5/goals_1) and codex is migrating
@@ -996,7 +996,7 @@ export const OPENCODE_CONFIG_DIR = 'opencode-config'
 //   - bare `opencode` honors the opencode.jsonc top-level `model` field in
 //     SLASH-JOINED providerID/modelID form, so the container launches `opencode`
 //     BARE (no -m flag in AI_TOOL) and reads the model from here.
-//   - the reasoning-effort `variant` (Shane: HIGH, give north-mini-code its best
+//   - the reasoning-effort `variant` (the operator: HIGH, give north-mini-code its best
 //     shot for the eval) CANNOT be set top-level — opencode rejects a top-level
 //     `variant` key ("Unrecognized key"), and `--variant` is a flag on
 //     `opencode run` ONLY, not the interactive TUI the container launches. The
@@ -1018,7 +1018,7 @@ const OPENCODE_DEFAULT_AGENT = 'build'
 // survives re-runs + /recreate (migrateAgentPersistence carries opencode-config/
 // forward). Deliberately does NOT seed from the host ~/.config/opencode — that
 // dir is a per-machine scratch (can hold an unrelated node_modules/package.json,
-// as on bananajr); the model pin is the only config the container needs.
+// as on the dev host); the model pin is the only config the container needs.
 export function provisionCloudOpenCodeConfig(
   agentId: string,
   hostHome: string = os.homedir()
@@ -1127,7 +1127,7 @@ export function buildCloudOpenCodeConfigMount(
 // credential and can suppress that picker. seedFromHostFile fully owns
 // dest-existence semantics — see the function docstring for the
 // empty-{}-re-seed contract that lets post-hoc host login propagate via
-// /recreate (kanban 02a8ebda + Watson Mason finding from PR #105). That
+// /recreate (kanban 02a8ebda + a peer dev an agent finding from PR #105). That
 // contract treats an absent dest the same as the empty-{} placeholder,
 // so dropping the placeholder write does not break recreate-path seeding.
 //
@@ -1216,19 +1216,19 @@ export function buildCloudAntigravityAppDataMount(
 // server. Gate: agent.deployment.sandbox.ziggy === true. Composed at create
 // time and on every /update-runtime so /recreate is naturally idempotent.
 //
-// Design summary (Hutch + Watson 2026-05-27, kanban TBD):
+// Design summary (the ops agent + a peer dev 2026-05-27, kanban TBD):
 //
 //   - Codex (or any MCP-aware program) spawns the Ziggy MCP server as a STDIO
 //     subprocess via [mcp_servers.ziggy] in ~/.codex/config.toml. The command
-//     points at `/home/gosub/code/ziggy/apps/mcp-server/bin/start.sh` — the
-//     same script Rollie (host agent) uses today.
+//     points at `/home/<user>/code/ziggy/apps/mcp-server/bin/start.sh` — the
+//     same script an agent (host agent) uses today.
 //
 //   - The MCP server reads creds + workspace routing from
-//     /home/gosub/code/ziggy/.env. That host file is currently Rollie-flavored
-//     (DATABASE_URL points at the rollie-specific Postgres DB on port 5434),
+//     /home/<user>/code/ziggy/.env. That host file is currently an agent-flavored
+//     (DATABASE_URL points at the an agent-specific Postgres DB on port 5434),
 //     so we OVERLAY a per-agent .env at the same in-container path. Docker
 //     file-bind shadows the underlying file from Mount A; start.sh sources
-//     the overlay and has no awareness of the host's Rollie defaults.
+//     the overlay and has no awareness of the host's an agent defaults.
 //
 //   - The MCP server connects to Postgres via the docker bridge network
 //     `ziggy_default` where `ziggy-postgres` resolves by service name. That
@@ -1238,7 +1238,7 @@ export function buildCloudAntigravityAppDataMount(
 // Operator pre-flight: /opt/stacks/ai-maestro/agent-envs/<agent-name>.env must
 // exist on host with at least ZIGGY_PROFILE and DATABASE_URL. ai-maestro
 // REFUSES to start the container if missing (silent-empty-mount creation was
-// the codex-auth.json bug Shane hit at create time; not repeating it).
+// the codex-auth.json bug the operator hit at create time; not repeating it).
 
 // Network name used by docker compose for the Ziggy stack (ziggy-web +
 // ziggy-postgres). Verified live 2026-05-27 — bridge driver, 172.19.0.0/16.
@@ -1247,12 +1247,12 @@ export const ZIGGY_NETWORK = 'ziggy_default'
 // Host path where the Ziggy repo lives. start.sh derives ZIGGY_ROOT from its
 // own location, so the in-container path MUST match the host path verbatim
 // (no `/opt/ziggy-mcp` remap). Bind-mount source AND target use this path.
-export const ZIGGY_CODE_PATH = '/home/gosub/code/ziggy'
+export const ZIGGY_CODE_PATH = '/home/<user>/code/ziggy'
 
 // Directory on host where ai-maestro looks for per-agent .env overlay files.
 // One file per agent, named `<agent.name>.env` (agent.name is already a slug
 // matching `^[a-zA-Z0-9_-]+$` so it's safe in a filesystem path without
-// further escaping). Owner: operator (Shane / Hutch). ai-maestro never
+// further escaping). Owner: operator (the operator / the ops agent). ai-maestro never
 // writes to this directory — only reads at update-runtime/create time to
 // verify the file exists before adding the overlay mount.
 //
@@ -1262,7 +1262,7 @@ export const ZIGGY_CODE_PATH = '/home/gosub/code/ziggy'
 // clear error message until they do. Intentional: keying on the operator-
 // readable name keeps the env files discoverable and the loud-fail catches
 // the missed rename immediately rather than silently sourcing an empty
-// overlay. Per Hutch ops review PR #157.
+// overlay. Per the ops agent ops review PR #157.
 export const ZIGGY_AGENT_ENVS_DIR = '/opt/stacks/ai-maestro/agent-envs'
 
 // Read-only bind of the Ziggy repo into the container. The in-container TARGET
@@ -1354,7 +1354,7 @@ export function buildCloudRestorationSentinelMount(
     containerPath: '/restoration-ready',
     // Container side only READS the sentinel — principle of least privilege.
     // Host owns all writes via writeRestorationSentinel / clearRestorationSentinel.
-    // CelestIA polish on PR #154 (kanban fcabb870).
+    // a peer dev polish on PR #154 (kanban fcabb870).
     readOnly: true,
   }
 }
@@ -1613,7 +1613,7 @@ export function buildCloudClaudeReadthroughMounts(
 // Gemini CLI writes conversation JSONL to ~/.gemini/tmp/<project>/chats/
 // where <project> is the value from ~/.gemini/projects.json keyed by cwd
 // (CONTAINER_CWD_GEMINI_PROJECT = "workspace" for the standard /workspace
-// bind). Empirically pinned via Holmes Mason/Optic 2026-05-11 (kanban
+// bind). Empirically pinned via the prod host two agents 2026-05-11 (kanban
 // d937c33d). Applied to ALL cloud agents regardless of program — the mount
 // is harmless for non-Gemini agents (claude/codex never write under
 // .gemini/tmp/), keeping the mount-set shape uniform.
@@ -1653,7 +1653,7 @@ export function buildCloudGeminiReadthroughMounts(
 // FAIL-LOUD for profiled agents: a worker/orchestrator WILL push PRs, and a
 // silent mis-attribution under the generic placeholder is worse + harder to
 // detect than a provision-time stop (mirrors the WS1 fail-loud philosophy;
-// KAI+Watson call 2026-06-12). Unprofiled agents never call this — they keep
+// the lead+a peer dev call 2026-06-12). Unprofiled agents never call this — they keep
 // the image-baked generic identity. So if we're here, CLOUD_AGENT_GIT_EMAIL is
 // required: unset/invalid → throw (caller converts to a clean 4xx, before any
 // docker run / port allocation).
@@ -1752,7 +1752,7 @@ export function buildCloudTransportRepoMount(
 // provisioner copy each worker's slim §1 from the orchestrator-owned source dir
 // ~/.aimaestro/ai-team-src/<teamId>/<Label>_INSTRUCTIONS.md (see
 // cloudInstructionsSourcePath). That model assumed a HOST-based orchestrator
-// (Bishop on Holmes) writing the source to the host filesystem. The Ziggy
+// (the gateway agent on the prod host) writing the source to the host filesystem. The Ziggy
 // 4-cloud-agent model puts the orchestrator ITSELF in a container, which can't
 // write the host source directly — so this mounts that exact host dir RW into
 // the orchestrator at /ai-team-src. The orchestrator edits §1 there → its writes
@@ -1786,14 +1786,14 @@ export function buildCloudAiTeamSrcMount(
 // Seed each agent's slim §1 instruction file from the orchestrator-owned source
 // into the running container at the provider's NATIVE discovery path so it loads
 // as the agent's behavior on every wake AND survives a rebuild (the durability
-// gap Watson found: codex's ~/.codex is a full-dir mount so AGENTS.md is durable,
+// gap a peer dev found: codex's ~/.codex is a full-dir mount so AGENTS.md is durable,
 // but ~/.claude + ~/.gemini are subpath-mounted, so CLAUDE.md/GEMINI.md would
 // live container-layer-only = lost on rebuild). A dedicated file-mount fixes all
 // three uniformly. Source-of-truth = a per-team instruction-source dir
-// (Bishop-maintained <Label>_INSTRUCTIONS.md). It deliberately sits OUTSIDE the
+// (the gateway agent-maintained <Label>_INSTRUCTIONS.md). It deliberately sits OUTSIDE the
 // /ai-team RO mount tree (a sibling ~/.aimaestro/ai-team-src/) — per-agent §1 is
 // private identity, NOT shared /ai-team plan content, so a worker must not be
-// able to read its peers' instruction files through the mounted dir (Watson #193
+// able to read its peers' instruction files through the mounted dir (a peer dev #193
 // review). Only the agent's own seeded instructions.md is mounted, into its own
 // container at its own discovery path.
 
@@ -1823,12 +1823,12 @@ export function cloudInstructionsContainerPath(program: string | undefined): str
 }
 
 // Resolve the host-side source instruction file for an agent: a per-team
-// instruction-source dir holding the Bishop-maintained <Label>_INSTRUCTIONS.md.
+// instruction-source dir holding the the gateway agent-maintained <Label>_INSTRUCTIONS.md.
 // Lives at ~/.aimaestro/ai-team-src/<teamId>/ — a SIBLING of the /ai-team mount
 // dir, deliberately NOT inside it: /ai-team is bind-mounted RO into worker
 // containers, so source files placed there would be readable by every peer,
 // contradicting the "§1 = per-agent identity, not shared plan content" model
-// (Watson #193 review). Bishop owns + maintains these files at this path on each
+// (a peer dev #193 review). the gateway agent owns + maintains these files at this path on each
 // host. Label is sanitized to a safe basename (no separators / traversal) since
 // it indexes a filesystem path.
 export function cloudInstructionsSourcePath(
@@ -1846,7 +1846,7 @@ export function cloudInstructionsSourcePath(
 // orchestrator source exists, (re)seed the per-agent copy from it on every
 // provision — the mount is RO into the container so the agent can never edit it,
 // which means there is no in-container hand-edit to preserve, and re-seeding lets
-// Bishop's source-of-truth edits reach the agent on the next rebuild. When the
+// the gateway agent's source-of-truth edits reach the agent on the next rebuild. When the
 // source is ABSENT (e.g. moved, or a cross-host rebuild where the source isn't
 // present), KEEP the existing per-agent copy untouched — that copy is the
 // durability fallback (migrateAgentPersistence carries instructions.md across
@@ -2276,7 +2276,7 @@ export async function bootstrapAmpIdentity(
 //
 // PROBLEM: the previous allocator listed only RUNNING containers (`docker ps`)
 // to find used ports, so a hibernated/stopped agent's port looked free and got
-// reissued onto a live agent (the Crease→Columbo 23003 collision). It also fell
+// reissued onto a live agent (the Crease→the PR-review agent 23003 collision). It also fell
 // back to a silent hardcoded 23001 on any error — the exact silent reuse that
 // caused the collision.
 //
@@ -2550,7 +2550,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   // ZIGGY_PROFILE + DATABASE_URL — start.sh sources it via the overlay mount,
   // and a missing file would either make docker create the mount source as a
   // root-owned empty dir (breaking the bind) or yield an MCP server that
-  // silently inherits Rollie's host .env. Fail loudly here is better than
+  // silently inherits an agent's host .env. Fail loudly here is better than
   // either failure mode.
   if (useZiggy) {
     try {
@@ -2718,7 +2718,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   // docker failure, success); a pathological uncaught throw is backstopped by
   // the lock's stale-reclaim timeout.
   // Acquire in its own try so a lock-wait timeout surfaces as a clean 503
-  // rather than escaping raw (createDockerAgent has no outer try). Per CelestIA
+  // rather than escaping raw (createDockerAgent has no outer try). Per a peer dev
   // review note (1) on PR #186.
   let portLock: CloudPortLock
   try {
@@ -2746,7 +2746,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     // escalation; and pin a small noexec/nosuid tmpfs over the container's
     // /tmp. NOTE: --tmpfs /tmp is FLAGGED for empirical container-image
     // verification before the live 3-host deploy (noexec + 100m cap could
-    // break tooling that execs/spills into /tmp). See KAI reconciliation flag.
+    // break tooling that execs/spills into /tmp). See the lead reconciliation flag.
     '--cap-drop=ALL',
     '--cap-add=NET_BIND_SERVICE --cap-add=SETGID --cap-add=SETUID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER',
     '--security-opt no-new-privileges',
@@ -2764,7 +2764,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
     // filesystem (not Docker DNS), so isolation is fine today. If a future
     // feature needs container-to-container DNS for non-Ziggy agents, attach
     // the default bridge via `docker network connect bridge <container>`
-    // post-create. Per Hutch ops review PR #157 note A.
+    // post-create. Per the ops agent ops review PR #157 note A.
     useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
     ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,
@@ -2975,7 +2975,7 @@ export interface OnWakeLintWarning {
  * Lint an agent's carried-forward on-wake prompt for migration staleness.
  * Pure + exported for unit testing. Returns [] for non-profiled agents or an
  * empty/absent prompt (the carry-verbatim hazard only applies to the profiled
- * wave-agent migration path). Three checks per #198 (scope locked w/ Shane):
+ * wave-agent migration path). Three checks per #198 (scope locked w/ the operator):
  *  1. retired shared-worktree path (`*.wt/`) — dead in the /workspace/repo layout
  *  2. reading `ai-team/<Name>_INSTRUCTIONS.md` — instructions now ship via the
  *     mounted per-harness file; deliberately NOT flagging a bare `/ai-team/`
@@ -3539,7 +3539,7 @@ export async function updateContainerMountsAndExtraEnv(
     // filesystem (not Docker DNS), so isolation is fine today. If a future
     // feature needs container-to-container DNS for non-Ziggy agents, attach
     // the default bridge via `docker network connect bridge <container>`
-    // post-create. Per Hutch ops review PR #157 note A.
+    // post-create. Per the ops agent ops review PR #157 note A.
     useZiggy ? `--network ${ZIGGY_NETWORK}` : '',
     ...buildEnvFlags(mergedEnv),
     `-v "${workDir}:/workspace"`,

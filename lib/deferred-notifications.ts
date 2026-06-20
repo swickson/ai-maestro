@@ -7,8 +7,8 @@
  * prompt) never resurfaces it: the `idle_prompt` Notification hook can only attach
  * `additionalContext` to a *new* user turn, so it cannot inject into an already-
  * waiting session. Only a real `UserPromptSubmit` drain, or a fresh send-keys push,
- * delivers. Result: the message strands (the Zach↔Reed regression — Reed had no
- * heartbeat and stranded; Zach's 14-min self-heartbeat re-prompted him and drained).
+ * delivers. Result: the message strands (the orchestrator↔worker regression — the worker had no
+ * heartbeat and stranded; the orchestrator's 14-min self-heartbeat re-prompted him and drained).
  *
  * FIX: when a wake is deferred FOR BUSY, record it here keyed by session. When the
  * agent next transitions to idle (`waiting_for_input` — see broadcastActivityUpdate),

@@ -73,19 +73,19 @@ The gate kills the "unclassified file" failure class permanently. The residual c
 the one to watch: a 966+/92− wholesale swap of the most constraint-laden host file
 (WS upgrade handler + session pooling). Both halves of the terminal contract were diffed:
 
-- **Server-side (KAI):** upstream's single `history-complete` emit is *not* a dropped fix —
+- **Server-side (the lead):** upstream's single `history-complete` emit is *not* a dropped fix —
   it's unconditional after a 150 ms `setTimeout`, covering both paths ours covers with two
   emits. Upstream's terminal-history path differs architecturally: inline
   `capture-pane -e -p -S -5000` (ANSI, 5000 lines) + **delayed-broadcast-join** to discard the
   tmux-attach redraw, vs ours' `runtime.capturePane()` (2000-line, no-escape) + immediate join.
-- **Client-side (Watson):** `TerminalView` @18f373a gates on `history-complete` (resets
+- **Client-side (a peer dev (prod-host)):** `TerminalView` @18f373a gates on `history-complete` (resets
   `historyLoaded` each connect), so upstream's emit opens the gate — **the eb3e705c hang-mode
   does not recur**. The client has no own content-dedup and writes ANSI natively via
   `xterm.write()`, so `-e` is richer, not a corruption source. The redraw dedup is therefore
   *entirely server-side*; the client cannot compensate if the server under-discards.
 
 **Net:** the canary risk narrows to a single assertion — does the delayed-broadcast-join fully
-discard the attach redraw? Acceptance (Watson's HOST local-tmux canary; cloud-Hale does not
+discard the attach redraw? Acceptance (a peer dev (prod-host)'s HOST local-tmux canary; a cloud host does not
 exercise `server.mjs`): a host local-tmux agent **with scrollback** → reconnect shows history
 **once, no duplicate visible area**, `Ctrl+L` redraws clean, no width/Unicode corruption, no
 hang. If a duplicate visible area appears, the surgical fix is to port *only* the delayed-join

@@ -2182,7 +2182,7 @@ export function normalizeHostId(hostId: string | undefined): string {
 
   // Migrate stale hostnames: if isSelf() recognizes this hostId (via aliases/IPs)
   // but it doesn't match the current hostname, update it to the canonical self ID.
-  // This handles hostname drift (e.g. milo-dock.internal → shanes-m3-pro-mbp).
+  // This handles hostname drift (e.g. the laptop's dock hostname → its wifi hostname).
   if (isSelf(hostId) && hostId.toLowerCase().replace(/\.local$/, '') !== selfHostId) {
     return selfHostId
   }

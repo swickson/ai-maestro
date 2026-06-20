@@ -384,7 +384,7 @@ export default function UserDetailPage() {
                   type="text"
                   value={newPlatformHandle}
                   onChange={e => setNewPlatformHandle(e.target.value)}
-                  placeholder="e.g., gosub"
+                  placeholder="e.g., <user>"
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500"
                   onKeyDown={e => { if (e.key === 'Enter') addPlatform() }}
                 />

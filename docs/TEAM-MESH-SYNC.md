@@ -4,7 +4,7 @@ Sync team definitions across all mesh nodes so teams are visible and manageable 
 
 ## Problem
 
-Teams are stored per-node in `~/.aimaestro/teams/teams.json` with no mesh awareness. A team created on Milo that references agents on Bananajr and Holmes only exists on Milo — the other nodes can't see or manage it. This breaks the expectation that teams (which already reference cross-node agents) should be accessible from any node.
+Teams are stored per-node in `~/.aimaestro/teams/teams.json` with no mesh awareness. A team created on the laptop that references agents on the dev host and the prod host only exists on the laptop — the other nodes can't see or manage it. This breaks the expectation that teams (which already reference cross-node agents) should be accessible from any node.
 
 ## Current State
 
@@ -51,8 +51,8 @@ interface Team {
   "teams": [
     {
       "id": "uuid",
-      "name": "Iron Alliance",
-      "hostId": "milo.aimaestro.local",
+      "name": "Example Team",
+      "hostId": "host.aimaestro.local",
       "updatedAt": 1712419200000,
       // ... other fields
     }
@@ -174,5 +174,5 @@ For existing installations with teams already in `teams.json`:
 
 ## Open Questions
 
-- Should we notify other team members when a team syncs for the first time (e.g., "Team X from Milo is now visible")?
+- Should we notify other team members when a team syncs for the first time (e.g., "Team X from the laptop is now visible")?
 - What's the right threshold for "host gone permanently" before suggesting a claim? 24 hours? Configurable?

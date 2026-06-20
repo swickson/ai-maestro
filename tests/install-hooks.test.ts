@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 
-// PR-B delivery half (Columbo #247): the authoritative busy edge is written in the
+// PR-B delivery half (the PR-review agent #247): the authoritative busy edge is written in the
 // hook's UserPromptSubmit case, so the installer MUST register UserPromptSubmit for
 // host Claude agents — otherwise the hook never fires on a turn start and the
 // busy-write is dead code (installer-provisioned agents silently fall back to the

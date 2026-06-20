@@ -49,7 +49,7 @@ describe('reseed-skip-dangerous-mode.cjs', () => {
 
   it('reseeds a cloud claude agent missing skipDangerousModePermissionPrompt', () => {
     writeRegistry([
-      { id: 'aaa', name: 'luke', program: 'claude', deployment: { type: 'cloud' } },
+      { id: 'aaa', name: 'agent-one', program: 'claude', deployment: { type: 'cloud' } },
     ])
     seedAgent('aaa', { hooks: { Stop: [] } })
 
@@ -65,7 +65,7 @@ describe('reseed-skip-dangerous-mode.cjs', () => {
 
   it('is idempotent — second run does not mutate already-seeded agents', () => {
     writeRegistry([
-      { id: 'bbb', name: 'hardin', program: 'claude-code', deployment: { type: 'cloud' } },
+      { id: 'bbb', name: 'agent-two', program: 'claude-code', deployment: { type: 'cloud' } },
     ])
     seedAgent('bbb', { skipDangerousModePermissionPrompt: true, hooks: {} })
 
@@ -79,8 +79,8 @@ describe('reseed-skip-dangerous-mode.cjs', () => {
 
   it('skips non-cloud (host) agents and non-claude programs', () => {
     writeRegistry([
-      { id: 'host-agent', name: 'rollie', program: 'claude', deployment: { type: 'local' } },
-      { id: 'gemini-cloud', name: 'mason', program: 'gemini', deployment: { type: 'cloud' } },
+      { id: 'host-agent', name: 'host-one', program: 'claude', deployment: { type: 'local' } },
+      { id: 'gemini-cloud', name: 'gemini-one', program: 'gemini', deployment: { type: 'cloud' } },
     ])
     seedAgent('host-agent', { hooks: {} })
     seedAgent('gemini-cloud', { someGeminiKey: true })
@@ -98,7 +98,7 @@ describe('reseed-skip-dangerous-mode.cjs', () => {
 
   it('--dry-run does not mutate the file', () => {
     writeRegistry([
-      { id: 'ccc', name: 'luke', program: 'claude', deployment: { type: 'cloud' } },
+      { id: 'ccc', name: 'agent-three', program: 'claude', deployment: { type: 'cloud' } },
     ])
     const original = { hooks: { Notification: [] } }
     seedAgent('ccc', original)
@@ -143,7 +143,7 @@ describe('reseed-skip-dangerous-mode.cjs', () => {
 
   it('preserves operator-set keys alongside the new field', () => {
     writeRegistry([
-      { id: 'rich', name: 'luke', program: 'claude', deployment: { type: 'cloud' } },
+      { id: 'rich', name: 'agent-four', program: 'claude', deployment: { type: 'cloud' } },
     ])
     const original = {
       allowedTools: ['Bash', 'Read'],

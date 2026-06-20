@@ -461,7 +461,7 @@ describe('buildEnvFlags', () => {
 
 describe('buildAmpCommonMounts', () => {
   const uuid = '11111111-1111-1111-1111-111111111111'
-  const home = '/home/gosub'
+  const home = '/home/<user>'
 
   it('returns five mounts derived from the agent UUID + host shared paths', () => {
     const mounts = buildAmpCommonMounts(uuid, home)
@@ -532,7 +532,7 @@ describe('buildAmpCommonMounts', () => {
 
 describe('buildCloudClaudeSettingsMount', () => {
   const uuid = '33333333-3333-3333-3333-333333333333'
-  const home = '/home/gosub'
+  const home = '/home/<user>'
 
   it('returns a file-level mount targeting /home/claude/.claude/settings.json', () => {
     const m = buildCloudClaudeSettingsMount(uuid, home)
@@ -551,7 +551,7 @@ describe('buildCloudClaudeSettingsMount', () => {
 
 describe('buildCloudClaudePersistMounts', () => {
   const uuid = '55555555-5555-5555-5555-555555555555'
-  const home = '/home/gosub'
+  const home = '/home/<user>'
 
   it('returns three mounts under the per-agent state dir', () => {
     const mounts = buildCloudClaudePersistMounts(uuid, home)
@@ -770,8 +770,8 @@ describe('provisionCloudClaudeConfig', () => {
   // Sister fix to PR #112 (gemini-settings.json shape-aware staleness).
   // Pre-kanban-41dd54b9 claude-home.json files lacked theme — when
   // migrateAgentPersistence carried them forward, the bare existsSync guard
-  // short-circuited and the theme=dark seed was never injected. Hale on
-  // Holmes empirically hit this 2026-05-06.
+  // short-circuited and the theme=dark seed was never injected. An agent on
+  // the prod host empirically hit this 2026-05-06.
   //
   // Critical methodology note (feedback_provisioning_seed_empirical_methodology.md):
   // these tests MUST exercise the migrate-then-existsSync path. Manual
@@ -859,7 +859,7 @@ describe('provisionCloudClaudeConfig', () => {
     expect(JSON.parse(fs.readFileSync(credsPath, 'utf8'))).toEqual({})
   })
 
-  it('re-bootstraps claude-credentials.json when migrated predecessor placeholder is empty {} and host now has creds (kanban 02a8ebda recreate-path, Watson Mason finding)', () => {
+  it('re-bootstraps claude-credentials.json when migrated predecessor placeholder is empty {} and host now has creds (kanban 02a8ebda recreate-path, peer-dev finding)', () => {
     // Simulate the recreate flow: migrateAgentPersistence has already copied
     // the predecessor's empty {} into the new UUID dir BEFORE provisioning runs.
     const agentDir = path.join(tmpHome, '.aimaestro', 'agents', uuid)
@@ -914,7 +914,7 @@ describe('provisionCloudGeminiConfig', () => {
     expect(body.general.enableAutoUpdate).toBe(false)
   })
 
-  it('writes gemini-settings.json with security.auth.selectedType="oauth-personal" to skip the auth picker (kanban 1f911653 Hardin empirical)', () => {
+  it('writes gemini-settings.json with security.auth.selectedType="oauth-personal" to skip the auth picker (kanban 1f911653 agent empirical)', () => {
     const { settingsPath } = provisionCloudGeminiConfig(uuid, tmpHome)
     const body = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     expect(body.security.auth.selectedType).toBe('oauth-personal')
@@ -1004,7 +1004,7 @@ describe('provisionCloudGeminiConfig', () => {
     expect(body.security.auth.selectedType).toBe('oauth-personal')
   })
 
-  it('preserves operator-set non-default selectedType (e.g. "gemini-api-key") — operator choice wins (Watson polish)', () => {
+  it('preserves operator-set non-default selectedType (e.g. "gemini-api-key") — operator choice wins (peer-dev polish)', () => {
     // Operator may legitimately choose a non-OAuth auth method (gemini-api-key,
     // vertex-ai, etc.). Staleness guard must NOT overwrite operator selection
     // — only inject when selectedType is missing or non-string.
@@ -1026,7 +1026,7 @@ describe('provisionCloudGeminiConfig', () => {
     expect(body.security.auth.selectedType).toBe('gemini-api-key') // operator choice wins
   })
 
-  it('tolerates non-object security or security.auth values (defensive coercion, Watson polish)', () => {
+  it('tolerates non-object security or security.auth values (defensive coercion, peer-dev polish)', () => {
     // If a corrupted/legacy settings.json has security set to a string (or
     // any non-object), the spread {...security} would inline string indices
     // and break gemini. Defensive coercion treats malformed shapes as empty.
@@ -1207,12 +1207,12 @@ describe('Ziggy MCP integration helpers', () => {
       expect(ZIGGY_NETWORK).toBe('ziggy_default')
     })
 
-    it('uses /home/gosub/code/ziggy as the canonical ziggy repo path', () => {
+    it('uses /home/<user>/code/ziggy as the canonical ziggy repo path', () => {
       // The path MUST match host-side absolute path verbatim because start.sh
       // derives ZIGGY_ROOT from its own location via $(dirname). A path remap
       // (e.g. /opt/ziggy-mcp/) would break the .env-loading + DATABASE_URL
       // construction logic.
-      expect(ZIGGY_CODE_PATH).toBe('/home/gosub/code/ziggy')
+      expect(ZIGGY_CODE_PATH).toBe('/home/<user>/code/ziggy')
     })
 
     it('uses /opt/stacks/ai-maestro/agent-envs as the per-agent env directory', () => {
@@ -1224,8 +1224,8 @@ describe('Ziggy MCP integration helpers', () => {
   describe('buildZiggyCodeMount', () => {
     it('returns a read-only same-path bind for the ziggy repo', () => {
       const m = buildZiggyCodeMount()
-      expect(m.hostPath).toBe('/home/gosub/code/ziggy')
-      expect(m.containerPath).toBe('/home/gosub/code/ziggy')
+      expect(m.hostPath).toBe('/home/<user>/code/ziggy')
+      expect(m.containerPath).toBe('/home/<user>/code/ziggy')
       expect(m.readOnly).toBe(true)
     })
 
@@ -1236,13 +1236,13 @@ describe('Ziggy MCP integration helpers', () => {
     it('overrides the host SOURCE when given, keeping the container TARGET fixed (M2)', () => {
       const m = buildZiggyCodeMount('/srv/ziggy-stable')
       expect(m.hostPath).toBe('/srv/ziggy-stable')
-      expect(m.containerPath).toBe('/home/gosub/code/ziggy')
+      expect(m.containerPath).toBe('/home/<user>/code/ziggy')
       expect(m.readOnly).toBe(true)
     })
 
     it('falls back to the default source for empty/undefined override (clear-sentinel safe)', () => {
-      expect(buildZiggyCodeMount('').hostPath).toBe('/home/gosub/code/ziggy')
-      expect(buildZiggyCodeMount(undefined).hostPath).toBe('/home/gosub/code/ziggy')
+      expect(buildZiggyCodeMount('').hostPath).toBe('/home/<user>/code/ziggy')
+      expect(buildZiggyCodeMount(undefined).hostPath).toBe('/home/<user>/code/ziggy')
     })
   })
 
@@ -1320,9 +1320,9 @@ describe('Ziggy MCP integration helpers', () => {
 
   describe('buildZiggyEnvOverlayMount', () => {
     it('returns a read-only file overlay shadowing the host ziggy .env', () => {
-      const m = buildZiggyEnvOverlayMount('ops-homelab-nodie')
-      expect(m.hostPath).toBe('/opt/stacks/ai-maestro/agent-envs/ops-homelab-nodie.env')
-      expect(m.containerPath).toBe('/home/gosub/code/ziggy/.env')
+      const m = buildZiggyEnvOverlayMount('ops-<team>-an agent')
+      expect(m.hostPath).toBe('/opt/stacks/ai-maestro/agent-envs/ops-<team>-an agent.env')
+      expect(m.containerPath).toBe('/home/<user>/code/ziggy/.env')
       expect(m.readOnly).toBe(true)
     })
 
@@ -1332,7 +1332,7 @@ describe('Ziggy MCP integration helpers', () => {
     })
 
     it('passes validateMounts so the mount is shellable in a docker -v flag', () => {
-      expect(validateMounts([buildZiggyEnvOverlayMount('nodie')], 'system')).toBeNull()
+      expect(validateMounts([buildZiggyEnvOverlayMount('an agent')], 'system')).toBeNull()
     })
   })
 
@@ -1360,7 +1360,7 @@ describe('Ziggy MCP integration helpers', () => {
       expect(mcpBlockAdded).toBe(true)
       const body = fs.readFileSync(configTomlPath, 'utf8')
       expect(body).toContain('[mcp_servers.ziggy]')
-      expect(body).toContain('command = "/home/gosub/code/ziggy/apps/mcp-server/bin/start.sh"')
+      expect(body).toContain('command = "/home/<user>/code/ziggy/apps/mcp-server/bin/start.sh"')
       // Pre-existing trust block must be preserved (operator config compat).
       expect(body).toContain('[projects."/workspace"]')
     })
@@ -1660,7 +1660,7 @@ describe('OpenCode cloud provisioning (Phase 2)', () => {
       expect(body.$schema).toBe('https://opencode.ai/config.json')
     })
 
-    it('sets the HIGH reasoning-effort variant on the default "build" agent (Shane ruling; verified config form)', () => {
+    it('sets the HIGH reasoning-effort variant on the default "build" agent (the operator ruling; verified config form)', () => {
       // Top-level `variant` is rejected by opencode ("Unrecognized key"); the
       // only config path that binds to the bare/interactive launch is the
       // per-agent AgentConfig.variant on the default "build" agent. Empirically
@@ -2061,7 +2061,7 @@ describe('migrateAgentPersistence', () => {
 
   it('migrates gemini-chats/ recursively so cloud-Gemini transcripts survive recreate-with-persistFromAgentId (kanban d937c33d closes-the-loop)', () => {
     // Sister to claude-projects for the Gemini per-project chats dir.
-    // Without this, recreating a cloud-Gemini agent (Mason/Optic) with
+    // Without this, recreating a cloud-Gemini agent with
     // persistFromAgentId resets the chat panel to "0 messages" the same
     // way PR #131 fixed for cloud-Claude agents.
     migrateAgentPersistence(fromId, toId, tmpHome)
@@ -2174,7 +2174,7 @@ describe('migrateAgentPersistence', () => {
 
 describe('buildAmpCommonEnv', () => {
   const uuid = '22222222-2222-2222-2222-222222222222'
-  const name = 'ops-exec-test'
+  const name = 'ops-<role>'
   const hostUrl = 'http://host.docker.internal:23000'
 
   it('returns the identity/name/routing/path/gemini-trust envs', () => {
@@ -2265,7 +2265,7 @@ describe('mergeEnv', () => {
   // overrides on top of auto. This test pins the auto-vs-operator step.
   it('preserves operator override of an auto-injected AMP env', () => {
     const uuid = '33333333-3333-3333-3333-333333333333'
-    const auto = buildAmpCommonEnv(uuid, 'ops-exec-test', 'http://host.docker.internal:23000')
+    const auto = buildAmpCommonEnv(uuid, 'ops-<role>', 'http://host.docker.internal:23000')
     const operator = { AMP_MAESTRO_URL: 'http://operator-override:9999' }
     const merged = mergeEnv(auto, operator)
     expect(merged.AMP_MAESTRO_URL).toBe('http://operator-override:9999')
@@ -2286,7 +2286,7 @@ describe('buildRecreateBody', () => {
   function makeCloudAgent(overrides: Partial<Agent> = {}): Agent {
     return {
       id: 'old-uuid-aaaaaaaa',
-      name: 'ops-exec-test',
+      name: 'ops-<role>',
       label: 'TestAgent',
       avatar: '🧪',
       sessions: [],
@@ -2301,7 +2301,7 @@ describe('buildRecreateBody', () => {
         type: 'cloud',
         cloud: {
           provider: 'local-container',
-          containerName: 'aim-ops-exec-test',
+          containerName: 'aim-ops-<role>',
           status: 'running',
         },
       },
@@ -2320,13 +2320,13 @@ describe('buildRecreateBody', () => {
   })
 
   it('maps workingDirectory from registry', () => {
-    const agent = makeCloudAgent({ workingDirectory: '/home/gosub/distill' })
-    expect(buildRecreateBody(agent).workingDirectory).toBe('/home/gosub/distill')
+    const agent = makeCloudAgent({ workingDirectory: '/home/<user>/distill' })
+    expect(buildRecreateBody(agent).workingDirectory).toBe('/home/<user>/distill')
   })
 
   it('maps sandbox.mounts from deployment into top-level body.mounts', () => {
     const mounts: SandboxMount[] = [
-      { hostPath: '/mnt/agents/hardin', containerPath: '/mnt/agents/hardin' },
+      { hostPath: '/mnt/agents/test-agent', containerPath: '/mnt/agents/test-agent' },
     ]
     const agent = makeCloudAgent({
       deployment: {
@@ -2358,7 +2358,7 @@ describe('buildRecreateBody', () => {
   it('preserves identity fields (name, label, avatar, hostId, program)', () => {
     const agent = makeCloudAgent()
     const body = buildRecreateBody(agent)
-    expect(body.name).toBe('ops-exec-test')
+    expect(body.name).toBe('ops-<role>')
     expect(body.label).toBe('TestAgent')
     expect(body.avatar).toBe('🧪')
     expect(body.hostId).toBe('test-host')
@@ -2386,7 +2386,7 @@ describe('buildRecreateBody', () => {
     const body = buildRecreateBody(agent)
     // Required fields stay; optional fields are undefined (createDockerAgent
     // applies its own defaults — workDir → /tmp, program → 'claude' etc.)
-    expect(body.name).toBe('ops-exec-test')
+    expect(body.name).toBe('ops-<role>')
     expect(body.programArgs).toBeUndefined()
     expect(body.model).toBeUndefined()
     expect(body.workingDirectory).toBeUndefined()
@@ -2413,7 +2413,7 @@ describe('buildRecreateBody', () => {
     // Without this, /recreate drops the profile → the recreated agent loses
     // /ai-team + /transport.git + its per-agent git identity and falls back to
     // the generic image-baked identity (the exact mis-attribution the §11.6
-    // fail-loud exists to prevent). Watson catch on PR #187.
+    // fail-loud exists to prevent). Peer-dev catch on PR #187.
     const agent = makeCloudAgent({
       deployment: {
         type: 'cloud',
@@ -2593,7 +2593,7 @@ describe('buildCloudRestorationSentinelMount', () => {
   })
 
   it('is read-only (least-privilege — container reads, host writes)', () => {
-    // CelestIA polish on PR #154: container only polls existsSync, never
+    // Peer-dev polish on PR #154: container only polls existsSync, never
     // writes. RW would expose the sentinel to in-container tampering that
     // could prematurely unblock the gate or stall it.
     const mount = buildCloudRestorationSentinelMount('agent-x')
@@ -2815,8 +2815,8 @@ describe('computeReservedCloudPorts', () => {
     expect([...reserved].sort()).toEqual([23001, 23002])
   })
 
-  it('reserves a HIBERNATED (offline, not deleted) agent port — the Crease→Columbo fix', () => {
-    // Hibernated Crease still owns 23003; allocator must not hand it to a live agent.
+  it('reserves a HIBERNATED (offline, not deleted) agent port — the agent→PR-review fix', () => {
+    // A hibernated agent still owns 23003; allocator must not hand it to a live agent.
     const reserved = computeReservedCloudPorts([cloudAgent(23003, { status: 'offline' } as Partial<Agent>)], [])
     expect(reserved.has(23003)).toBe(true)
   })
@@ -2997,21 +2997,21 @@ describe('provisionCloudGitIdentity (§11.6 fail-loud)', () => {
 
   it('FAILS LOUD when CLOUD_AGENT_GIT_EMAIL is unset (profiled agent would mis-attribute)', () => {
     delete process.env.CLOUD_AGENT_GIT_EMAIL
-    expect(() => provisionCloudGitIdentity('a1', 'CelestIA', tmpHome)).toThrow(/CLOUD_AGENT_GIT_EMAIL is unset/)
+    expect(() => provisionCloudGitIdentity('a1', 'test-agent', tmpHome)).toThrow(/CLOUD_AGENT_GIT_EMAIL is unset/)
   })
   it('FAILS LOUD on a malformed email (refuses injectable gitconfig)', () => {
     process.env.CLOUD_AGENT_GIT_EMAIL = 'not-an-email'
-    expect(() => provisionCloudGitIdentity('a1', 'CelestIA', tmpHome)).toThrow(/not a valid email/)
+    expect(() => provisionCloudGitIdentity('a1', 'test-agent', tmpHome)).toThrow(/not a valid email/)
   })
   it('writes [user] name + shared email when env is set', () => {
-    process.env.CLOUD_AGENT_GIT_EMAIL = 'deploy@n4x-corp.example'
-    const { gitconfigPath } = provisionCloudGitIdentity('a1', 'CelestIA', tmpHome)
+    process.env.CLOUD_AGENT_GIT_EMAIL = 'deploy@<org>.example'
+    const { gitconfigPath } = provisionCloudGitIdentity('a1', 'test-agent', tmpHome)
     const content = fs.readFileSync(gitconfigPath, 'utf8')
-    expect(content).toContain('name = CelestIA')
-    expect(content).toContain('email = deploy@n4x-corp.example')
+    expect(content).toContain('name = test-agent')
+    expect(content).toContain('email = deploy@<org>.example')
   })
   it('sanitizes a newline/bracket-injection name (config-section smuggling)', () => {
-    process.env.CLOUD_AGENT_GIT_EMAIL = 'deploy@n4x-corp.example'
+    process.env.CLOUD_AGENT_GIT_EMAIL = 'deploy@<org>.example'
     const { gitconfigPath } = provisionCloudGitIdentity('a1', 'Evil\n[core]\nsshCommand = x', tmpHome)
     const content = fs.readFileSync(gitconfigPath, 'utf8')
     // The injection is neutralized: brackets + newlines stripped, so no NEW
@@ -3062,13 +3062,13 @@ describe('buildCloudCommonMounts (§11.1 + create/update parity)', () => {
     expect(plain.some(m => m.containerPath === '/ai-team-src')).toBe(false)
   })
 
-  // THE parity guard (KAI requirement): createDockerAgent + updateContainerMountsAndExtraEnv
+  // THE parity guard (lead requirement): createDockerAgent + updateContainerMountsAndExtraEnv
   // now BOTH call buildCloudCommonMounts. Assert that the resolved mount set is
   // identical given the same agent inputs — full set (paths + modes), order-insensitive.
   // This converts the old two-hand-maintained-copies drift class into a test-time guarantee.
   it('produces an IDENTICAL resolved mount set for the create-call and the update-call shape', () => {
-    const createArgs = { useZiggy: true, name: 'celestia', profile: 'worker' as const, teamId: 'alpha', hostHome: HOME }
-    const updateArgs = { useZiggy: true, name: 'celestia', profile: 'worker' as const, teamId: 'alpha', hostHome: HOME }
+    const createArgs = { useZiggy: true, name: 'test-agent', profile: 'worker' as const, teamId: 'alpha', hostHome: HOME }
+    const updateArgs = { useZiggy: true, name: 'test-agent', profile: 'worker' as const, teamId: 'alpha', hostHome: HOME }
     const createList = buildCloudCommonMounts('a1', createArgs)
     const updateList = buildCloudCommonMounts('a1', updateArgs)
     expect(sortByContainer(createList)).toEqual(sortByContainer(updateList))
@@ -3077,23 +3077,23 @@ describe('buildCloudCommonMounts (§11.1 + create/update parity)', () => {
   })
 
   it('includes the ziggy mounts only when useZiggy is true', () => {
-    const withZiggy = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'celestia' })
-    const without = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: false, name: 'celestia' })
+    const withZiggy = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'test-agent' })
+    const without = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: false, name: 'test-agent' })
     expect(withZiggy.length).toBeGreaterThan(without.length)
   })
 
   it('threads ziggyCodePath through to the ziggy code-mount SOURCE, target unchanged (M2)', () => {
-    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'celestia', ziggyCodePath: '/srv/ziggy-stable' })
-    const codeMount = mounts.find(m => m.containerPath === '/home/gosub/code/ziggy')
+    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'test-agent', ziggyCodePath: '/srv/ziggy-stable' })
+    const codeMount = mounts.find(m => m.containerPath === '/home/<user>/code/ziggy')
     expect(codeMount).toBeDefined()
     expect(codeMount!.hostPath).toBe('/srv/ziggy-stable')   // SOURCE overridden
-    expect(codeMount!.containerPath).toBe('/home/gosub/code/ziggy')  // TARGET fixed
+    expect(codeMount!.containerPath).toBe('/home/<user>/code/ziggy')  // TARGET fixed
   })
 
   it('defaults the ziggy code-mount SOURCE to ZIGGY_CODE_PATH when ziggyCodePath is absent (M2)', () => {
-    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'celestia' })
-    const codeMount = mounts.find(m => m.containerPath === '/home/gosub/code/ziggy')
-    expect(codeMount!.hostPath).toBe('/home/gosub/code/ziggy')
+    const mounts = buildCloudCommonMounts('a1', { hostHome: HOME, useZiggy: true, name: 'test-agent' })
+    const codeMount = mounts.find(m => m.containerPath === '/home/<user>/code/ziggy')
+    expect(codeMount!.hostPath).toBe('/home/<user>/code/ziggy')
   })
 })
 
@@ -3157,7 +3157,7 @@ describe('cloudInstructionsSourcePath (orchestrator source, per-team)', () => {
     expect(cloudInstructionsSourcePath('Crease', 'sneakers', HOME))
       .toBe('/home/tester/.aimaestro/ai-team-src/sneakers/Crease_INSTRUCTIONS.md')
   })
-  it('source dir is OUTSIDE the /ai-team mount tree (no peer-readable leak — Watson #193)', () => {
+  it('source dir is OUTSIDE the /ai-team mount tree (no peer-readable leak — peer-dev #193)', () => {
     const p = cloudInstructionsSourcePath('Crease', 'sneakers', HOME)
     // must NOT live under the bind-mounted ~/.aimaestro/ai-team/<teamId> dir
     expect(p.startsWith('/home/tester/.aimaestro/ai-team/')).toBe(false)
@@ -3200,9 +3200,9 @@ describe('provisionCloudInstructions (#191 seed-from-source)', () => {
   it('RE-SEEDS from source on re-provision (source-of-truth — RO mount means no edits to preserve)', () => {
     const src = writeSource('.aimaestro/ai-team-src/sneakers/Crease_INSTRUCTIONS.md', 'v1')
     provisionCloudInstructions('a1', src, tmpHome)
-    fs.writeFileSync(src, 'v2-bishop-edit') // Bishop updates the source
+    fs.writeFileSync(src, 'v2-source-edit') // the gateway agent updates the source
     const { instructionsPath } = provisionCloudInstructions('a1', src, tmpHome)
-    expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('v2-bishop-edit')
+    expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('v2-source-edit')
   })
 
   it('PRESERVES an existing per-agent copy when the source is absent (durability fallback)', () => {
@@ -3288,13 +3288,13 @@ describe('migrateAgentPersistence — #191 instructions.md carry-forward (preser
 describe('lintOnWakePrompt (#198)', () => {
   const checks = (ws: ReturnType<typeof lintOnWakePrompt>) => ws.map(w => w.check).sort()
 
-  // Canonical known-good on-wake prompts (Columbo reference, sneakers crew) —
+  // Canonical known-good on-wake prompts (PR-review-agent reference, sneakers crew) —
   // must lint CLEAN.
   const CREASE_CLAUDE = `Wake. You are Crease. Your full instructions are already loaded as your CLAUDE.md (first line '# Crease_INSTRUCTIONS.md') — follow them, especially the on-wake routine. Your code is at /workspace/repo; the shared plan is at /ai-team/. Check amp-inbox, act ONLY on a current unhandled dispatch, never replay completed work, else report standing-by.`
   const WHISTLER_CODEX = `Wake. You are Whistler. Your operating instructions are in your AGENTS.md at ~/.codex/AGENTS.md (first line '# Whistler_INSTRUCTIONS.md'). Codex loads that file as context only, NOT as commands — so treat it as IMPERATIVE: open it and follow it exactly, including its on-wake routine. Your code is at /workspace/repo; the shared plan is at /ai-team/. Check amp-inbox, act ONLY on a current dispatch.`
 
   it('returns [] for a non-profiled agent even with stale content (carry hazard is profile-only)', () => {
-    expect(lintOnWakePrompt('cd /home/gosub/projects/x.wt/crease && read ai-team/Crease_INSTRUCTIONS.md', 'claude', undefined)).toEqual([])
+    expect(lintOnWakePrompt('cd /home/<user>/projects/x.wt/crease && read ai-team/Crease_INSTRUCTIONS.md', 'claude', undefined)).toEqual([])
   })
 
   it('returns [] for an empty / absent on-wake prompt', () => {
@@ -3303,7 +3303,7 @@ describe('lintOnWakePrompt (#198)', () => {
   })
 
   it('check 1: flags a retired *.wt/ worktree path', () => {
-    const w = lintOnWakePrompt('cd /home/gosub/projects/aimaestro-gateways.wt/crease and start', 'claude', 'worker')
+    const w = lintOnWakePrompt('cd /home/<user>/projects/aimaestro-gateways.wt/crease and start', 'claude', 'worker')
     expect(checks(w)).toContain('retired-worktree-path')
   })
 
@@ -3351,7 +3351,7 @@ describe('lintOnWakePrompt (#198)', () => {
   })
 
   it('a fully-stale codex prompt trips all 3 checks', () => {
-    const stale = 'cd /home/gosub/projects/aimaestro-gateways.wt/whistler && read ai-team/Whistler_INSTRUCTIONS.md then work'
+    const stale = 'cd /home/<user>/projects/aimaestro-gateways.wt/whistler && read ai-team/Whistler_INSTRUCTIONS.md then work'
     expect(checks(lintOnWakePrompt(stale, 'codex', 'worker'))).toEqual(
       ['missing-imperative-follow', 'retired-worktree-path', 'stale-instructions-ref']
     )

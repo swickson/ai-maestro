@@ -1,6 +1,6 @@
 # RELAND hand-merge changelog (review artifact)
 
-Author: CelestIA (dev-aimaestro-bananajr). Reviewer: Watson (different-peer).
+Author: a peer dev (dev-host) (dev-<team>-<role>). Reviewer: a peer dev (prod-host) (different-peer).
 Base branch: `reconcile/reland` (tip 4535f10 = b11deeb + manifest/gate). Restore source: `18f373a` (= v0.30.93 content).
 
 The partition gate (`verify-keep-ours.mjs`) covers keepOurs (==ours) and adoptUpstream (==upstream) deterministically.
@@ -22,7 +22,7 @@ Pure `git checkout 18f373a -- <file>`, no judgment. Gate asserts each == ours@18
 
 ### agent-container/Dockerfile
 - **RESTORED from ours:** `COPY claude-home-merge.cjs ./` + `COPY restoration-gate.cjs ./` (dropped by upstream);
-  the `RUN mkdir -p /restoration-ready && chown -R claude:claude /restoration-ready` block + comment (Han EACCES race, kanban fcabb870).
+  the `RUN mkdir -p /restoration-ready && chown -R claude:claude /restoration-ready` block + comment (an agent EACCES race, kanban fcabb870).
   Coupled: `agent-server.js` (keepOurs) require()s those .cjs; without the COPY + mkdir the container crash-loops on boot.
 - **KEPT as merged (upstream):** everything else — base image, npm globals, all other bind-mount pre-create dirs.
 - Verified by `verify-agent-container-requires.mjs` (every relative require target is COPY'd).
@@ -46,15 +46,16 @@ Pure `git checkout 18f373a -- <file>`, no judgment. Gate asserts each == ours@18
 - **RESTORED from ours:** `handleStartMeeting` URL `?meeting=new&team=${teamId}` (upstream dropped the `meeting=new` param).
 - **KEPT as merged (upstream):** rest of the page (= upstream base).
 
-### scripts/cron-wake-hardin.sh  (RESTORE-then-SCRUB — Decision-7: no hardcoded operator data)
+### scripts/cron-wake-agent.sh  (RESTORE-then-SCRUB — Decision-7: no hardcoded operator data)
 - **RESTORED from ours:** the whole script (upstream had deleted it).
 - **SCRUBBED (differs from BOTH sides — Decision-7):** removed hardcoded operator data → parameterized via env:
-  `AGENT_ID` (was hardcoded Hardin UUID `7ee4d1cc…`, now required env), `API_BASE` (was hardcoded bananajr IP
-  `http://100.112.62.82:23000`, now defaults to `http://localhost:23000`); removed operator name "Shane" from the
-  distill prompt; genericized the schedule-comment path and log prefix (`[cron-hardin]`→`[cron-distill]`).
+  `AGENT_ID` (was hardcoded an agent UUID `7ee4d1cc…`, now required env), `API_BASE` (was hardcoded the dev host IP
+  `<TAILSCALE_IP>:23000`, now defaults to `http://localhost:23000`); removed operator name from the
+  distill prompt; genericized the schedule-comment path and log prefix (`[cron-agent]`→`[cron-distill]`).
   Behavior/logic unchanged. **Reviewer note:** confirm the scrub scope matches Decision-7 intent.
 
 ## Append-disjoint test files (6) — my per-file call; principle = union, no coverage drop, all green
+
 Empirically run against the resolved sources (224/224 pass for these 6; full suite 1111 with gate).
 
 - **tests/services/sessions-service.test.ts** — KEPT theirs (theirs ⊇ ours: +2 `__call` filtering tests, drops nothing). Passes vs my surgical source.
@@ -66,18 +67,18 @@ Empirically run against the resolved sources (224/224 pass for these 6; full sui
 
 ## Build-surfaced regression fix (handMerge, gate-blind)
 
-### types/team.ts  (KAI had cleared on field-presence; build caught a narrowed literal)
+### types/team.ts  (the lead had cleared on field-presence; build caught a narrowed literal)
 - **RESTORED from ours:** line 37 `TeamsFile.version: 1` → `version: 1 | 2`. The merge silently narrowed the
   union (ours@18f373a = `1 | 2`). Our restored keepOurs `lib/team-registry.ts` (lines 48,67) writes `version: 2`
   for the v1→v2 hostId migration → `tsc: Type '2' is not assignable to type '1'`, build-blocking.
 - **KEPT as merged:** line 77 `Team.version: 1` (correct — that's the per-team schema field, not the file envelope)
   and all other merged fields (loopGuard, operatorId/Name, hostId, source). team-registry.ts stays ==ours (gate green).
-- Reported to KAI (msg t7zu6sv). Lesson: field-presence review on handMerge type files must also check
+- Reported to the lead (msg t7zu6sv). Lesson: field-presence review on handMerge type files must also check
   literal/union-type narrowing.
 - **keepOurs-vs-handMerge determination (for reviewer):** my-fixed types/team.ts is NOT byte-identical to ours —
   it retains a merged field-*ordering* difference (`Team.hostId?` relocated from after `chiefOfStaffId?` to after
   `lastActivityAt`; functionally identical for a TS interface, field order is immaterial). So it stays genuinely
   handMerge (justified), not effectively keepOurs. Only the `TeamsFile.version` literal was restored to ours.
 
-## Pre-cleared by KAI
+## Pre-cleared by the lead
 - `services/headless-router.ts` — 216 route-patterns ⊇ our 199; Users subsystem registered; no P0. (Confirmed, no action.)

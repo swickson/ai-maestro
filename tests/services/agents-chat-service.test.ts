@@ -8,7 +8,7 @@
  * `runtime.cancelCopyMode` before `sendKeys`. When a recipient pane was in
  * copy-mode (e.g. operator scrolled with mouse-on tmux), `tmux send-keys -l`
  * hangs the calling request indefinitely AND drops the payload on copy-mode
- * exit. Verified empirically 2026-04-28 on Holmes/Rollie controlled repro.
+ * exit. Verified empirically 2026-04-28 on the prod host with a worker agent (controlled repro).
  *
  * The other two callsites (wakeAgent, sendCommand) already had the prelude;
  * this test pins the third.
@@ -173,20 +173,20 @@ describe('sendChatMessage', () => {
   // agent.sessions?.some(s => s.status === 'online') which 400'd cloud agents
   // before sendKeysToAgent could dispatch. Switched to agentSessionReady which
   // recognizes containerName as proxy-for-ready.
-  it('cloud agent: gate passes when sessions[] reports offline (cloud-Luke shape)', async () => {
+  it('cloud agent: gate passes when sessions[] reports offline (offline-cloud shape)', async () => {
     mockAgentRegistry.getAgent.mockReturnValue({
       id: 'cloud-uuid',
-      name: 'cloud-luke',
+      name: 'cloud-agent2',
       sessions: [{ status: 'offline' }],
-      deployment: { type: 'cloud', cloud: { containerName: 'aim-cloud-luke' } },
+      deployment: { type: 'cloud', cloud: { containerName: 'aim-cloud-agent2' } },
     })
 
     const result = await sendChatMessage('cloud-uuid', 'gated send')
 
     expect(result.status).toBe(200)
     expect(mockContainerUtils.sendKeysToContainer).toHaveBeenCalledWith(
-      'aim-cloud-luke',
-      'cloud-luke',
+      'aim-cloud-agent2',
+      'cloud-agent2',
       'gated send',
       { literal: true, enter: true },
     )
@@ -204,7 +204,7 @@ describe('sendChatMessage', () => {
 //   4. legacy cloud   — cancelCopyModeInContainer then sendKeysToContainer(safeInjection) + Enter
 //
 // Symmetric to the sendChatMessage ordering pin above. Empirical e2e covers
-// the regression today (Holmes/Rollie 2026-04-28); these are structural
+// the regression today (the prod host, 2026-04-28); these are structural
 // regression guards against future drift.
 // ============================================================================
 

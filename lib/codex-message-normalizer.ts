@@ -24,8 +24,8 @@
  * Normalizing in the service layer (per the Gemini/Antigravity precedent)
  * keeps ChatView provider-agnostic — no client-side branching on `program`.
  *
- * Empirically pinned from live cloud-Codex rollouts (Gushie ca9d97c2,
- * Holmes 2026-06-15, issue #159). Reasoning/tool-call items are intentionally
+ * Empirically pinned from live cloud-Codex rollouts (an agent ca9d97c2,
+ * the prod host 2026-06-15, issue #159). Reasoning/tool-call items are intentionally
  * out of scope for this first pass (a follow-up can map `reasoning` → a
  * thinking block, mirroring the Claude path, once it's worth the surface).
  */

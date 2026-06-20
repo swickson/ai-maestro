@@ -23,15 +23,15 @@ Discord (and other platform gateways) can't initiate DMs without knowing the use
 {
   // Core identity
   "id": "uuid-v4",                          // Stable internal identifier
-  "displayName": "Shane Wickson",           // Human-readable name
-  "aliases": ["gosub", "shane", "swick"],   // Cross-host nicknames, case-insensitive match
+  "displayName": "Operator Name",           // Human-readable name
+  "aliases": ["operator", "op", "admin"],   // Cross-host nicknames, case-insensitive match
 
   // Platform mappings — one entry per platform account
   "platforms": [
     {
       "type": "discord",                    // Gateway type identifier
       "platformUserId": "123456789012345",  // Platform-native user ID
-      "handle": "gosub",                    // Platform display name / username
+      "handle": "operator",                 // Platform display name / username
       "context": {                          // Platform-specific metadata
         "guildIds": ["987654321098765"]      // Discord: which guilds this mapping applies to
       }
@@ -39,15 +39,15 @@ Discord (and other platform gateways) can't initiate DMs without knowing the use
     {
       "type": "slack",
       "platformUserId": "U0ABC123DEF",
-      "handle": "shane.wickson",
+      "handle": "operator.name",
       "context": {
         "workspaceId": "T0ABC123"
       }
     },
     {
       "type": "email",
-      "platformUserId": "shane@example.com",
-      "handle": "shane@example.com",
+      "platformUserId": "operator@example.com",
+      "handle": "operator@example.com",
       "context": {}
     }
   ],
@@ -92,7 +92,7 @@ The in-memory directory supports these lookup patterns:
 | `byId(uuid)` | Canonical reference |
 | `byAlias(string)` | AMP message `@mention` resolution |
 | `byPlatform(type, platformUserId)` | Inbound message → internal user |
-| `byDisplayName(string)` | Lookup by full name (e.g., "notify Shane Wickson") |
+| `byDisplayName(string)` | Lookup by full name (e.g., "notify Operator Name") |
 | `byRole(role)` | List all operators, list all externals |
 
 ---
@@ -108,8 +108,8 @@ All under `/api/users/`.
 | `POST` | `/api/users` | Create user |
 | `PATCH` | `/api/users/:id` | Update user fields |
 | `DELETE` | `/api/users/:id` | Remove user |
-| `GET` | `/api/users/resolve?alias=gosub` | Resolve alias/handle to user |
-| `GET` | `/api/users/resolve?displayName=Shane+Wickson` | Resolve by full display name |
+| `GET` | `/api/users/resolve?alias=operator` | Resolve alias/handle to user |
+| `GET` | `/api/users/resolve?displayName=Operator+Name` | Resolve by full display name |
 | `GET` | `/api/users/resolve?platform=discord&platformUserId=123` | Resolve platform ID to user |
 
 **Resolve endpoint behavior:**
@@ -126,7 +126,7 @@ All under `/api/users/`.
 - Define TypeScript types for the user record schema
 - Implement file-based registry (`lib/user-directory.ts`) with CRUD + lookup methods
 - Add REST API endpoints (`app/api/users/`)
-- Seed with Shane's record (operator, Discord + any other active platforms)
+- Seed with the operator's record (operator, Discord + any other active platforms)
 - Unit tests for CRUD and resolution logic
 
 ### Phase 2 — Gateway Integration
@@ -134,8 +134,8 @@ All under `/api/users/`.
 - Gateways call `/api/users/resolve` on inbound messages to map platform IDs to internal users
 - Auto-create external users on first inbound (role='external', trustLevel='none')
 - Gateways cache resolved users locally (mirrors existing agent-resolver pattern)
-- Replace `OPERATOR_*_IDS` env vars with directory lookups in Watson (Discord) and DataIA (Slack/gateway)
-- Watson and DataIA coordinate on the trust-check migration since Watson has context on the current content-security trust model
+- Replace `OPERATOR_*_IDS` env vars with directory lookups in a peer dev (prod-host) (Discord) and an agent (Slack/gateway)
+- The two agents coordinate on the trust-check migration since the prod-host peer has context on the current content-security trust model
 
 ### Phase 3 — Outbound DM Routing
 

@@ -2,7 +2,7 @@
 #
 # Cron job: Wake the distill agent and prompt the daily distill process
 #
-# Schedule (example): 0 6 * * * /path/to/ai-maestro/scripts/cron-wake-hardin.sh
+# Schedule (example): 0 6 * * * /path/to/ai-maestro/scripts/cron-wake-agent.sh
 #
 # Configuration (override via environment; no operator data is hardcoded):
 #   AGENT_ID   — required; the agent UUID to wake (e.g. export AGENT_ID=...)

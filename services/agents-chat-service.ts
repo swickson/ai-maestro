@@ -392,7 +392,7 @@ export async function sendChatMessage(
  *
  * The cancelCopyMode→sendKeys ordering invariant is load-bearing: tmux
  * send-keys -l against a copy-mode pane hangs the calling process AND drops
- * the payload (kanban 96d317df / Holmes empirical 2026-04-28). Same prelude
+ * the payload (kanban 96d317df / prod-host empirical 2026-04-28). Same prelude
  * pattern as wakeAgent + sendCommand + sendChatMessage.
  */
 export async function injectMeetingPrompt(

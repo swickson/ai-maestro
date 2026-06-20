@@ -69,7 +69,7 @@ function createMeeting(overrides: Record<string, any> = {}) {
 }
 
 function humanCtx(text: string, meetingId = 'meeting-1'): any {
-  return { meetingId, senderId: 'maestro', senderName: 'Shane', isHuman: true, messageText: text }
+  return { meetingId, senderId: 'maestro', senderName: 'the operator', isHuman: true, messageText: text }
 }
 
 function agentCtx(agentId: string, text: string, meetingId = 'meeting-1'): any {
@@ -294,7 +294,7 @@ describe('routeMessage — edge cases', () => {
   })
 
   it('returns blocked for unknown meeting', () => {
-    const result = routeMessage({ meetingId: 'bad-id', senderId: 'maestro', senderName: 'Shane', isHuman: true, messageText: 'hello' })
+    const result = routeMessage({ meetingId: 'bad-id', senderId: 'maestro', senderName: 'the operator', isHuman: true, messageText: 'hello' })
     expect(result.blocked).toBe(true)
     expect(result.reason).toContain('not found')
   })

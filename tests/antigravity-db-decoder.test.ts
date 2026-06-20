@@ -36,7 +36,7 @@ import {
 function encodeVarint(n: number): Buffer {
   // BigInt-accumulated so values > 2^32 (e.g. a millisecond-scale timestamp)
   // encode faithfully — a `>>>= 7` / `& 0x7f` encoder silently coerces through
-  // uint32 and would mis-encode the seconds-vs-ms drift fixture (Columbo #238).
+  // uint32 and would mis-encode the seconds-vs-ms drift fixture (PR-review-agent #238).
   const out: number[] = []
   let v = BigInt(n)
   while (v > 0x7fn) {
@@ -178,7 +178,7 @@ describe('decodeAntigravityDb (#232)', () => {
     expect(msgs[0].message.content[0].text).toBe('↳ view_file')
   })
 
-  it('sees a WAL-only commit (no checkpoint) — read-through-WAL (Columbo #233)', () => {
+  it('sees a WAL-only commit (no checkpoint) — read-through-WAL (PR-review-agent #233)', () => {
     // Regression for the WAL-blind watcher bug: a live commit lands in <db>-wal
     // and the main .db mtime does NOT move until checkpoint. The readonly decode
     // must still see it — which is exactly why the live watcher has to watch the
@@ -338,7 +338,7 @@ describe('extractGenUsage / extractAntigravityUsage — token accounting', () =>
   })
 
   it('toUsageContract projects onto the LOCKED cross-language wire shape', () => {
-    // Locked 2026-06-16 with KAI + Sam — the exact JSON the Ziggy Python leg
+    // Locked 2026-06-16 with the lead + an agent — the exact JSON the Ziggy Python leg
     // consumes. Field names + structure must not drift without re-locking.
     const dbPath = writeGenDb('contract.db', [
       genMetadataPayload({ input: 21641, output: 195, thinking: 58, tsSec: 1780940507, modelId: 'gemini-3.5-flash-low' }),
@@ -373,7 +373,7 @@ describe('extractGenUsage / extractAntigravityUsage — token accounting', () =>
     // (stable agent-uuid + conv-uuid suffix) and the DB can attribute per-agent —
     // NOT exclude. The wrapper must not normalize the path.
     const dbPath = writeGenDb('attrib.db', [genMetadataPayload({ input: 100, output: 10, thinking: 5 })])
-    const foreignLikePath = '/home/gosub/.aimaestro/agents/d22088ae-foreign/antigravity-app-data/conversations/x.db'
+    const foreignLikePath = '/home/peer/.aimaestro/agents/d22088ae-foreign/antigravity-app-data/conversations/x.db'
     expect(toUsageContract(extractAntigravityUsage(dbPath)!, foreignLikePath).sourcePath).toBe(foreignLikePath)
   })
 
@@ -400,7 +400,7 @@ describe('extractGenUsage / extractAntigravityUsage — token accounting', () =>
     const gens = extractAntigravityUsage(dbPath)!.generations
     // The ms value must round-trip FAITHFULLY (not uint32-wrapped) so this proves
     // the guard catches a genuine seconds↔ms wire value, not a coincidentally
-    // out-of-range wrapped one (Columbo #238).
+    // out-of-range wrapped one (PR-review-agent #238).
     expect(gens[0].tsSec).toBe(goodSec)
     expect(gens[1].tsSec).toBe(msSlip)
     expect(gens[2].tsSec).toBeNull()

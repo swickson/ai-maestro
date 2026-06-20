@@ -1,10 +1,10 @@
 # Cloud Agent MCP Server Mount Strategy
 
-**Author:** KAI (dev-aimaestro-admin)
+**Author:** the lead (dev-<team>-<role>)
 **Date:** 2026-04-25
 **Status:** Approved
 **Decision:** Option C — hybrid policy. Per-container spawn (Option B) is the default; promotion to a host daemon (Option A) is a deliberate, named exception requiring host-only resources, genuinely shared state across agents, or a per-process footprint that doesn't scale.
-**Related:** [CLOUD-AGENTS.md](CLOUD-AGENTS.md), Iron Syndicate kanban `d087f610` (Rollie Pattern B), `4df7da98` (Mason + Optic)
+**Related:** [CLOUD-AGENTS.md](CLOUD-AGENTS.md), the dev team kanban `d087f610` (a worker agent, Pattern B), `4df7da98` (agents, Pattern A)
 
 ---
 
@@ -37,7 +37,7 @@ The question only becomes load-bearing for a narrower set:
 - MCPs that are heavy enough that one process per agent is wasteful (uncommon today; possible later for vector-DB-backed MCPs or large-context retrieval servers).
 - MCPs whose state is *intended* to be shared across agents (a shared knowledge graph that multiple agents read/write).
 
-Rollie (`d087f610`) is the first concrete case where this comes up, because Pattern B already couples its container to host process state via the live `ziggy` bind. The decision shape is general; Rollie just brings it to a head.
+A worker agent (`d087f610`) is the first concrete case where this comes up, because Pattern B already couples its container to host process state via the live `ziggy` bind. The decision shape is general; the worker agent just brings it to a head.
 
 ---
 
@@ -110,7 +110,7 @@ Rationale:
 1. The current MCP catalog is tier 1 dominated. Tier 1 is already B-shaped via `npx`. Choosing C-with-B-default keeps the default path consistent with what already works.
 2. There is no MCP today that *requires* A. Adding A as a global mandate now would be infrastructure for a need we haven't hit. CLAUDE.md guidance: don't design for hypothetical future requirements.
 3. The cases where A wins (host-only resource, genuinely shared state, true heavyweight) are visible at the point of adding the MCP. Naming A as a deliberate exception puts the decision at the right moment — when the operator knows the server's coupling profile.
-4. For Rollie specifically, the live ziggy bind already makes some host coupling unavoidable, but that's bind-mount coupling, not MCP-daemon coupling. Rollie's MCP needs (whatever they end up being) can start as B and get promoted to A only if a concrete trigger appears.
+4. For the worker agent specifically, the live ziggy bind already makes some host coupling unavoidable, but that's bind-mount coupling, not MCP-daemon coupling. The worker agent's MCP needs (whatever they end up being) can start as B and get promoted to A only if a concrete trigger appears.
 
 **Concrete proposal for `CLOUD-AGENTS.md`:** add a short subsection under "Adding an MCP server or tool" that says: *"By default, MCP servers run inside the agent's container (per-container spawn). Promote to a host daemon only when the MCP needs host-only resources, genuinely shared state across agents, or has a per-process footprint that doesn't scale. Document the daemon's host-side lifecycle (systemd unit, log path, restart policy) when you do."*
 
@@ -120,7 +120,7 @@ Rationale:
 
 If C is adopted:
 
-- **Rollie's `d087f610` becomes unblocked** with no MCP-side commitments — Rollie ships with Pattern B mounts (live ziggy + ziggy-ingest binaries + home), and any MCP servers it ends up using start in-container. If a specific MCP later needs A, that's a separate small ticket, not a blocker.
+- **The worker agent's `d087f610` becomes unblocked** with no MCP-side commitments — the worker agent ships with Pattern B mounts (live ziggy + ziggy-ingest binaries + home), and any MCP servers it ends up using start in-container. If a specific MCP later needs A, that's a separate small ticket, not a blocker.
 - **`CLOUD-AGENTS.md` gets a small follow-up edit** to capture the default + exception rule. One paragraph.
 - **No new infrastructure work today.** No systemd units, no daemon supervisors, no socket-bind plumbing in `agents-docker-service.ts`. (Tier-2 `sandbox.mounts[]` already supports binding an arbitrary socket if/when an A-shaped MCP shows up.)
 
@@ -139,15 +139,15 @@ If B is adopted as the global default instead:
 
 ## Resolution notes
 
-- **Rollie is Option B.** Confirmed by Shane: ziggy's MCP server is small, and the only shared-state surface (the backend database) lives outside the MCP server itself — so per-container spawn introduces no real duplication cost and no shared-state penalty.
+- **The worker agent is Option B.** Confirmed by the operator: ziggy's MCP server is small, and the only shared-state surface (the backend database) lives outside the MCP server itself — so per-container spawn introduces no real duplication cost and no shared-state penalty.
 - **No MCP on the current roadmap requires A.** The hybrid policy starts with no named exceptions. The first server that needs A will be the one that names itself.
-- **Hutch's on-wake instructions:** Watson's call. Watson owns the Rollie/Holmes Pattern B work and is the natural decider on whether Hutch needs a heads-up about the future A-promotion path.
+- **The ops agent's on-wake instructions:** a peer dev (prod-host)'s call. The peer dev owns the worker-agent/prod-host Pattern B work and is the natural decider on whether the ops agent needs a heads-up about the future A-promotion path.
 
 ---
 
 ## References
 
 - [CLOUD-AGENTS.md](CLOUD-AGENTS.md) — operator guide, 3-tier flow, Pattern A/B definitions
-- Iron Syndicate kanban `d087f610` (Rollie Pattern B)
-- Iron Syndicate kanban `4df7da98` (Mason + Optic, Pattern A — for context on the no-MCP-daemon-question case)
+- The dev team kanban `d087f610` (a worker agent, Pattern B)
+- The dev team kanban `4df7da98` (agents, Pattern A — for context on the no-MCP-daemon-question case)
 - [GRAPH-DATABASE-DECISION.md](GRAPH-DATABASE-DECISION.md) — format precedent

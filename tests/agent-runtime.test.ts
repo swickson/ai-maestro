@@ -11,7 +11,7 @@
  * /, (paste buffer) from =) is consumed as the prompt's argument character.
  * The overlay closes, the pane stays in copy-mode, and the next sendKeys
  * silently lands in copy-mode key handling rather than the running program.
- * Verified 2026-04-29 via Shane's Rollie screenshot showing the (jump
+ * Verified 2026-04-29 via a screenshot of an agent showing the (jump
  * backward) overlay during stuck AMP delivery.
  */
 

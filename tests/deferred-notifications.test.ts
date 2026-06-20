@@ -14,16 +14,16 @@ import {
 // Minimal NotificationOptions factory (only the fields the queue/flush touch).
 function opts(messageId: string, over: Record<string, unknown> = {}) {
   return {
-    agentName: 'reed',
-    agentId: 'reed-id',
-    fromName: 'zach',
+    agentName: 'worker-agent',
+    agentId: 'worker-agent-id',
+    fromName: 'orchestrator',
     subject: 'task #334',
     messageId,
     ...over,
   } as any
 }
 
-const SESS = 'dev-n4safety-engineer'
+const SESS = 'dev-team-engineer'
 
 beforeEach(() => {
   clearDeferred(SESS)
@@ -31,7 +31,7 @@ beforeEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// Pure queue — the resurface bookkeeping (encodes the Reed strand at unit level).
+// Pure queue — the resurface bookkeeping (encodes the worker-agent strand at unit level).
 // ---------------------------------------------------------------------------
 describe('deferred-notifications queue', () => {
   it('records a busy-deferred wake and reports it pending', () => {
@@ -96,7 +96,7 @@ describe('deferred-notifications queue', () => {
 })
 
 // ---------------------------------------------------------------------------
-// flushDeferredNotifications — resurface on idle (the Reed fix end-to-end).
+// flushDeferredNotifications — resurface on idle (the worker-agent fix end-to-end).
 // Mocks notifyAgent's send path + the unread query so we can drive each branch.
 // ---------------------------------------------------------------------------
 const sendKeys = vi.fn()
@@ -110,11 +110,11 @@ vi.mock('@/lib/agent-runtime', () => ({
   }),
 }))
 vi.mock('@/lib/agent-registry', () => ({
-  getAgent: () => ({ name: 'reed', sessions: [{ index: 0 }], workingDirectory: '/wd' }),
-  getAgentByName: () => ({ name: 'reed', sessions: [{ index: 0 }], workingDirectory: '/wd' }),
+  getAgent: () => ({ name: 'worker-agent', sessions: [{ index: 0 }], workingDirectory: '/wd' }),
+  getAgentByName: () => ({ name: 'worker-agent', sessions: [{ index: 0 }], workingDirectory: '/wd' }),
 }))
 vi.mock('@/lib/hosts-config-server.mjs', () => ({
-  getSelfHostId: () => 'bananajr',
+  getSelfHostId: () => 'the-dev-host',
   isSelf: () => true,
 }))
 vi.mock('@/lib/container-utils', () => ({ sendKeysToContainer: vi.fn() }))
@@ -139,57 +139,57 @@ describe('flushDeferredNotifications (resurface on idle)', () => {
     sendKeys.mockClear()
     getInjectReadinessAsync.mockReset()
     getAgentUnreadCount.mockReset()
-    clearDeferred('reed')
+    clearDeferred('worker-agent')
   })
 
   it('no-op when nothing is queued', async () => {
-    await flushDeferredNotifications('reed')
+    await flushDeferredNotifications('worker-agent')
     expect(sendKeys).not.toHaveBeenCalled()
   })
 
-  it('REED REGRESSION: a busy-deferred wake resurfaces (sends) once the agent is idle + has unread', async () => {
-    recordDeferred('reed', opts('m1'))
+  it('WORKER-AGENT REGRESSION: a busy-deferred wake resurfaces (sends) once the agent is idle + has unread', async () => {
+    recordDeferred('worker-agent', opts('m1'))
     getAgentUnreadCount.mockResolvedValue(1)
     getInjectReadinessAsync.mockResolvedValue({ safeToSubmit: true, terminalIdle: true, reason: 'idle and clear' })
 
-    await flushDeferredNotifications('reed')
+    await flushDeferredNotifications('worker-agent')
 
     expect(sendKeys).toHaveBeenCalled() // re-pushed the wake into the now-idle pane
-    expect(hasDeferred('reed')).toBe(false) // cleared on successful resurface
+    expect(hasDeferred('worker-agent')).toBe(false) // cleared on successful resurface
   })
 
   it('DEDUP edge: skips + clears (no re-wake) when the agent already drained (unread == 0)', async () => {
-    recordDeferred('reed', opts('m1'))
+    recordDeferred('worker-agent', opts('m1'))
     getAgentUnreadCount.mockResolvedValue(0)
 
-    await flushDeferredNotifications('reed')
+    await flushDeferredNotifications('worker-agent')
 
     expect(sendKeys).not.toHaveBeenCalled() // no spurious wake
-    expect(hasDeferred('reed')).toBe(false) // cleared (drained meanwhile)
+    expect(hasDeferred('worker-agent')).toBe(false) // cleared (drained meanwhile)
   })
 
   it('stays queued when the pane went BUSY again at flush time (re-defers, retries next idle)', async () => {
-    recordDeferred('reed', opts('m1'))
+    recordDeferred('worker-agent', opts('m1'))
     getAgentUnreadCount.mockResolvedValue(1)
     getInjectReadinessAsync.mockResolvedValue({ safeToSubmit: false, terminalIdle: false, reason: 'terminal busy (mid-generation)' })
 
-    await flushDeferredNotifications('reed')
+    await flushDeferredNotifications('worker-agent')
 
     expect(sendKeys).not.toHaveBeenCalled()
-    expect(hasDeferred('reed')).toBe(true) // survives for the next idle transition
+    expect(hasDeferred('worker-agent')).toBe(true) // survives for the next idle transition
   })
 })
 
 // ---------------------------------------------------------------------------
 // listPendingSessions + the reliability SWEEP — the fix for the broadcast being
-// cut by the hook's process.exit (Holmes .57 resurface miss). The sweep re-flushes
+// cut by the hook's process.exit (the prod host .57 resurface miss). The sweep re-flushes
 // pending sessions on a timer, independent of the (racy) idle broadcast.
 // ---------------------------------------------------------------------------
 describe('listPendingSessions', () => {
   beforeEach(() => {
     clearDeferred('a')
     clearDeferred('b')
-    clearDeferred('reed') // a prior describe may leave 'reed' queued (busy-requeue case)
+    clearDeferred('worker-agent') // a prior describe may leave 'worker-agent' queued (busy-requeue case)
   })
 
   it('lists sessions with at least one non-expired deferred entry', () => {
@@ -211,30 +211,30 @@ describe('sweepDeferredNotifications (reliable trigger, broadcast-independent)',
     sendKeys.mockClear()
     getInjectReadinessAsync.mockReset()
     getAgentUnreadCount.mockReset()
-    clearDeferred('reed')
+    clearDeferred('worker-agent')
     stopDeferredSweep()
   })
 
-  it('re-flushes a pending session WITHOUT any broadcast (the Holmes fix): idle + unread -> resurface', async () => {
-    recordDeferred('reed', opts('m1'))
+  it('re-flushes a pending session WITHOUT any broadcast (the prod-host fix): idle + unread -> resurface', async () => {
+    recordDeferred('worker-agent', opts('m1'))
     getAgentUnreadCount.mockResolvedValue(1)
     getInjectReadinessAsync.mockResolvedValue({ safeToSubmit: true, terminalIdle: true, reason: 'idle and clear' })
 
     await sweepDeferredNotifications() // no broadcastActivityUpdate involved
 
     expect(sendKeys).toHaveBeenCalled() // resurfaced purely from the timer-driven sweep
-    expect(hasDeferred('reed')).toBe(false)
+    expect(hasDeferred('worker-agent')).toBe(false)
   })
 
   it('leaves a still-busy session queued (re-defers), so a later sweep retries', async () => {
-    recordDeferred('reed', opts('m1'))
+    recordDeferred('worker-agent', opts('m1'))
     getAgentUnreadCount.mockResolvedValue(1)
     getInjectReadinessAsync.mockResolvedValue({ safeToSubmit: false, terminalIdle: false, reason: 'agent busy (hook: mid-turn)' })
 
     await sweepDeferredNotifications()
 
     expect(sendKeys).not.toHaveBeenCalled()
-    expect(hasDeferred('reed')).toBe(true)
+    expect(hasDeferred('worker-agent')).toBe(true)
   })
 
   it('is a no-op when nothing is pending', async () => {

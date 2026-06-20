@@ -566,7 +566,7 @@ export function broadcastActivityUpdate(
   // 'waiting_for_input' ~60s later (a backstop if the idle edge was missed/raced). The
   // flush re-gates via notifyAgent's full court-safe readiness probe, so a premature
   // 'idle' that races a continuing turn (e.g. a per-tool-round Stop) is caught by
-  // isPaneBusy and re-deferred — no court (KAI's flush-time idle re-check edge).
+  // isPaneBusy and re-deferred — no court (the lead's flush-time idle re-check edge).
   if (status === 'idle' || status === 'waiting_for_input') {
     const flushTarget = sessionName || (agentId ? getAgent(agentId)?.name : undefined)
     if (flushTarget) {
@@ -747,7 +747,7 @@ export async function createSession(params: CreateSessionParams): Promise<Servic
   // a no-program POST falls through to 'claude-code' and the dispatch
   // launches `claude` instead of `agy`. agents-core-service.ts wake path
   // already does this; mirroring here closes PR-3. Banked empirical:
-  // LucIA (dev-ziggy-fullstack, Milo) 2026-05-22.
+  // an agent (dev-<team>-<role>, the laptop) 2026-05-22.
   const selectedProgram = (program || registeredAgent?.program || 'claude-code').toLowerCase()
   if (selectedProgram !== 'none' && selectedProgram !== 'terminal') {
     // Single source of truth (lib/program-resolver). NOTE: openclaw is

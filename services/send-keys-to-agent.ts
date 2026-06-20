@@ -5,7 +5,7 @@
  *
  * Closes 6f5562f4 (cloud agents cannot participate in meetings) +
  * 6c3f4357 (extend /api/agents/<id>/chat to handle cloud agents) plus
- * Watson messages-service finding by centralizing the cloud-vs-host
+ * a peer dev (prod-host) messages-service finding by centralizing the cloud-vs-host
  * dispatch that four call sites previously had to (re)derive.
  *
  * The cancelCopyMode→sendKeys ordering invariant pinned by PR #111 is

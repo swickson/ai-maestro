@@ -26,7 +26,7 @@ const os = require('os');
 // a silent-no-op for cloud agents — every fetch from inside the container
 // hit the container's own loopback, not the host's maestro server, and the
 // drain/notify paths returned null in catch. Six sites used to hardcode it
-// (kanban filed by KAI in Iron Syndicate 2026-05-05 follow-up meeting).
+// (kanban filed by the lead in the dev team 2026-05-05 follow-up meeting).
 const MAESTRO_HOST_URL = process.env.AIMAESTRO_HOST_URL
     || process.env.AMP_MAESTRO_URL
     || 'http://localhost:23000';

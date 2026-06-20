@@ -70,7 +70,7 @@ export function updatePresence(
 
       for (const [sessionName, statusInfo] of agentStatuses.entries()) {
         // Check if this session belongs to this agent
-        // Sessions are named after agents (e.g., dev-aimaestro-admin)
+        // Sessions are named after agents (e.g., dev-<team>-<role>)
         const activity = sessionActivity.get(sessionName)
         if (activity) {
           lastActivityTs = new Date(activity).toISOString()

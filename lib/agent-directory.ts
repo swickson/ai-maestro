@@ -36,7 +36,7 @@ const SYNC_INTERVAL = 60 * 1000
 export interface AgentDirectoryEntry {
   agentId?: string              // Agent UUID — for cross-referencing with meeting participants
   name: string                  // Agent name (e.g., "backend-api")
-  label?: string                // Display label (e.g., "Watson") — for UI and @mention resolution
+  label?: string                // Display label (e.g., "a peer dev (prod-host)") — for UI and @mention resolution
   hostId: string                // Host where agent lives
   hostUrl?: string              // URL to reach the host
   ampAddress?: string           // Full AMP address (e.g., "backend-api@acme.aimaestro.local")
@@ -61,8 +61,8 @@ export interface AgentDirectory {
 // Canonical entry key. agentId (a globally-unique UUID) is the only collision-
 // free key — agent names (and even hostId:name) collide across hosts and churn
 // on rename/recreate, which silently shadowed one agent's identity behind
-// another's under the old name-keyed map (#42; e.g. milo-dock "Antonia" vs
-// holmes "Watson", both named dev-aimaestro-holmes). Entries without an agentId
+// another's under the old name-keyed map (#42; e.g. the laptop "an agent" vs
+// the prod host "a peer dev (prod-host)", both named dev-<team>-<role>). Entries without an agentId
 // (legacy / non-AMP-registered) fall back to a hostId:name composite, which is
 // at least per-host unique.
 function entryKey(e: { agentId?: string; hostId: string; name: string }): string {

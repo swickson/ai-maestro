@@ -3,12 +3,12 @@ import { stripAvatarPaths } from '@/lib/meeting-inject-utils'
 
 describe('stripAvatarPaths', () => {
   it('strips relative-path avatar references with spaces in filename', () => {
-    const msg = 'see ../../../../mnt/agents/rollie/vault/.assets/Small Avatar.png here'
+    const msg = 'see ../../../../mnt/agents/agent-a/vault/.assets/Small Avatar.png here'
     expect(stripAvatarPaths(msg)).toBe('see [avatar] here')
   })
 
   it('strips absolute /mnt/agents avatar paths', () => {
-    const msg = 'my avatar is /mnt/agents/celestia/avatar.png thanks'
+    const msg = 'my avatar is /mnt/agents/agent-b/avatar.png thanks'
     expect(stripAvatarPaths(msg)).toBe('my avatar is [avatar] thanks')
   })
 

@@ -38,8 +38,8 @@ describe('ensureClaudeHomeTheme', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  // ── Real-world shape: Hale-on-Holmes 2026-05-22 (numStartups=23, theme dropped) ──
-  it('injects theme=dark on Hale-shape post-launch file, preserving all other fields', () => {
+  // ── Real-world shape: an-agent-on-prod-host 2026-05-22 (numStartups=23, theme dropped) ──
+  it('injects theme=dark on agent-shape post-launch file, preserving all other fields', () => {
     const original = {
       numStartups: 23,
       tipsHistory: {
@@ -144,7 +144,7 @@ describe('ensureClaudeHomeTheme', () => {
     expect(fs.statSync(claudeHomePath).mode & 0o777).toBe(0o600)
   })
 
-  it('running twice on the same Hale-shape file is a no-op the second time', () => {
+  it('running twice on the same agent-shape file is a no-op the second time', () => {
     fs.writeFileSync(claudeHomePath, JSON.stringify({ numStartups: 23, tipsHistory: {} }))
 
     const first = ensureClaudeHomeTheme(claudeHomePath)
