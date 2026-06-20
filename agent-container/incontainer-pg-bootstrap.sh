@@ -124,6 +124,21 @@ log "migrating in $(pwd) against loopback: ${MIGRATE_CMD}"
 DATABASE_URL="${LOOPBACK_DSN}" bash -c "${MIGRATE_CMD}" \
   || { log "FATAL: migrate command failed (${MIGRATE_CMD}) — NOT writing the success fragment"; exit 1; }
 
+# --- anti-false-green: verify the migrate actually produced schema ------------
+# A migrate that exits 0 but produced NO schema (a no-op command, or a failure
+# swallowed upstream) would still let an EMPTY loopback DB pass the suite's
+# DSN-value assertion. Require the loopback DB to actually have tables before we
+# declare success. GENERIC (public-table count) on purpose — NOT _prisma_migrations
+# or a named table — so the check stays team-agnostic for non-Prisma migrate cmds.
+verify_tables="$(psql -h localhost -p "${PGPORT}" -U postgres -d "${PG_DB}" -tAc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null)" \
+  || { log "FATAL: post-migrate verification could not query db '${PG_DB}'"; exit 1; }
+if [ "${verify_tables:-0}" -lt 1 ]; then
+  log "FATAL: migrate exited 0 but db '${PG_DB}' has no public tables — refusing success (would false-green an empty DB)"
+  exit 1
+fi
+log "post-migrate check: db '${PG_DB}' has ${verify_tables} public table(s)"
+
 # Hand the loopback DSN to the integration suite via TEST_DATABASE_URL. The N4
 # suite config resolves TEST_DATABASE_URL ?? DATABASE_URL ?? .env and asserts
 # loopback (the suite-config assert), so this is what makes the suite hit loopback even
