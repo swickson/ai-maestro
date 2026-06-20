@@ -18,15 +18,21 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 2
 
-# KEEP — public, never flag:
-#   swickson/      GitHub org in URLs/remotes/submodule
-#   23blocks       product / upstream brand
-#   leak-scan      this scanner's own docs
-#   '[A-Z][a-z]+(IA|AI)'  agent-name-generation ALIAS POOLS (generic name options,
-#                  e.g. CelestIA/LeoAI in FEMALE_ALIASES/MALE_ALIASES) — not refs
-KEEP_RE="swickson/|23blocks|leak-scan|'[A-Za-z]+(IA|AI)'[,[:space:]]"
+# KEEP — public terms that are NOT leaks. We STRIP these from each candidate
+# line before re-testing the denylist, so a real token sharing a line with a
+# KEEP term is still caught (dropping whole KEEP lines would be a false-negative
+# hole — credit: review of this scanner):
+#   swickson/<repo>       GitHub org in URLs/remotes/submodule
+#   23blocks<...>         product / upstream brand
+#   '<Name>IA' / '<Name>AI'  agent-name-generation alias-pool entries (generic
+#                            options in FEMALE_ALIASES/MALE_ALIASES — not refs)
+strip_keep() {
+  sed -E "s@swickson/[A-Za-z0-9._-]+@@g; s/23blocks[A-Za-z0-9-]*//g; s/'[A-Za-z]+(IA|AI)'//g"
+}
 
-files() { git ls-files | grep -viE 'node_modules|\.next/|package-lock|yarn\.lock|/memory/'; }
+# Exclude vendored/build/memory + this scanner's own files (they reference the
+# mechanism, not real data).
+files() { git ls-files | grep -viE 'node_modules|\.next/|package-lock|yarn\.lock|/memory/|scripts/leak-scan\.sh|\.github/workflows/leak-scan\.yml'; }
 
 if [ -z "${LEAK_DENYLIST:-}" ]; then
   echo "⚠️  LEAK_DENYLIST not set — cannot enforce the private-token denylist."
@@ -38,7 +44,11 @@ fi
 pat=$(printf '%s\n' "$LEAK_DENYLIST" | grep -vE '^[[:space:]]*$' | paste -sd '|' -)
 if [ -z "$pat" ]; then echo "✅ leak-scan: empty denylist, nothing to check."; exit 0; fi
 
-out=$(files | tr '\n' '\0' | xargs -0 grep -InHE -- "($pat)" 2>/dev/null | grep -viE "$KEEP_RE")
+# For each candidate hit, strip KEEP terms then re-test the denylist on what
+# remains — a hit survives only if a real token is present after KEEP removal.
+out=$(files | tr '\n' '\0' | xargs -0 grep -InHE -- "($pat)" 2>/dev/null | while IFS= read -r hit; do
+  if printf '%s\n' "$hit" | strip_keep | grep -qE -- "($pat)"; then printf '%s\n' "$hit"; fi
+done)
 if [ -n "$out" ]; then
   printf '\n❌ leak-scan FOUND private tokens in committed content:\n%s\n\n' "$out"
   echo "Scrub to generic placeholders before merge (CLAUDE.md → Public-repo hygiene)."

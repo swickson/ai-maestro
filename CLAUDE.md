@@ -89,7 +89,7 @@ This script updates ALL version references across the codebase:
 - **No real Tailscale mesh IPs** (example IPs like `100.80.12.6` in docs are fine; the *real* mesh IPs are not).
 - **No mesh addresses** (`dev-<team>-<role>@<org>...` shape only) or org/domain (`<org>`).
 
-**KEEP (these are public, not leaks):** the `swickson/` GitHub org in URLs/remotes, the `23blocks` product/upstream brand, the product names `ai-maestro`/`AI Maestro`/`Ziggy`/`aimaestro.local`, and the agent-name-generation alias pools (`CelestIA`/`LeoAI` as generic options in `FEMALE_ALIASES`/`MALE_ALIASES`).
+**KEEP (these are public, not leaks):** the `swickson/` GitHub org in URLs/remotes, the `23blocks` product/upstream brand, the product names `ai-maestro`/`AI Maestro`/`Ziggy`/`aimaestro.local`, and the agent-name-generation alias pools (the generic `…IA`/`…AI` name options in `FEMALE_ALIASES`/`MALE_ALIASES`).
 
 **Enforcement (the recurrence guard):** `scripts/leak-scan.sh` + the `leak-scan` CI workflow fail any PR that commits private tokens. The denylist of actual private names lives in the **`LEAK_DENYLIST` CI secret** (and `~/.aimaestro/leak-denylist.txt` locally) — **never committed** (that would re-leak it). Run the scan locally before every PR (checklist step 4).
 
