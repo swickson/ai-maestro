@@ -1,10 +1,10 @@
 # Spec: Always-On PR-Review Agent (Multi-Repo Reviewer)
 
-> **Status:** DRAFT / SPEC — *not yet built or verified*. Authored by Watson 2026-06-09 from a design consult with Shane. Items below are **PROPOSED** unless they cite an already-verified mechanism in the [Cloud Coding Agent Runbook](./CLOUD-CODING-AGENT-RUNBOOK.md) (referenced as "Runbook §N").
+> **Status:** DRAFT / SPEC — *not yet built or verified*. Authored by a peer dev (prod-host) 2026-06-09 from a design consult with the operator. Items below are **PROPOSED** unless they cite an already-verified mechanism in the [Cloud Coding Agent Runbook](./CLOUD-CODING-AGENT-RUNBOOK.md) (referenced as "Runbook §N").
 >
 > **Placement decision (open):** this can live as a standalone runbook OR fold into the Cloud Coding Agent Runbook as a "review-only variant" section. The mount/lifecycle/auth machinery is shared; only the *role* differs. Written standalone for now; fold-in points are noted inline.
 >
-> **Decisions locked 2026-06-09 (Shane):** program = **Codex** (currently excellent at PR review in Codex desktop); GitHub identity = **dedicated bot account** (yes); **external-contributor PRs are NEVER in scope** — only N4 Safety Alliance OS + internal repos (Ziggy, AI Maestro, gateways); trigger = **Discord doorbell** (reuses the existing no-open-port Discord watcher) with direct webhooks reserved for where an endpoint is unavoidable (Teams). Remaining open items in §10.
+> **Decisions locked 2026-06-09 (the operator):** program = **Codex** (currently excellent at PR review in Codex desktop); GitHub identity = **dedicated bot account** (yes); **external-contributor PRs are NEVER in scope** — only the project + a second project + internal repos (Ziggy, AI Maestro, gateways); trigger = **Discord doorbell** (reuses the existing no-open-port Discord watcher) with direct webhooks reserved for where an endpoint is unavoidable (Teams). Remaining open items in §10.
 
 ---
 
@@ -32,7 +32,7 @@ Single agent, **two persistent host mounts** at identical host=container paths (
 
 | Mount | Size | Lifecycle | Holds |
 |---|---|---|---|
-| **Home** — e.g. `/home/gosub/agents/<reviewer>` | small, **precious** | survives recreate/image-swap | AMP identity, `gh` token/cred, review log (dedup history), on-wake instructions file, scratch |
+| **Home** — e.g. `/home/<user>/agents/<reviewer>` | small, **precious** | survives recreate/image-swap | AMP identity, `gh` token/cred, review log (dedup history), on-wake instructions file, scratch |
 | **Repo library** — e.g. `/srv/review-repos` | large, **disposable** | wipe/prune freely | working copies of watched repos + their graphify graphs + build/test caches |
 
 **Why two mounts, not one growing workspace** (the refinement on the "single workspace" instinct):
@@ -49,7 +49,7 @@ Single agent, **two persistent host mounts** at identical host=container paths (
 
 ## 3. The repo library (PROPOSED)
 
-- **Persistent + warm** (Shane's instinct, endorsed): the value of always-on is warm state — incremental `git fetch` over full clone, warm graphify graphs, warm build caches.
+- **Persistent + warm** (the operator's instinct, endorsed): the value of always-on is warm state — incremental `git fetch` over full clone, warm graphify graphs, warm build caches.
 - **Explicit repo allowlist.** The agent may only clone/review repos on a configured allowlist (in home or env). Prevents a malformed/forged trigger from cloning arbitrary URLs. **(SECURITY — load-bearing.)**
 - **Prune policy.** Cap library size; `git gc` periodically; drop repos untouched in N days (re-clone is cheap). Mount on a volume with real headroom.
 - **One working copy per repo.** Reviews are serialized (§7), so a single copy per repo is enough; fetch + checkout the PR ref per review. For per-PR test isolation, use a **throwaway `git worktree`** off the copy (Runbook §7.6 topology, reused tactically) and remove it after.
@@ -61,10 +61,10 @@ Single agent, **two persistent host mounts** at identical host=container paths (
 Two identities:
 1. **Mesh / AMP identity** — standard, lives in home (Runbook §5). Used to receive triggers and (optionally) report status.
 2. **GitHub identity — DECIDED: dedicated bot account.** Two ways to implement it; pick by §10:
-   - **(a) Machine user + fine-grained PAT.** ⚠️ **SUPERSEDED — see §10 decision: GitHub App was chosen.** A fine-grained PAT *cannot* enforce least-privilege on these repos: they're owned by the `swickson` personal account where the bot is only a collaborator, and (verified) fine-grained PATs can't scope another personal account's repos + personal-repo collaborators get only the write role. Kept below for the rationale trail only. Create a new GitHub account (e.g. `n4-review-bot`), add it as a **collaborator** (read/triage) on the N4/internal repos (or to the org). Generate a **fine-grained PAT** scoped to exactly those repos with permissions: **Pull requests: Read & Write** (post review comments), **Contents: Read** (clone/fetch), **Metadata: Read**. Nothing else — no admin, no merge, no contents:write. Drop the token in the agent's home: `gh auth login` with the token, or `GH_TOKEN` via extraEnv. Private-repo collaborators are unlimited on current GitHub plans, so a machine user is free.
-   - **(b) GitHub App (the "do it right / scale it" path).** Register an org App with `pull_requests: write` + `contents: read`; install on the repos. Comments post as `n4-review-bot[bot]`; auth is **short-lived installation tokens** (no long-lived PAT to leak). Heavier setup (app reg + private key + token minting). **Bonus convergence:** a GitHub App *also* delivers the `pull_request` webhook — so if you ever go the direct-webhook route (§5 option C), the App is one construct for *both* the review identity and the event source.
+   - **(a) Machine user + fine-grained PAT.** ⚠️ **SUPERSEDED — see §10 decision: GitHub App was chosen.** A fine-grained PAT *cannot* enforce least-privilege on these repos: they're owned by the operator's personal account where the bot is only a collaborator, and (verified) fine-grained PATs can't scope another personal account's repos + personal-repo collaborators get only the write role. Kept below for the rationale trail only. Create a new GitHub account (e.g. `review-bot`), add it as a **collaborator** (read/triage) on the project/internal repos (or to the org). Generate a **fine-grained PAT** scoped to exactly those repos with permissions: **Pull requests: Read & Write** (post review comments), **Contents: Read** (clone/fetch), **Metadata: Read**. Nothing else — no admin, no merge, no contents:write. Drop the token in the agent's home: `gh auth login` with the token, or `GH_TOKEN` via extraEnv. Private-repo collaborators are unlimited on current GitHub plans, so a machine user is free.
+   - **(b) GitHub App (the "do it right / scale it" path).** Register an org App with `pull_requests: write` + `contents: read`; install on the repos. Comments post as `review-bot[bot]`; auth is **short-lived installation tokens** (no long-lived PAT to leak). Heavier setup (app reg + private key + token minting). **Bonus convergence:** a GitHub App *also* delivers the `pull_request` webhook — so if you ever go the direct-webhook route (§5 option C), the App is one construct for *both* the review identity and the event source.
    - Token/identity lives in home so it survives recreate/image-swap (§2).
-3. **Approve rights — comment-only (recommended).** As a *separate* identity he technically *could* `--approve` these PRs (GitHub only blocks self-approval). Keep him **`gh pr comment` / `--request-changes` only** — he advises, humans/Shane merge. Matches the mesh "never merge without Shane OK" posture (Runbook §6 spirit). Enforced naturally if the PAT is PR:write-but-not-an-approver-policy, or just by convention in his instructions.
+3. **Approve rights — comment-only (recommended).** As a *separate* identity he technically *could* `--approve` these PRs (GitHub only blocks self-approval). Keep him **`gh pr comment` / `--request-changes` only** — he advises, humans/the operator merge. Matches the mesh "never merge without the operator OK" posture (Runbook §6 spirit). Enforced naturally if the PAT is PR:write-but-not-an-approver-policy, or just by convention in his instructions.
 
 ---
 
@@ -83,7 +83,7 @@ GitHub repo → (GitHub's native Discord webhook) → Discord channel
 
 **Multiplexing bonus:** many sources already post to Discord, so one no-port watcher fans in GitHub PRs alongside everything else.
 
-**Direct webhooks — reserved for where unavoidable (Teams), and feasible when needed.** The gateways framework *already* exposes inbound webhooks: the Teams gateway (Phase-2) serves per-bot `/api/<slug>/messages` POST routes for the Bot Framework. A GitHub webhook gateway (chat-sdk lists GitHub as a platform; or a GitHub App's `pull_request` delivery) would mirror that shape and yield **structured** events. When such an endpoint is stood up, harden it the way Shane specced: **Nginx Proxy Manager in front, US-IP allowlist (scoped further if possible), a shared secret / signature check, and Nodie watching the logs**. For *this* agent, the Discord doorbell means GitHub needs none of that.
+**Direct webhooks — reserved for where unavoidable (Teams), and feasible when needed.** The gateways framework *already* exposes inbound webhooks: the Teams gateway (Phase-2) serves per-bot `/api/<slug>/messages` POST routes for the Bot Framework. A GitHub webhook gateway (chat-sdk lists GitHub as a platform; or a GitHub App's `pull_request` delivery) would mirror that shape and yield **structured** events. When such an endpoint is stood up, harden it the way the operator specced: **Nginx Proxy Manager in front, US-IP allowlist (scoped further if possible), a shared secret / signature check, and a worker agent watching the logs**. For *this* agent, the Discord doorbell means GitHub needs none of that.
 
 - **Fallback option — poll** `gh pr list` across allowlisted repos on an interval. No event infra at all; ~minutes latency. Keep as the degraded-mode backstop if the Discord path is ever down.
 
@@ -95,7 +95,7 @@ Whatever the channel, the trigger only needs **repo + PR#**; the agent derives b
 
 ## 6. The review loop (PROPOSED)
 
-Mirrors the playbook run live against Bishop's gateways PRs #2/#3 (2026-06-09):
+Mirrors the playbook run live against the gateway agent's gateways PRs #2/#3 (2026-06-09):
 1. Resolve repo + PR# from the AMP trigger.
 2. `cd` to the library copy → `git fetch` → `gh pr checkout <n>` (or fetch the PR ref). **Never `git pull` a dirty tree** — fetch + checkout the PR branch cleanly.
 3. Review: `gh pr view`, `gh pr diff`, read changed files, cross-reference. Verify claims against live code, not just the diff.
@@ -109,7 +109,7 @@ Mirrors the playbook run live against Bishop's gateways PRs #2/#3 (2026-06-09):
 
 ## 7. Security (scope-relaxed — internal repos only)
 
-- **External-contributor PRs are NEVER in scope (DECIDED).** Targets are N4 Safety Alliance OS + internal repos (Ziggy, AI Maestro, gateways) only. All PR authors are trusted teammates/agents, so **checking out PR branches and running their tests is acceptable** — the untrusted-code-execution / RCE concern that would otherwise gate test-running does not apply. (Container isolation remains as defense-in-depth, not as the thing standing between us and a hostile PR.)
+- **External-contributor PRs are NEVER in scope (DECIDED).** Targets are the project + a second project + internal repos (Ziggy, AI Maestro, gateways) only. All PR authors are trusted teammates/agents, so **checking out PR branches and running their tests is acceptable** — the untrusted-code-execution / RCE concern that would otherwise gate test-running does not apply. (Container isolation remains as defense-in-depth, not as the thing standing between us and a hostile PR.)
 - **Repo allowlist** (§3) still bounds what he can clone — it guards against a malformed/forged *trigger*, not against the repo authors.
 - **Comment-only GitHub scope + least-privilege PAT** (§4) bound blast radius if the agent is ever confused/compromised.
 - **Trigger authenticity:** the Discord doorbell inherits the gateway's existing content-security + the channel's own access control; the agent should still sanity-check that the parsed `owner/repo` is on the allowlist before cloning. If the direct-webhook path is ever used, the secret/signature check (§5) is the authenticity gate.
@@ -121,7 +121,7 @@ Mirrors the playbook run live against Bishop's gateways PRs #2/#3 (2026-06-09):
 A reviewer's most common operation — "what does this change touch / who calls this" — is exactly `graphify query` / `graphify affected`. The persistent repo library makes this free:
 - Seed `graphify update .` per repo (AST-only, **no LLM backend needed**); the post-commit/post-checkout hooks keep each graph warm as the repo updates.
 - He reviews impact via one graph query instead of grepping the tree.
-- Caveat: graphify is currently **host-installed only**; cloud-container parity is a pending Hutch follow-up. A containerized review agent needs graphify baked into its image (same recipe sent to Hutch).
+- Caveat: graphify is currently **host-installed only**; cloud-container parity is a pending ops-agent follow-up. A containerized review agent needs graphify baked into its image (same recipe sent to the ops agent).
 
 ---
 
@@ -141,34 +141,34 @@ A reviewer's most common operation — "what does this change touch / who calls 
 - ✅ **Trigger:** Discord doorbell (no open port); direct webhooks reserved for Teams-style unavoidable cases.
 - ✅ **External PRs:** never — internal repos only; PR-test-execution is therefore safe.
 
-**Locked (2026-06-10, Shane):**
-- ✅ **Bot identity implementation:** **GitHub App** (reversed from PAT after a verified blocker). Permissions: `pull_requests: write` + `issues: write` (classify/label/comment-route) + `contents: read` (NO contents:write) + `metadata: read`. **Agent name: Columbo** (mesh display) / GitHub App slug **`n4x-columbo`** → comments sign as `n4x-columbo[bot]`. Columbo is the single GitHub front-door: PR review + issue triage/routing in one agent (see §1/§5 decisions). **Token-minter credential set:** JWT `iss` = **Client ID** (`Iv23…` — GitHub-recommended over the numeric App ID; verified docs 2026-06-10), signed with the `.pem` private key, then `POST /app/installations/<install-id>/access_tokens` for a short-lived scoped token. Store `.pem` + Client ID + install IDs in agent home (currently staged at `/home/gosub/n4x-columbo.*` on Holmes — **must move into Columbo's home mount** at build, not stay in the host homedir). **VERIFIED 2026-06-11 (Watson, Holmes):** JWT→installation-token→scoped-repo chain works; Client ID `Iv23li40UW1VO1FpVPAz`; swickson installation_id `139685565` scopes to exactly the 5 swickson repos with the 4 perms above (no push). `SEACWORX/allianceos` org install **VERIFIED 2026-06-11** as installation_id `139704047` (selection=selected, scoped to `allianceos` only). All 6 allowlist repos now reachable via scoped tokens, no push. Known-good minter: JWT signed RS256 with `iss`=Client ID, `iat`=now-60, `exp`=now+540; `POST /app/installations/<id>/access_tokens`; use returned `ghs_…` token (≤1h TTL) as `Authorization: token`. Rationale: the watched repos are owned by the **`swickson` personal account**; the reviewer is only a *collaborator*, and **(a)** personal-repo collaborators get only the **write** role (triage is org-only) and **(b)** fine-grained PATs **cannot scope repos owned by another personal account** (verified — GitHub docs: "Each token is limited to access resources owned by a single user or organization"; resource-owner picker shows only your own account + your orgs). So on these repos *no PAT can enforce least-privilege* — only a classic PAT works and it's broad `repo` scope = push-capable. A **GitHub App's installation token is scoped to exactly the App's permissions regardless of collaborator role → the bot physically cannot push/merge.** The App also: works uniformly on personal + org repos (covers `SEACWORX/allianceos`), uses short-lived tokens, is the construct that scales to a per-orchestrator bot fleet, and can later supply the `pull_request` webhook. **Consequence: collaborator invites are obsolete** (an App is *installed* by the repo admin, not invited as a user); the `n4x-review-bot` user account is no longer load-bearing.
+**Locked (2026-06-10, the operator):**
+- ✅ **Bot identity implementation:** **GitHub App** (reversed from PAT after a verified blocker). Permissions: `pull_requests: write` + `issues: write` (classify/label/comment-route) + `contents: read` (NO contents:write) + `metadata: read`. **Agent name: the PR-review agent** (mesh display) / GitHub App slug **`<org>-the-pr-review-agent`** → comments sign as `<org>-the-pr-review-agent[bot]`. The PR-review agent is the single GitHub front-door: PR review + issue triage/routing in one agent (see §1/§5 decisions). **Token-minter credential set:** JWT `iss` = **Client ID** (`<CLIENT_ID>…` — GitHub-recommended over the numeric App ID; verified docs 2026-06-10), signed with the `.pem` private key, then `POST /app/installations/<install-id>/access_tokens` for a short-lived scoped token. Store `.pem` + Client ID + install IDs in agent home (currently staged at `/home/<user>/<org>-the-pr-review-agent.*` on the prod host — **must move into the PR-review agent's home mount** at build, not stay in the host homedir). **VERIFIED 2026-06-11 (a peer dev, prod host):** JWT→installation-token→scoped-repo chain works; Client ID `<CLIENT_ID>`; the operator's installation_id `<INSTALL_ID>` scopes to exactly the 5 operator repos with the 4 perms above (no push). The second project's org install **VERIFIED 2026-06-11** as installation_id `<INSTALL_ID>` (selection=selected, scoped to the second project only). All 6 allowlist repos now reachable via scoped tokens, no push. Known-good minter: JWT signed RS256 with `iss`=Client ID, `iat`=now-60, `exp`=now+540; `POST /app/installations/<id>/access_tokens`; use returned `ghs_…` token (≤1h TTL) as `Authorization: token`. Rationale: the watched repos are owned by the **operator's personal account**; the reviewer is only a *collaborator*, and **(a)** personal-repo collaborators get only the **write** role (triage is org-only) and **(b)** fine-grained PATs **cannot scope repos owned by another personal account** (verified — GitHub docs: "Each token is limited to access resources owned by a single user or organization"; resource-owner picker shows only your own account + your orgs). So on these repos *no PAT can enforce least-privilege* — only a classic PAT works and it's broad `repo` scope = push-capable. A **GitHub App's installation token is scoped to exactly the App's permissions regardless of collaborator role → the bot physically cannot push/merge.** The App also: works uniformly on personal + org repos (covers the second project's org repo), uses short-lived tokens, is the construct that scales to a per-orchestrator bot fleet, and can later supply the `pull_request` webhook. **Consequence: collaborator invites are obsolete** (an App is *installed* by the repo admin, not invited as a user); the `review-bot` user account is no longer load-bearing.
 - ✅ **Placement:** fold into the Cloud Coding Agent Runbook as a "§N Review-only variant" section — inherits §1–6 shared machinery, overrides the reviewer-role parts.
-- ✅ **Initial repo allowlist (6 repos, slugs resolved + verified 2026-06-11):** `swickson/ai-maestro`, `swickson/ai-maestro-plugins`, `swickson/aimaestro-gateways`, `swickson/ziggy`, `swickson/n4safety-app`, `SEACWORX/allianceos`.
+- ✅ **Initial repo allowlist (6 repos, slugs resolved + verified 2026-06-11):** `<operator>/ai-maestro`, `<operator>/ai-maestro-plugins`, `<operator>/aimaestro-gateways`, `<operator>/ziggy`, the application repo, and the second project's org repo.
 - ✅ **v1 trigger:** Discord doorbell from day one (not poll-first). Poll (`gh pr list`) demoted to degraded-mode backstop only.
-- ✅ **Disk budget:** cap `/srv/review-repos`, periodic `git gc`, drop repos untouched 30d (re-clone cheap). Exact ceiling settled with Hutch at build.
+- ✅ **Disk budget:** cap `/srv/review-repos`, periodic `git gc`, drop repos untouched 30d (re-clone cheap). Exact ceiling settled with the ops agent at build.
 
 **Resolved 2026-06-11 (build complete):**
-1. ✅ **Discord wiring** — single shared GitHub-alerts channel; one `WATCH_WEBHOOKS` triple appended in `discord-gateway/.env` → AMP to `dev-columbo-holmes@n4x-corp.aimaestro.local`; gateway restarted + verified (both watch entries live, Discord connected).
+1. ✅ **Discord wiring** — single shared GitHub-alerts channel; one `WATCH_WEBHOOKS` triple appended in `discord-gateway/.env` → AMP to `dev-<team>-the-pr-review-agent@<org>.aimaestro.local`; gateway restarted + verified (both watch entries live, Discord connected).
 2. ✅ **Repo slugs** — finalized as the 6-repo allowlist above; library seeded.
 
-**Only remaining go-live gate:** interactive `codex login` in Columbo's container tmux (OAuth — operator's lane; determines spend attribution). *(Completed 2026-06-11; end-to-end Discord→triage verified live on a real `allianceos` issue.)*
+**Only remaining go-live gate:** interactive `codex login` in the PR-review agent's container tmux (OAuth — operator's lane; determines spend attribution). *(Completed 2026-06-11; end-to-end Discord→triage verified live on a real second-project issue.)*
 
 **Routing + autonomy roadmap (2026-06-11):**
-- ✅ **Repo → orchestrator routing live for issue triage.** Columbo holds a verified repo→lead AMP map (COLUMBO_INSTRUCTIONS.md §3A): ai-maestro/-plugins→KAI, gateways→Bishop, ziggy→dev-ziggy-orchestrator, n4safety-app→Zach (`dev-n4safety-operator`), allianceos→Luke (`dev-allianceos-luke`). On triage he AMPs the repo's lead.
-- 🔜 **PR-review auto-handoff (NOT yet — gated on Shane):** detect PRs from the internal team → after posting the review, AMP the repo lead the review/handle → that team folds it in and continues autonomously, no human in the loop. Foundation (routing map + provenance check) is the next phase; review-routing stays OFF until explicitly enabled (COLUMBO_INSTRUCTIONS.md §5B).
+- ✅ **Repo → orchestrator routing live for issue triage.** The PR-review agent holds a verified repo→lead AMP map (the PR-review agent's instructions file §3A): ai-maestro/-plugins→the lead, gateways→the gateway agent, ziggy→dev-<team>-orchestrator, the application repo→the orchestrator (`dev-<team>-operator`), the second project→an agent (`dev-<team>-<role>`). On triage it AMPs the repo's lead.
+- 🔜 **PR-review auto-handoff (NOT yet — gated on the operator):** detect PRs from the internal team → after posting the review, AMP the repo lead the review/handle → that team folds it in and continues autonomously, no human in the loop. Foundation (routing map + provenance check) is the next phase; review-routing stays OFF until explicitly enabled (the PR-review agent's instructions file §5B).
 
 ---
 
-## 11. Provisioning checklist (handoff-ready for Hutch — docker lane)
+## 11. Provisioning checklist (handoff-ready for the ops agent — docker lane)
 
-> Build only after §10 decisions land. Container build/image work is Hutch's lane (per mesh convention).
+> Build only after §10 decisions land. Container build/image work is the ops agent's lane (per mesh convention).
 
-- [ ] Pre-create host dirs owned by host user: home (`/home/gosub/agents/<reviewer>`) + repo library (`/srv/review-repos`).
+- [ ] Pre-create host dirs owned by host user: home (`/home/<user>/agents/<reviewer>`) + repo library (`/srv/review-repos`).
 - [ ] Create the agent (Runbook §3a) with **two rw mounts** at identical host=container paths; pin `cpus`/`memory`.
 - [ ] Program = **Codex** (DECIDED). Codex specifics: autonomy/skip-permissions flags differ from Claude (Runbook §4 per-provider reference — audit the right `--*` flags); graphify skill installs to `~/.codex/skills` via `graphify install --platform codex`, the invocation is **`$graphify` not `/graphify`**, and parallel extraction wants `multi_agent = true` under `[features]` in `~/.codex/config.toml`. On-wake hook → instructions file (Runbook §3b, §5) describing the review loop + allowlist; reinforce Codex to re-read it (per the Gemini/Codex reinforcement pattern).
 - [ ] Install `gh`; drop the **scoped GitHub token** (bot identity — machine-user PAT or App, §4) in home; `gh auth status` green; confirm PR:write + contents:read on allowlisted repos only.
-- [ ] Bake graphify into the image (Hutch follow-up recipe) + `graphify update .` seed per allowlisted repo (`$graphify`/codex skill path noted above).
+- [ ] Bake graphify into the image (ops-agent follow-up recipe) + `graphify update .` seed per allowlisted repo (`$graphify`/codex skill path noted above).
 - [ ] Seed the repo library: clone each allowlisted repo once.
 - [ ] Wire the trigger: **Discord doorbell** (GitHub native webhook → channel → discord-gateway `WatchWebhookEntry` match → AMP to reviewer). Poll cron only as degraded-mode backstop.
 - [ ] Verify (Runbook §8): trigger → fetch → review → comment posted → idle, on one test PR; confirm dedup on a second `synchronize`.

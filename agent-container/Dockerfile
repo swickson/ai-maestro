@@ -64,8 +64,8 @@ RUN mkdir -p /home/claude && \
 # at runtime by the AMP CLI bind-mount that buildAmpCommonMounts injects
 # into every cloud-agent container (host's ~/.local/bin → /home/claude/
 # .local/bin RO), which COMPLETELY shadows binaries placed there. Discovered
-# post-PR #91 deploy by CelestIA on bananajr Hardin recreate; cross-host
-# repro on Holmes Mason. /usr/local/bin is not a bind-mount target and
+# post-PR #91 deploy by a peer dev (dev-host) on the dev host (an agent recreate); cross-host
+# repro on the prod host an agent. /usr/local/bin is not a bind-mount target and
 # survives the overlay.
 RUN XDG_BIN_HOME=/usr/local/bin sh -c "$(curl -LsSf https://astral.sh/uv/install.sh)"
 
@@ -90,7 +90,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # /home/claude/.local/share/uv/python/ via uv's default install-dir logic
 # (path is NOT shadowed — only ~/.local/bin is bind-mounted, not the deeper
 # share/ tree). Invoked via `uv run --python 3.12` or a uv-managed venv.
-# uv was chosen over pyenv per KAI: no compile-from-source, no -dev header
+# uv was chosen over pyenv per the lead: no compile-from-source, no -dev header
 # explosion in apt, single static binary covering pip/venv/poetry
 # equivalents, prebuilt python-build-standalone tarballs.
 USER claude
@@ -126,7 +126,7 @@ RUN mkdir -p /home/claude/.npm-global/bin && chown -R claude:claude /home/claude
 # decoder/contract; an unpinned mid-session self-update could shift the
 # opencode.db schema out from under lib/opencode-db-decoder.ts — the
 # self-update-corruption class). v1.17.8 = the version the Phase-1 decoder +
-# schema findings were captured against on bananajr.
+# schema findings were captured against on the dev host.
 USER claude
 RUN npm install -g \
     @anthropic-ai/claude-code \
@@ -148,7 +148,7 @@ RUN mkdir -p /workspace && \
 
 # Bind-mount target for the host-written restoration-ready sentinel (kanban
 # fcabb870). agent-server.js polls /restoration-ready/complete pre-tmux-init
-# to close the Han EACCES race. Pre-create here so docker doesn't materialize
+# to close the agent EACCES race. Pre-create here so docker doesn't materialize
 # the bind target as root when the host's restoration/ dir lands on it.
 RUN mkdir -p /restoration-ready && \
     chown -R claude:claude /restoration-ready
@@ -192,7 +192,7 @@ ENV AGENT_PORT=23000
 
 # Locale — paired with the locale-gen step above. Setting these without
 # generating the locale data is what produced the setlocale warnings on
-# every Mason/Optic shell start before this bake.
+# every agent shell start before this bake.
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 ENV LANGUAGE=en_US:en
@@ -218,11 +218,11 @@ ENV PATH=/home/claude/.npm-global/bin:/home/claude/.local/bin:/usr/local/sbin:/u
 # automated agent code (vitest, nodemon, webpack-dev-server, vite preview,
 # Playwright, etc.) where bare `vitest <file>` defaults to watch mode,
 # never returns, and traps Gemini-class agents in a false-completion loop
-# (Han stuck 16min before manual intervention 2026-04-29). vitest and most
+# (an agent stuck 16min before manual intervention 2026-04-29). vitest and most
 # other watch-mode-defaulting tools auto-disable watch when CI is set;
 # closes the entire trap class at the platform layer regardless of how
-# the agent invokes the tool. Filed by Luke (dev-allianceos-luke), Iron
-# Syndicate kanban 376265b9.
+# the agent invokes the tool. Filed by an agent (dev-<team>-<role>), the dev
+# team kanban 376265b9.
 ENV CI=true
 
 # Git configuration (will use token at runtime)

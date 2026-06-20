@@ -47,7 +47,7 @@ export interface NotificationPreferences {
  */
 export interface UserRecord {
   id: string                      // UUID v4
-  displayName: string             // Human-readable name (e.g., "Shane Wickson")
+  displayName: string             // Human-readable name (e.g., "the operator")
   aliases: string[]               // Cross-host nicknames, case-insensitive match
   platforms: UserPlatformMapping[] // One entry per platform account
   role: UserRole

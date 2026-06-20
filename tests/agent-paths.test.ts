@@ -6,6 +6,8 @@
  * mirrors the in-container layout (claude-projects/-workspace/, chat-state/);
  * host agents read from the operator's host $HOME under the same conventions
  * Claude Code itself uses. (Kanban 2853e62d, sister to PR #115 / 7a94534e.)
+ *
+ * NOTE: fixture project/agent/path names below are illustrative placeholders.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -25,18 +27,18 @@ describe('resolveConversationDir', () => {
   it('host agent: derives from operator $HOME and host workingDirectory', () => {
     const agent = {
       id: 'agent-host-1',
-      workingDirectory: '/home/operator/code/n4-armory',
+      workingDirectory: '/home/operator/code/strategic-wd',
       deployment: { type: 'local' as const },
     }
     const dir = resolveConversationDir(agent, HOST_HOME)
-    expect(dir).toBe(path.join(HOST_HOME, '.claude', 'projects', '-home-operator-code-n4-armory'))
+    expect(dir).toBe(path.join(HOST_HOME, '.claude', 'projects', '-home-operator-code-strategic-wd'))
   })
 
   it('host ANTIGRAVITY agent: resolves to operator ~/.gemini/antigravity-cli, NOT ~/.claude/projects (local-antigravity bug, host-branch counterpart to #219)', () => {
     const agent = {
-      id: 'a499e31a-fake-ginger',
+      id: 'a499e31a-fake-agent',
       program: 'antigravity',
-      workingDirectory: '/home/operator/Documents/Development/n4safety-app',
+      workingDirectory: '/home/operator/Documents/Development/app-repo',
       deployment: { type: 'local' as const },
     }
     const dir = resolveConversationDir(agent, HOST_HOME)
@@ -53,7 +55,7 @@ describe('resolveConversationDir', () => {
     const agent = {
       id: '537a41e8-fake-builder',
       program: 'codex',
-      workingDirectory: '/home/operator/Documents/Development/n4safety-app',
+      workingDirectory: '/home/operator/Documents/Development/app-repo',
       deployment: { type: 'local' as const },
     }
     const dir = resolveConversationDir(agent, HOST_HOME)
@@ -96,8 +98,8 @@ describe('resolveConversationDir', () => {
       id: '70b119e9-5793-44f5-b891-229aa330ff1c',
       // host registry stores the host-side path, but the cloud branch must
       // NOT use it — Claude Code inside the container runs in /workspace.
-      workingDirectory: '/home/operator/Documents/Development/allianceos',
-      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-dev-allianceos-luke' } },
+      workingDirectory: '/home/operator/Documents/Development/project-b',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-dev-project-b-worker' } },
     }
     const dir = resolveConversationDir(agent, HOST_HOME)
     expect(dir).toBe(
@@ -114,10 +116,10 @@ describe('resolveConversationDir', () => {
 
   it('cloud Gemini agent: derives from per-agent gemini-chats path, ignores host workingDirectory (kanban d937c33d)', () => {
     const agent = {
-      id: 'a26f6822-fake-uuid-mason-on-holmes',
+      id: 'a26f6822-fake-uuid-agent',
       program: 'gemini',
-      workingDirectory: '/home/operator/code/n4-armory',
-      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-ops-exec-mason' } },
+      workingDirectory: '/home/operator/code/strategic-wd',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-ops-<role>' } },
     }
     const dir = resolveConversationDir(agent, HOST_HOME)
     expect(dir).toBe(
@@ -125,7 +127,7 @@ describe('resolveConversationDir', () => {
         HOST_HOME,
         '.aimaestro',
         'agents',
-        'a26f6822-fake-uuid-mason-on-holmes',
+        'a26f6822-fake-uuid-agent',
         'gemini-chats',
       ),
     )
@@ -135,7 +137,7 @@ describe('resolveConversationDir', () => {
     const agent = {
       id: 'b1c2d3e4-fake-uuid-antigravity-pilot',
       program: 'antigravity',
-      workingDirectory: '/home/operator/code/n4-armory',
+      workingDirectory: '/home/operator/code/strategic-wd',
       deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-pilot-antigravity' } },
     }
     const dir = resolveConversationDir(agent, HOST_HOME)
@@ -227,7 +229,7 @@ describe('resolveConversationDir', () => {
 
 describe('resolveChatStateFile', () => {
   it('host agent: hashes the host workingDirectory + reads from shared host chat-state dir', () => {
-    const workingDir = '/home/operator/code/n4-armory'
+    const workingDir = '/home/operator/code/strategic-wd'
     const agent = {
       id: 'agent-host-1',
       workingDirectory: workingDir,
@@ -240,8 +242,8 @@ describe('resolveChatStateFile', () => {
   it('cloud agent: hashes CONTAINER_CWD ("/workspace") + reads from per-agent chat-state dir', () => {
     const agent = {
       id: 'cloud-1',
-      workingDirectory: '/home/operator/Documents/Development/allianceos',
-      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-dev-allianceos-luke' } },
+      workingDirectory: '/home/operator/Documents/Development/project-b',
+      deployment: { type: 'cloud' as const, cloud: { containerName: 'aim-dev-project-b-worker' } },
     }
     // The hook runs inside the container at cwd=/workspace, so its file
     // name is hash('/workspace'), and the dir is the per-agent bind-mounted

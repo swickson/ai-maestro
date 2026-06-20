@@ -28,7 +28,7 @@ describe('parseAiToolBinary (#78)', () => {
     // The CJS default import is typed `any`, so undefined/null pass the
     // type-checker — these exercise the runtime guard against non-strings.
     // (No @ts-expect-error: it would be an unused directive → TS2578 under
-    // `tsc --noEmit` in container:ci — Columbo finding on #208.)
+    // `tsc --noEmit` in container:ci — PR-review-agent finding on #208.)
     expect(parseAiToolBinary(undefined)).toBe('')
     expect(parseAiToolBinary(null)).toBe('')
   })

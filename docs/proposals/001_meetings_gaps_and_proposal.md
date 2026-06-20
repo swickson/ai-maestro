@@ -1,7 +1,7 @@
 # Proposal 001: Meeting Chat — Gaps and Proposed Architecture
 
 **Date:** 2026-04-01
-**Authors:** dev-aimaestro-admin (Kai), dev-aimaestro-bananajr (CelestIA), dev-aimaestro-holmes (Watson)
+**Authors:** dev-<team>-<role> (the lead), dev-<team>-<role> (a peer dev (dev-host)), dev-<team>-<role> (a peer dev (prod-host))
 **Status:** Approved — ready for implementation
 **Reference:** [agentchattr](https://github.com/bcurts/agentchattr)
 
@@ -162,7 +162,7 @@ Ship these together. Enabling agent-to-agent chaining without @mention routing w
 
 ### Phase 2: Human Operator Identity
 
-Give the human operator a proper, distinct identity in the chat system. This is the operator's most visible pain point — messages showing as "Maestro@Milo" with no sent folder.
+Give the human operator a proper, distinct identity in the chat system. This is the operator's most visible pain point — messages showing as "Maestro@the laptop" with no sent folder.
 
 **Changes:**
 - Meeting chat API — Accept operator identity (name, display name, role: "operator")
@@ -204,19 +204,19 @@ Graduate from meeting-scoped to persistent team channels. This changes the data 
 
 ## Decisions (from review feedback)
 
-1. **Meeting-scoped first.** Always-on channels deferred to Phase 6 after pattern is validated. (CelestIA, Watson agreed)
-2. **Replace, not coexist.** The current AMP-based meeting chat transport is fundamentally broken for group conversations. Swap it out entirely once Phase 1-2 land. (CelestIA, Watson agreed)
-3. **Phase 1 ships chaining + @mentions together.** Chaining without @mentions is a token bomb. (CelestIA raised, Watson agreed)
-4. **Human identity before @mentions in priority, but after chaining in implementation.** Swap original Phase 2/3 order — operator identity is simpler and higher impact. (Watson raised, CelestIA agreed)
-5. **Loop guard default: 6 hops, configurable per meeting.** 4 is too low for 5+ agent teams. (Watson raised)
-6. **Cross-host: meeting host is authoritative.** No replication. Remote agents proxy through mesh. (CelestIA raised)
-7. **Token/cost awareness from Phase 3.** Cap injection context size. (CelestIA raised)
+1. **Meeting-scoped first.** Always-on channels deferred to Phase 6 after pattern is validated. (a peer dev (dev-host), a peer dev (prod-host) agreed)
+2. **Replace, not coexist.** The current AMP-based meeting chat transport is fundamentally broken for group conversations. Swap it out entirely once Phase 1-2 land. (a peer dev (dev-host), a peer dev (prod-host) agreed)
+3. **Phase 1 ships chaining + @mentions together.** Chaining without @mentions is a token bomb. (a peer dev (dev-host) raised, a peer dev (prod-host) agreed)
+4. **Human identity before @mentions in priority, but after chaining in implementation.** Swap original Phase 2/3 order — operator identity is simpler and higher impact. (a peer dev (prod-host) raised, a peer dev (dev-host) agreed)
+5. **Loop guard default: 6 hops, configurable per meeting.** 4 is too low for 5+ agent teams. (a peer dev (prod-host) raised)
+6. **Cross-host: meeting host is authoritative.** No replication. Remote agents proxy through mesh. (a peer dev (dev-host) raised)
+7. **Token/cost awareness from Phase 3.** Cap injection context size. (a peer dev (dev-host) raised)
 
 ## Decisions (continued — from final review)
 
-8. **MCP timing: after routing + injection context.** @mention routing defines the message flow, injection context defines what agents see. MCP tools become clean wrappers around a working pipeline. Building MCP first would mean designing the agent interface before the server orchestration exists. (CelestIA, Watson agreed)
-9. **Default @all for visibility, @mention for triggering.** All messages are visible to all participants in the shared timeline (no addressing required). However, only @mentioned agents get tmux injection and are prompted to respond. Unaddressed messages from the operator are seen by everyone but don't trigger agent responses. This avoids token waste while making the chat feel like a real group conversation. `@all` explicitly triggers all agents. (Watson proposed the visibility/trigger split, CelestIA agreed)
-10. **MCP is a priority but phase-flexible.** This team (Kai, CelestIA, Watson) will be the only testers until rollout. MCP will be in before other agents see it regardless of which phase it ships in. (Shane's directive)
+8. **MCP timing: after routing + injection context.** @mention routing defines the message flow, injection context defines what agents see. MCP tools become clean wrappers around a working pipeline. Building MCP first would mean designing the agent interface before the server orchestration exists. (a peer dev (dev-host), a peer dev (prod-host) agreed)
+9. **Default @all for visibility, @mention for triggering.** All messages are visible to all participants in the shared timeline (no addressing required). However, only @mentioned agents get tmux injection and are prompted to respond. Unaddressed messages from the operator are seen by everyone but don't trigger agent responses. This avoids token waste while making the chat feel like a real group conversation. `@all` explicitly triggers all agents. (a peer dev (prod-host) proposed the visibility/trigger split, a peer dev (dev-host) agreed)
+10. **MCP is a priority but phase-flexible.** This team (the lead, a peer dev (dev-host), a peer dev (prod-host)) will be the only testers until rollout. MCP will be in before other agents see it regardless of which phase it ships in. (operator's directive)
 
 ---
 

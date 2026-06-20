@@ -1,7 +1,7 @@
 /**
  * Pre-tmux restoration-ready gate (container side).
  *
- * Closes the Han EACCES race surfaced 2026-05-21 during the AllianceOS cohort
+ * Closes the agent EACCES race surfaced 2026-05-21 during the second-project cohort
  * migration (kanban fcabb870). Race shape:
  *   1. /update-runtime issues `docker stop && docker rm && docker run -d`
  *   2. agent-server.js boots inside the new container, fires `tmux new-session`

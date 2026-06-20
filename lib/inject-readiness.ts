@@ -26,8 +26,8 @@
  *   - BUSY signal — terminal-OUTPUT activity (`sessionActivity`). This is only
  *     populated while a dashboard CLIENT is streaming the pane (server.mjs
  *     ptyProcess.onData). An UNWATCHED agent therefore reads as idle even when
- *     mid-generation — the over-permissive blind spot that precipitated Bishop's
- *     court. `isPaneBusy()` closes it with a client-independent `tmux
+ *     mid-generation — the over-permissive blind spot that precipitated the
+ *     gateway agent's court. `isPaneBusy()` closes it with a client-independent `tmux
  *     capture-pane` probe (footer + 2-snapshot diff) that needs no client.
  *   - PROMPT signal — the hook state file. The hook writes `waiting_for_input`
  *     for BOTH a real permission prompt AND the BENIGN idle_prompt (Claude idle
@@ -179,7 +179,7 @@ const SPINNER = '[\\u2720-\\u274F\\u00B7*]'
  * the live spinner/progress line STARTS (after indent) with a spinner glyph (or
  * the ⎿ run-indicator) and carries the gerund/timer/hint; the SAME tokens quoted
  * in BODY prose appear mid-line or after a "●" bullet. Anchoring separates them
- * structurally — the fix Columbo requested (#244 review) — WITHOUT shrinking the
+ * structurally — the fix the PR-review agent requested (#244 review) — WITHOUT shrinking the
  * footer window, which would risk the dangerous UNDER-match/court direction.
  *
  * Discriminators that survive a body quote even within the footer region:
@@ -218,7 +218,7 @@ const BUSY_FOOTER_PATTERNS: RegExp[] = [
  * full-pane match is BOTH court-safe (catches the spinner at any offset) AND
  * body-safe (a quoted "· Vibing…" mid-line, or a "● …" bullet, does not match).
  *
- * Accepted residual (CelestIA's edge): a pane that literally DISPLAYS a captured
+ * Accepted residual (a peer dev (dev-host)'s edge): a pane that literally DISPLAYS a captured
  * footer line at line-start reads busy → over-defer. That is the SAFE direction
  * (no court / no auto-approve), cron-backstopped, and far rarer than the
  * floating-spinner court hole a fixed window would reintroduce.

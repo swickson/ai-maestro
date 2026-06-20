@@ -1,5 +1,5 @@
 --- plugin/plugins/ai-maestro/scripts/amp-send.sh	2026-03-29 15:15:44
-+++ /Users/shanewickson/.local/bin/amp-send.sh	2026-03-30 09:19:39
++++ /Users/<user>/.local/bin/amp-send.sh	2026-03-30 09:19:39
 @@ -31,6 +31,39 @@
  # Source helper functions
  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

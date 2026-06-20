@@ -1083,7 +1083,7 @@ Questions or issues?
 
 ## Mesh-Coordination Patterns
 
-> **Audience:** AI Maestro peer agents (KAI, Watson, CelestIA, Hutch, future team members) coordinating PRs and deploys on this repo. See `docs/AMP-RELAY-SOP.md` for the Agent→Shane Discord relay, and `CLAUDE.md §4` for the Pre-PR Checklist.
+> **Audience:** AI Maestro peer agents (the lead, peer devs, the ops agent, future team members) coordinating PRs and deploys on this repo. See `docs/AMP-RELAY-SOP.md` for the Agent→operator Discord relay, and `CLAUDE.md §4` for the Pre-PR Checklist.
 
 Two repeatable failure shapes surfaced enough times in cross-review batch sprints to earn canonical documentation: PR-merge race conditions and deploy-time NODE_ENV shadowing. Both are mesh-coordination patterns — they break when peer agents work async without explicit handoff signals.
 
@@ -1107,11 +1107,11 @@ The cross-review batch pattern is: peer A authors, peer B reviews, maintainer C 
 
 **Caching gotcha:** `gh pr view --json mergeable` returns a **cached** mergeability state. A `MERGEABLE` response does NOT guarantee no in-flight pushes. Use `gh pr view <N> --json headRefOid` for the in-flight HEAD (not cached) and compare against the last-known author push timestamp before merging. If HEAD has advanced since the merge-now signal, treat as a fresh polish push and re-ping the author.
 
-**Precipitating incident:** 2026-05-22 cross-review batch sprint, PR #154. CelestIA reviewed Watson's fcabb870 sentinel preflight PR, posted LGTM with a non-blocker `readOnly:true` polish flag. KAI ran `gh pr merge 154` at 22:40:23Z, taking the pre-polish state. Watson pushed polish commit 02e9b65 at ~22:41:00Z — 37 seconds AFTER the merge had already completed. Polish stranded on the feature branch. Recovery cost: PR #155 (v0.30.92) cherry-picking 02e9b65 onto fresh main. One extra version increment, one extra PR cycle.
+**Precipitating incident:** 2026-05-22 cross-review batch sprint, PR #154. A peer dev (dev-host) reviewed another peer dev's fcabb870 sentinel preflight PR, posted LGTM with a non-blocker `readOnly:true` polish flag. The lead ran `gh pr merge 154` at 22:40:23Z, taking the pre-polish state. The authoring peer pushed polish commit 02e9b65 at ~22:41:00Z — 37 seconds AFTER the merge had already completed. Polish stranded on the feature branch. Recovery cost: PR #155 (v0.30.92) cherry-picking 02e9b65 onto fresh main. One extra version increment, one extra PR cycle.
 
 ### Deploy hygiene
 
-Three repeatable deploy gotchas across host syncs (Milo, Holmes, bananajr). Documented after CelestIA's third recurrence of the NODE_ENV pattern on bananajr v0.30.91 deploy 2026-05-22.
+Three repeatable deploy gotchas across host syncs (the laptop, the prod host, the dev host). Documented after a peer dev (dev-host)'s third recurrence of the NODE_ENV pattern on the dev host v0.30.91 deploy 2026-05-22.
 
 **1. `NODE_ENV=production` strips devDeps at `yarn install` time.** Even on production hosts, the build chain needs `vitest`, `typescript`, `tailwindcss`, etc. If `NODE_ENV=production` is set in the shell (leak sources observed: pm2 process inheritance, shell rc files — `~/.zshenv` / `~/.bashrc` / `~/.profile` — or a parent shell that exported it earlier in the session), `yarn install` skips devDependencies. Downstream `yarn build` fails with cryptic missing-module errors (most commonly `Cannot find module 'tailwindcss'`, then a downstream `next/font` error, then a misleading `@/hooks/...` resolver cascade).
 
@@ -1146,13 +1146,13 @@ pm2 ONLINE + version match is necessary but NOT sufficient. The BUILD_ID + chunk
 ### Cross-references
 
 - `CLAUDE.md §4` — Pre-PR Checklist (test, bump, build, PR).
-- `docs/AMP-RELAY-SOP.md` — Agent→Shane Discord relay (for blocker escalation).
+- `docs/AMP-RELAY-SOP.md` — Agent→the operator Discord relay (for blocker escalation).
 - Banked methodology memories used in drafting this section: `polish-then-merge-handoff`, `audit-kanban-before-author`, `rebase-inverts-ours-theirs`, `gh-self-approve-shared-auth`, `deploy-gotchas-ai-maestro`, `build-verification-requires-chunk-assertion`, `background-shell-yarn-path`.
 
 ### Authors
 
-- **Merge coordination protocol:** KAI (incident retrospective + initial sketch), Watson (signaling tokens, hold-window-timeout fallback, headRefOid diagnostic), CelestIA (discipline application on PR #155 under the new protocol).
-- **Deploy hygiene protocol:** Watson (draft text for NODE_ENV / `.next` / pm2-reload), CelestIA (third-recurrence empirical + canary command sequence + shell-env angle).
+- **Merge coordination protocol:** the lead (incident retrospective + initial sketch), a peer dev (prod-host) (signaling tokens, hold-window-timeout fallback, headRefOid diagnostic), a peer dev (dev-host) (discipline application on PR #155 under the new protocol).
+- **Deploy hygiene protocol:** a peer dev (prod-host) (draft text for NODE_ENV / `.next` / pm2-reload), a peer dev (dev-host) (third-recurrence empirical + canary command sequence + shell-env angle).
 
 ---
 

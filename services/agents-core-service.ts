@@ -481,8 +481,8 @@ async function waitForPromptInContainer(
  * interpolation + meshPrimer prepend, but dispatches via sendKeysToContainer
  * against the in-container tmux session instead of host runtime.sendKeys.
  *
- * Kept as a separate function (not a refactor of executeHook) per Watson's
- * §E review: smaller blast radius for this PR. Post-merge follow-up tracked
+ * Kept as a separate function (not a refactor of executeHook) per a peer dev
+ * (prod-host)'s §E review: smaller blast radius for this PR. Post-merge follow-up tracked
  * to unify both behind a single primitive.
  */
 async function executeHookInContainer(
@@ -2060,7 +2060,7 @@ export async function hibernateAgent(agentId: string, params: HibernateAgentPara
     // Clear the in-memory heartbeat so /api/agents stops counting this agent
     // as online via hasRecentHeartbeat (line ~597). Without this, the UI keeps
     // the hibernate button instead of flipping to wake for up to 120s while
-    // the stale timestamp ages out — symptom Shane saw on cloud agents but
+    // the stale timestamp ages out — symptom the operator saw on cloud agents but
     // the host/tmux path has the same shape so we clear it here too.
     agentActivity.delete(agentId)
 

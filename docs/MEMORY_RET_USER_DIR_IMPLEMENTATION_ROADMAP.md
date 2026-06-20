@@ -10,16 +10,16 @@ Combined implementation plan for two interdependent features: automatic memory r
 
 | Phase | Owner(s) | Focus |
 |---|---|---|
-| **Phase 1** — Data Layer | CelestIA (dev-aimaestro-bananajr) | Types, registries, REST APIs, tests |
-| **Phase 2** — Gateway Integration | Watson (dev-aimaestro-holmes) + DataIA (dev-aimaestrogw-holmes) | Gateway enrichment, resolve calls, memory middleware |
-| **Phase 3** — Outbound Routing + Retrieval | Watson + DataIA | DM routing, memory injection, caching |
-| **Phase 4** — Dashboard UI | Kai (dev-aimaestro-admin) | User management page, memory retrieval visibility |
+| **Phase 1** — Data Layer | a peer dev (dev-host) (dev-<team>-<role>) | Types, registries, REST APIs, tests |
+| **Phase 2** — Gateway Integration | a peer dev (prod-host) (dev-<team>-<role>) + the gateway agent (dev-<team>-<role>) | Gateway enrichment, resolve calls, memory middleware |
+| **Phase 3** — Outbound Routing + Retrieval | a peer dev (prod-host) + the gateway agent | DM routing, memory injection, caching |
+| **Phase 4** — Dashboard UI | the lead (dev-<team>-<role>) | User management page, memory retrieval visibility |
 
 **Dependency chain:** Phase 2 depends on Phase 1 APIs. Phase 3 depends on Phase 2 gateway enrichment. Phase 4 can start in parallel with Phase 3 (only needs Phase 1 APIs).
 
 ---
 
-## Phase 1 — Data Layer (CelestIA)
+## Phase 1 — Data Layer (a peer dev (dev-host))
 
 Build the foundational types, file-based registries, and REST APIs for both features. No gateway or frontend work — just the core data layer and tests.
 
@@ -71,10 +71,10 @@ interface UserDirectoryFile {
 - Lookups: `getUserByAlias(alias)`, `getUserByPlatform(type, platformUserId)`, `getUserByDisplayName(name)`, `getUsersByRole(role)`
 - All alias/name lookups case-insensitive
 
-**Seed data:** Create Shane's operator record on first load if directory is empty:
-- displayName: "Shane Wickson"
-- aliases: ["gosub", "shane", "shanewickson", "swick"]
-- platforms: [discord entry with his user ID from current OPERATOR_DISCORD_IDS env var]
+**Seed data:** Create the operator record on first load if directory is empty:
+- displayName: "Operator"
+- aliases: ["operator", "op"]
+- platforms: [discord entry with their user ID from current OPERATOR_DISCORD_IDS env var]
 - role: "operator", trustLevel: "full"
 
 **Tasks:**
@@ -82,7 +82,7 @@ interface UserDirectoryFile {
 - [ ] Create `lib/user-directory.ts` — file-based CRUD + lookup functions
 - [ ] Create REST API routes (list, create, get, update, delete, resolve)
 - [ ] Create `services/users-service.ts` — pure business logic layer (mirrors teams-service.ts pattern)
-- [ ] Seed Shane's operator record on first load
+- [ ] Seed the operator record on first load
 - [ ] Write unit tests: `tests/user-directory.test.ts` (CRUD, all lookup modes, alias case-insensitivity, duplicate alias handling)
 - [ ] Write API tests: `tests/services/users-service.test.ts` (resolve endpoint edge cases: unknown user 404, multi-platform match, etc.)
 
@@ -147,26 +147,26 @@ function formatMemoryContext(memories: RetrievedMemory[]): string
 
 ### Phase 1 Deliverables
 - All types, registries, APIs, and tests committed and passing
-- User directory seeded with Shane's record
+- User directory seeded with the operator record
 - Memory retrieval middleware skeleton functional but not wired into AMP handler
 - Version bump + push to main
 
 ---
 
-## Phase 2 — Gateway Integration (Watson + DataIA)
+## Phase 2 — Gateway Integration (a peer dev (prod-host) + the gateway agent)
 
 Wire the user directory into gateways for identity resolution, and begin enriching AMP messages with context needed by memory retrieval.
 
-### 2A. Gateway → User Directory Integration (DataIA leads, Watson supports)
+### 2A. Gateway → User Directory Integration (the gateway agent leads, a peer dev (prod-host) supports)
 
-**Watson's tasks (Maestro side):**
+**The peer dev (prod-host)'s tasks (Maestro side):**
 - [ ] Add `/api/users/resolve` to headless router (`services/headless-router.ts`) so gateways can hit it in headless mode
 - [ ] Add `POST /api/users/auto-create` endpoint — gateways call this for unknown senders (creates external user with trustLevel='none')
 - [ ] Ensure resolve endpoint returns 404 (not 500) for unknown users, with structured error `{ "error": "user_not_found" }`
 - [ ] Add `updateLastSeen(userId, platform)` to user-directory.ts — gateways call this on every inbound
 - [ ] Integration test: gateway sends inbound message → resolve → auto-create if unknown → updateLastSeen
 
-**DataIA's tasks (Gateway side):**
+**The gateway agent's tasks (Gateway side):**
 - [ ] Add user-resolver module to gateway: cache resolved users locally (pattern from existing agent-resolver)
 - [ ] On inbound message: resolve sender via `/api/users/resolve?platform=discord&platformUserId=...`
 - [ ] If 404: call `/api/users/auto-create` with platform info, then cache result
@@ -175,15 +175,15 @@ Wire the user directory into gateways for identity resolution, and begin enrichi
 - [ ] Test: known operator sends DM → resolves correctly, trust check passes
 - [ ] Test: unknown user sends DM → auto-created as external, trust check blocks appropriately
 
-### 2B. AMP Envelope Enrichment for Memory Retrieval (DataIA leads)
+### 2B. AMP Envelope Enrichment for Memory Retrieval (the gateway agent leads)
 
-**DataIA's tasks:**
+**The gateway agent's tasks:**
 - [ ] Add `context.thread` to AMP message envelope: `threadId`, `inReplyTo`, `isNewConversation`
 - [ ] Add `context.sender` to AMP envelope: `platformUserId`, `platform`, `handle` (from resolved user)
 - [ ] Add `context.topicHints` (optional): extract 2-3 keywords from message for retrieval hint
 - [ ] Document the enriched envelope format in gateway README
 
-**Watson's tasks:**
+**The peer dev (prod-host)'s tasks:**
 - [ ] Update AMP message types in Maestro to accept new `context` fields (additive, backward compatible)
 - [ ] Validate that existing AMP handlers don't break with new fields (regression test)
 
@@ -196,11 +196,11 @@ Wire the user directory into gateways for identity resolution, and begin enrichi
 
 ---
 
-## Phase 3 — Outbound Routing + Memory Injection (Watson + DataIA)
+## Phase 3 — Outbound Routing + Memory Injection (a peer dev (prod-host) + the gateway agent)
 
-### 3A. Memory Retrieval Pipeline (Watson leads)
+### 3A. Memory Retrieval Pipeline (the peer dev (prod-host) leads)
 
-**Watson's tasks:**
+**The peer dev (prod-host)'s tasks:**
 - [ ] Wire `retrieveMemories()` into AMP message handler — call before agent processes message
 - [ ] Use enriched AMP envelope fields (sender, thread, topicHints) as retrieval context
 - [ ] Implement in-memory cache: key = `{agentId}:{threadId}:{keywordsHash}`, TTL = 5 minutes
@@ -211,16 +211,16 @@ Wire the user directory into gateways for identity resolution, and begin enrichi
 - [ ] Integration test: same topic follow-up → cache hit, no re-search
 - [ ] Integration test: topic shift → cache miss, new search triggered
 
-### 3B. Outbound DM Routing (Watson + DataIA)
+### 3B. Outbound DM Routing (a peer dev (prod-host) + the gateway agent)
 
-**Watson's tasks (Maestro side):**
+**The peer dev (prod-host)'s tasks (Maestro side):**
 - [ ] Add `POST /api/users/:id/notify` endpoint — route outbound notification to user's preferred platform
 - [ ] Resolution chain: preferred platform → any available platform → queue for next seen
 - [ ] Use user directory to get platform mapping, then POST to appropriate gateway
 - [ ] Add to AMP @mention resolution: check user directory aliases in addition to agent names
-- [ ] Integration test: agent sends AMP to @gosub → resolves to Shane → routes to Discord via DataIA gateway
+- [ ] Integration test: agent sends AMP to @operator → resolves to the operator → routes to Discord via the gateway
 
-**DataIA's tasks (Gateway side):**
+**The gateway agent's tasks (Gateway side):**
 - [ ] Add `POST /api/gateway/dm` endpoint — accepts `{ platformUserId, message }` and sends DM
 - [ ] Validate that the gateway has the capability to DM the target user (e.g., mutual guild membership for Discord)
 - [ ] Return structured response: `{ success, messageId }` or `{ error, reason }` (e.g., "no mutual guild")
@@ -234,7 +234,7 @@ Wire the user directory into gateways for identity resolution, and begin enrichi
 
 ---
 
-## Phase 4 — Dashboard UI (Kai)
+## Phase 4 — Dashboard UI (the lead)
 
 Build the user management UI and memory retrieval visibility in the Maestro dashboard.
 
@@ -255,7 +255,7 @@ Build the user management UI and memory retrieval visibility in the Maestro dash
 
 **Tasks:**
 - [ ] Add memory retrieval stats to agent detail page: last retrieval, cache hit rate, avg memories returned
-- [ ] Add `/api/agents/:id/memory/retrieval-stats` endpoint (Watson provides the data layer)
+- [ ] Add `/api/agents/:id/memory/retrieval-stats` endpoint (the peer dev (prod-host) provides the data layer)
 - [ ] Optional: show recent retrievals log — what memories were surfaced for which messages
 
 ### Phase 4 Deliverables
@@ -268,7 +268,7 @@ Build the user management UI and memory retrieval visibility in the Maestro dash
 ## Timeline Dependencies
 
 ```
-Phase 1 (CelestIA)          Phase 2 (Watson + DataIA)       Phase 3 (Watson + DataIA)      Phase 4 (Kai)
+Phase 1 (dev-host peer)     Phase 2 (prod-host peer + gw)   Phase 3 (prod-host peer + gw)  Phase 4 (the lead)
 ─────────────────── ──────>  ───────────────────────── ───>  ─────────────────────────      ──────────────
 User Directory types         Gateway resolve calls           Outbound DM routing            User mgmt UI
 User Directory APIs          Auto-create external users      @mention user resolution       (starts after
@@ -281,19 +281,19 @@ Tests                        Tests                           Tests
 
 ## Coordination Notes
 
-- **Watson + DataIA** share the Holmes host — the gateway (`aimaestro-gateways`) and Maestro core both run here. Watson handles Maestro-side changes, DataIA handles gateway-side changes. Coordinate via AMP messages or meeting chat.
-- **CelestIA** works on Bananajr — Phase 1 is pure Maestro core code, no gateway dependency. Commit and push when done; Watson pulls and starts Phase 2.
-- **Kai** works on Milo — Phase 4 can start as soon as Phase 1 APIs are available. No gateway dependency.
+- **The peer dev (prod-host) + the gateway agent** share the prod host — the gateway (`aimaestro-gateways`) and Maestro core both run here. The peer dev handles Maestro-side changes, the gateway agent handles gateway-side changes. Coordinate via AMP messages or meeting chat.
+- **The peer dev (dev-host)** works on the dev host — Phase 1 is pure Maestro core code, no gateway dependency. Commit and push when done; the prod-host peer pulls and starts Phase 2.
+- **The lead** works on the laptop — Phase 4 can start as soon as Phase 1 APIs are available. No gateway dependency.
 - **Version bumps:** Each phase gets its own version bump on completion. Don't batch across phases.
 
 ---
 
-## Gateway Implementation Notes (from DataIA review, 2026-04-07)
+## Gateway Implementation Notes (from gateway-agent review, 2026-04-07)
 
 These clarifications address gateway-specific details raised during review.
 
 ### User Resolver Architecture
-The gateway's user-resolver will be an HTTP-backed cache (not a trivial string builder like the existing agent-resolver). It calls `GET /api/users/resolve` with local TTL caching. CelestIA: ensure the resolve endpoint is fast (sub-50ms for cache-miss reads from disk).
+The gateway's user-resolver will be an HTTP-backed cache (not a trivial string builder like the existing agent-resolver). It calls `GET /api/users/resolve` with local TTL caching. The dev-host peer: ensure the resolve endpoint is fast (sub-50ms for cache-miss reads from disk).
 
 ### Trust Migration — Dual Touch Points
 Replacing `OPERATOR_DISCORD_IDS` touches two functions in `discord-gateway/src/content-security.ts`:

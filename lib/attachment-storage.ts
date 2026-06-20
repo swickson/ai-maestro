@@ -64,7 +64,7 @@ export function generateAttachmentId(): string {
   // package. A bare `att_<32-hex>` form (one separator) is rejected by that
   // regex and silently falls back to client-generated ids + local-only
   // delivery, breaking cross-host attachments end-to-end despite the server
-  // endpoints working under direct probe (kanban 094594ac, KAI empirical
+  // endpoints working under direct probe (kanban 094594ac, the lead empirical
   // 2026-05-06 post-PR-#119-merge).
   //
   // Bonus property: monotonic timestamp prefix sorts ids by creation time,

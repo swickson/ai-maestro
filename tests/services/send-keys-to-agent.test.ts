@@ -5,7 +5,7 @@
  * routes to docker-exec via container-utils; everything else routes to the
  * host tmux runtime. This is the centralized branch that 4 callsites
  * previously had to (re)derive (kanban 7a94534e closes 6f5562f4 + 6c3f4357
- * + Watson messages-service finding).
+ * + a peer dev's messages-service finding).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -126,7 +126,7 @@ describe('agentSessionReady', () => {
     // Host tmux has no session for a cloud agent (tmux runs inside container
     // under the same name). Naive runtime.sessionExists() returned false and
     // upstream callers skipped cloud agents entirely — that was the
-    // 6f5562f4 / Watson messages-service finding bug. agentSessionReady
+    // 6f5562f4 / a peer dev's messages-service finding bug. agentSessionReady
     // collapses the check to "containerName configured".
     const agent = {
       id: 'c',

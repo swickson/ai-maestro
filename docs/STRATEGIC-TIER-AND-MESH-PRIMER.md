@@ -1,10 +1,10 @@
 # Strategic-Tier Agent Pattern with Mesh-Aware Wake Injection
 
-**Status:** Shipped in v0.27.9 (2026-04-10), validated in production on 2026-04-11 with live agents Optic, Mason, and Rollie on Holmes and the Ziggy dev team (orchestrator, se, codex, fullstack) on milo.
+**Status:** Shipped in v0.27.9 (2026-04-10), validated in production on 2026-04-11 with live agents (two strategic agents plus a third) on the prod host and the Ziggy dev team (orchestrator, se, codex, fullstack) on the laptop.
 
 **Audience:** Future agents or human operators who need to understand how multiple heterogeneous agents (Claude, Gemini, Codex) can cohabit a single working directory for strategic or executive work, how the mesh-awareness wake injection enables that without bloating per-agent config files, and how to add a new agent to an existing strategic tier.
 
-**Why this doc exists:** the mesh-primer work and the strategic-tier pattern were developed and deployed end-to-end during a single long session that also spun up Optic and Mason as the first real-world proof. CelestIA and dev-aimaestro-holmes (Watson) were the two reviewer agents in that session. Both have since been hibernated and their session context is gone. This doc is the authoritative record of what was shipped and why, independent of any agent's memory.
+**Why this doc exists:** the mesh-primer work and the strategic-tier pattern were developed and deployed end-to-end during a single long session that also spun up the two strategic agents as the first real-world proof. A peer dev (dev-host) and a peer dev (prod-host) were the two reviewer agents in that session. Both have since been hibernated and their session context is gone. This doc is the authoritative record of what was shipped and why, independent of any agent's memory.
 
 ---
 
@@ -16,8 +16,8 @@ Three related problems that this work solves together:
 
 Some projects need more than one AI agent working against the same repo. Two examples we run in production:
 
-- **Ziggy dev team** (`~/Antigravity/ziggy` on milo): four agents share the same working directory — `dev-ziggy-orchestrator` (Claude), `dev-ziggy-se` (Claude), `dev-ziggy-codex` (Codex), and `dev-ziggy-fullstack` (Gemini). The orchestrator runs a plan, the three workers execute and cross-review each other's code.
-- **N4 Safety strategic tier** (`~/code/n4safety/n4-armory` on Holmes): two executive agents share the n4-armory repo — `ops-exec-optic` (Gemini, Creative Director / Head of UI-UX) and `ops-exec-mason` (Gemini, CTO / Lead Architect). They don't write implementation code; they write strategic briefs that engineering agents execute against.
+- **Ziggy dev team** (`~/Antigravity/ziggy` on the laptop): four agents share the same working directory — `dev-<team>-orchestrator` (Claude), `dev-<team>-se` (Claude), `dev-<team>-codex` (Codex), and `dev-<team>-fullstack` (Gemini). The orchestrator runs a plan, the three workers execute and cross-review each other's code.
+- **The project's strategic tier** (the strategic working dir on the prod host): two executive agents share the strategic working dir — `ops-<role>` (Gemini, Creative Director / Head of UI-UX) and `ops-<role>` (Gemini, CTO / Lead Architect). They don't write implementation code; they write strategic briefs that engineering agents execute against.
 
 Without a convention, the natural thing is to duplicate every agent's instructions into its provider-specific walk-up file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) and accept the drift. That scales badly.
 
@@ -33,7 +33,7 @@ Claude Code supports a first-class skill system. A Claude agent with the `agent-
 
 Which means: Claude agents can solve "how do I send a message" by invoking a skill; Gemini and Codex agents need the instructions pre-loaded into their wake context or they'll waste time researching it from scratch.
 
-Just telling Gemini "there's an `amp-send` command somewhere" is not enough — the first time an operator tells Mason "send Optic an AMP message asking about the wireframe," a Gemini agent without pre-loaded AMP knowledge will spend 5 minutes trying to figure out what AMP is, where the docs live, and how to invoke the CLI. That's the observable pain point Shane flagged that kicked off this work.
+Just telling Gemini "there's an `amp-send` command somewhere" is not enough — the first time an operator tells the architect agent "send the design agent an AMP message asking about the wireframe," a Gemini agent without pre-loaded AMP knowledge will spend 5 minutes trying to figure out what AMP is, where the docs live, and how to invoke the CLI. That's the observable pain point the operator flagged that kicked off this work.
 
 ---
 
@@ -91,9 +91,9 @@ The script has zero external dependencies beyond `jq` (used only in `--peers` mo
 
 The primer is only injected when the agent has a prompt-type on-wake hook. Specifically, `wakeAgent()` only calls `executeHook()` if `agent.hooks?.['on-wake']` is truthy, and `executeHook()` only prepends the primer to hook values that start with `prompt:`. Shell-command hooks (`agent.hooks['on-wake']` set to a bash command rather than a `prompt:...`) are correctly left alone since prepending markdown to a shell command would break it.
 
-**Consequence:** agents with `meshAware: true` but no `on-wake` hook — or with a shell-command on-wake hook — silently get no primer. The Rollie case surfaced this: Rollie originally had `hooks: null`, woke up without mesh awareness, and the bug was only visible when Shane tried to test him alongside the newly mesh-aware Optic and Mason.
+**Consequence:** agents with `meshAware: true` but no `on-wake` hook — or with a shell-command on-wake hook — silently get no primer. The assistant-agent case surfaced this: the assistant agent originally had `hooks: null`, woke up without mesh awareness, and the bug was only visible when the operator tried to test it alongside the newly mesh-aware design and architect agents.
 
-**Workaround:** give every meshAware agent a minimal prompt-type on-wake hook. Rollie's was updated to a short Dungeon Master ritual (`prompt:You are Rollie, Shane's assistant Dungeon Master. ...`) which is enough to trigger primer injection while preserving his voice.
+**Workaround:** give every meshAware agent a minimal prompt-type on-wake hook. The assistant agent's was updated to a short Dungeon Master ritual (`prompt:You are the assistant agent, the operator's assistant Dungeon Master. ...`) which is enough to trigger primer injection while preserving its voice.
 
 **Proper fix:** issue #7 tracks extending the wake flow to send the primer as a standalone stdin write for meshAware agents without a prompt-type hook. Not blocking the current deployment.
 
@@ -105,15 +105,15 @@ The other half of the story: a convention for how multiple agents share a single
 
 ### 3a. File layout
 
-For a project where multiple strategic agents cohabit one working directory (e.g., `n4-armory` for N4 Safety or `ziggy` for the Ziggy dev team), the convention is:
+For a project where multiple strategic agents cohabit one working directory (e.g., the strategic working dir for the project or `ziggy` for the Ziggy dev team), the convention is:
 
 ```
 <project-root>/
 ├── GEMINI.md                    # generic team context, loaded by walk-up for Gemini agents
 ├── CLAUDE.md                    # generic team context, loaded by walk-up for Claude agents
 ├── AGENTS.md                    # generic team context, loaded by walk-up for Codex agents
-├── OPTIC_INSTRUCTIONS.md        # per-agent, committed, read via onWake hook
-├── MASON_INSTRUCTIONS.md        # per-agent, committed, read via onWake hook
+├── DESIGN_INSTRUCTIONS.md        # per-agent, committed, read via onWake hook
+├── ARCHITECT_INSTRUCTIONS.md        # per-agent, committed, read via onWake hook
 └── <other project files>
 ```
 
@@ -125,11 +125,11 @@ Not every agent needs every file. The rules:
 
 ### 3b. Why GEMINI.md is shared and not per-agent
 
-When Optic and Mason both live in `n4-armory` and both are Gemini agents, they share the same `GEMINI.md` via walk-up. That file contains the strategic tier's roster ("Optic = Creative Director, Mason = CTO, Rollie = ..."), their collaboration protocol (Optic produces design briefs → Mason translates to technical specs → engineering agents execute), the lane-separation rule (strategic agents write briefs, never implementation code), and other context that's common to all members of the tier.
+When the design and architect agents both live in the strategic working dir and both are Gemini agents, they share the same `GEMINI.md` via walk-up. That file contains the strategic tier's roster ("design agent = Creative Director, architect agent = CTO, assistant agent = ..."), their collaboration protocol (the design agent produces design briefs → the architect agent translates to technical specs → engineering agents execute), the lane-separation rule (strategic agents write briefs, never implementation code), and other context that's common to all members of the tier.
 
 Shared roster + shared protocol in one file. Single source of truth. Adding a new strategic agent means adding one row to `GEMINI.md`, not editing N per-agent files.
 
-Per-agent voice and domain knowledge goes in `<AGENT>_INSTRUCTIONS.md`. Those files are independent of each other — editing `OPTIC_INSTRUCTIONS.md` doesn't affect Mason, and vice versa.
+Per-agent voice and domain knowledge goes in `<AGENT>_INSTRUCTIONS.md`. Those files are independent of each other — editing `DESIGN_INSTRUCTIONS.md` doesn't affect the architect agent, and vice versa.
 
 ### 3c. Why on-wake hooks force the per-agent read
 
@@ -144,9 +144,9 @@ Gemini CLI and Codex do not. They will technically load `GEMINI.md` or `AGENTS.m
 That's why the hooks look like this:
 
 ```
-prompt:You are ops-exec-optic, Creative Director and Head of UI/UX
-for N4 Safety. Read GEMINI.md (the strategic-tier roster and shared
-policy) and OPTIC_INSTRUCTIONS.md (your specific role) in your
+prompt:You are ops-<role>, Creative Director and Head of UI/UX
+for the project. Read GEMINI.md (the strategic-tier roster and shared
+policy) and DESIGN_INSTRUCTIONS.md (your specific role) in your
 working directory and explicitly follow their directions in full.
 After reading both, briefly acknowledge your identity and state
 that you are ready for your first brief.
@@ -157,25 +157,25 @@ The hook fires once on wake, forces the read, forces the acknowledgment, and the
 - **Identity statement** — prevents cross-contamination when two agents of the same provider share a CLAUDE.md that has role-specific sections
 - **Explicit file read** — forces Gemini/Codex compliance with walk-up content
 - **"In full"** — prevents the agent from skim-reading
-- **Acknowledgment** — gives Shane or the orchestrator a visible signal that the boot worked
+- **Acknowledgment** — gives the operator or the orchestrator a visible signal that the boot worked
 
 ### 3d. Strategic-tier vs worker-tier
 
-The strategic tier (Optic, Mason, future CMO/CFO/etc.) is distinct from the worker tier (Ziggy dev agents, triage agents, implementation-focused work).
+The strategic tier (design agent, architect agent, future CMO/CFO/etc.) is distinct from the worker tier (Ziggy dev agents, triage agents, implementation-focused work).
 
 **Strategic-tier agents:**
 
 - Write design briefs, strategic docs, Antigravity Prompts for engineering agents to execute
 - Do NOT write implementation code
 - Read the codebase to inform their briefs, but the "lane separation" rule says they hand off the actual coding decisions to implementing agents with deeper project context
-- Typically run on an always-on host (Holmes) so they persist across operator sessions
-- Share a working directory (e.g., `n4-armory`) that holds their committed outputs, reference documents, and team context
+- Typically run on an always-on host (the prod host) so they persist across operator sessions
+- Share a working directory (e.g., the strategic working dir) that holds their committed outputs, reference documents, and team context
 
 **Worker-tier agents (e.g., Ziggy team):**
 
 - Write implementation code in response to orchestrator task assignments
 - Use AMP messages for coordination, not prose handoff
-- Run on a development host (milo, bananajr) and may be hibernated between tasks
+- Run on a development host (the laptop, the dev host) and may be hibernated between tasks
 - Share a project working directory (e.g., `~/Antigravity/ziggy`) that IS the code being worked on
 
 Both tiers use the mesh primer and the provider-file-with-onWake-compliance-hook pattern. The difference is what the agents DO — strategic agents produce strategy artifacts, worker agents produce code.
@@ -184,17 +184,17 @@ Both tiers use the mesh primer and the provider-file-with-onWake-compliance-hook
 
 ## 4. How the two mechanisms combine — end-to-end wake flow
 
-The wake sequence for a strategic-tier agent like Optic looks like this:
+The wake sequence for a strategic-tier agent like the design agent looks like this:
 
 ```
-1. Operator (Shane or another agent via the ai-maestro-agents-management skill)
-   runs: aimaestro-agent.sh wake ops-exec-optic
+1. Operator (the operator or another agent via the ai-maestro-agents-management skill)
+   runs: aimaestro-agent.sh wake ops-<role>
 
 2. ai-maestro's wakeAgent() handler in services/agents-core-service.ts:
    - Loads the Agent record from the registry (reads meshAware, hooks, etc.)
    - Creates/attaches the tmux session
    - Spawns gemini-cli (or the configured program) in the session's
-     working directory (n4-armory in Optic's case)
+     working directory (the strategic working dir in the design agent's case)
    - Waits for the CLI prompt to be ready (waitForPrompt)
 
 3. Once the CLI is ready, loadMeshPrimer(agent) resolves:
@@ -202,7 +202,7 @@ The wake sequence for a strategic-tier agent like Optic looks like this:
    - agent.meshAware is false → returns "" (primer skipped)
 
 4. executeHook() is called with:
-   - The agent's on-wake hook value (e.g., "prompt:You are ops-exec-optic...")
+   - The agent's on-wake hook value (e.g., "prompt:You are ops-<role>...")
    - The mesh primer string (or empty)
    - Runtime variables for interpolation (${projectDirectory}, ${agentName})
 
@@ -211,21 +211,21 @@ The wake sequence for a strategic-tier agent like Optic looks like this:
        finalPrompt = meshPrimer + "\n\n" + userPrompt
    - Types finalPrompt into the agent's stdin via runtime.sendKeys()
 
-6. The agent (Optic, now running gemini-cli in the tmux session) receives
+6. The agent (the design agent, now running gemini-cli in the tmux session) receives
    its first-turn context, which is:
       [mesh primer, ~5 lines]
       [blank line]
-      [user prompt from the on-wake hook, naming Optic's identity and
-       telling her to read GEMINI.md and OPTIC_INSTRUCTIONS.md]
+      [user prompt from the on-wake hook, naming the design agent's identity and
+       telling it to read GEMINI.md and DESIGN_INSTRUCTIONS.md]
 
-7. gemini-cli also loads GEMINI.md via walk-up from n4-armory. So Optic's
+7. gemini-cli also loads GEMINI.md via walk-up from the strategic working dir. So the design agent's
    FIRST TURN has, in order:
    - Mesh primer (injected by ai-maestro)
    - Team roster + lane rules (from GEMINI.md walk-up)
-   - On-wake prompt asking her to read both files and OPTIC_INSTRUCTIONS.md
+   - On-wake prompt asking it to read both files and DESIGN_INSTRUCTIONS.md
 
-8. Optic reads OPTIC_INSTRUCTIONS.md (forced by the on-wake prompt),
-   internalizes her voice/role, acknowledges her identity, and waits for
+8. The design agent reads DESIGN_INSTRUCTIONS.md (forced by the on-wake prompt),
+   internalizes its voice/role, acknowledges its identity, and waits for
    the first real brief.
 ```
 
@@ -234,40 +234,40 @@ The mesh primer is a prefix, not a replacement for the hook. The hook is a prefi
 - **Mesh primer** = "how to talk to other agents on this mesh" (provider-agnostic, short, self-dereferencing via amp-primer)
 - **Walk-up file** (`GEMINI.md`) = "what team/project you are in and the shared rules"
 - **On-wake hook** = "who you specifically are, and a compliance nudge to read your per-agent file"
-- **Per-agent instructions** (`OPTIC_INSTRUCTIONS.md`) = "your voice, your role, your output format"
+- **Per-agent instructions** (`DESIGN_INSTRUCTIONS.md`) = "your voice, your role, your output format"
 
 ---
 
 ## 5. Recipe: adding a new strategic agent to an existing tier
 
-Say you want to add a new Chief Financial Officer agent `ops-exec-cfo` to the N4 Safety strategic tier on Holmes.
+Say you want to add a new Chief Financial Officer agent `ops-<role>` to the project's strategic tier on the prod host.
 
-1. **Write the per-agent instructions** at `n4-armory/CFO_INSTRUCTIONS.md`. Include role, voice, output format (e.g., what a CFO's brief looks like), domain knowledge (which strategic docs in n4-armory are load-bearing for this role), and any lane-separation caveats specific to finance work.
+1. **Write the per-agent instructions** at `<strategic-dir>/CFO_INSTRUCTIONS.md`. Include role, voice, output format (e.g., what a CFO's brief looks like), domain knowledge (which strategic docs in the strategic working dir are load-bearing for this role), and any lane-separation caveats specific to finance work.
 
-2. **Add a row to `n4-armory/GEMINI.md`** in the strategic-tier roster section. Short — name, role, one-line description. Commit to git so the other strategic agents see a new peer next time they wake.
+2. **Add a row to `<strategic-dir>/GEMINI.md`** in the strategic-tier roster section. Short — name, role, one-line description. Commit to git so the other strategic agents see a new peer next time they wake.
 
-3. **If the new agent needs to coordinate with existing tier members** (e.g., CFO produces financial reviews of Optic's campaign proposals), update `GEMINI.md`'s collaboration protocol section to describe the handoff. Keep it terse.
+3. **If the new agent needs to coordinate with existing tier members** (e.g., CFO produces financial reviews of the design agent's campaign proposals), update `GEMINI.md`'s collaboration protocol section to describe the handoff. Keep it terse.
 
 4. **Register the agent in ai-maestro** via the UI or directly in `~/.aimaestro/agents/registry.json`:
 
    ```json
    {
      "id": "<uuid>",
-     "name": "ops-exec-cfo",
+     "name": "ops-<role>",
      "label": "CFO",
      "program": "gemini",
      "programArgs": "--yolo",
-     "workingDirectory": "/home/gosub/code/n4safety/n4-armory",
-     "hostId": "holmes",
+     "workingDirectory": "/home/<user>/code/<project>/<strategic-dir>",
+     "hostId": "prod-host",
      "hooks": {
-       "on-wake": "prompt:You are ops-exec-cfo, Chief Financial Officer for N4 Safety. Read GEMINI.md (the strategic-tier roster and shared policy) and CFO_INSTRUCTIONS.md (your specific role) in your working directory and explicitly follow their directions in full. After reading both, briefly acknowledge your identity and state that you are ready for your first brief."
+       "on-wake": "prompt:You are ops-<role>, Chief Financial Officer for the project. Read GEMINI.md (the strategic-tier roster and shared policy) and CFO_INSTRUCTIONS.md (your specific role) in your working directory and explicitly follow their directions in full. After reading both, briefly acknowledge your identity and state that you are ready for your first brief."
      }
    }
    ```
 
    (`meshAware` does not need to be set — it defaults to true.)
 
-5. **Deploy any ai-maestro changes to Holmes** if this is the first time Holmes is picking up the strategic-tier pattern (should be a no-op at this point since v0.27.9 is already there):
+5. **Deploy any ai-maestro changes to the prod host** if this is the first time the prod host is picking up the strategic-tier pattern (should be a no-op at this point since v0.27.9 is already there):
 
    ```bash
    cd ~/projects/ai-maestro
@@ -278,12 +278,12 @@ Say you want to add a new Chief Financial Officer agent `ops-exec-cfo` to the N4
    pm2 restart ai-maestro
    ```
 
-6. **Wake the agent** via `aimaestro-agent.sh wake ops-exec-cfo` or via the ai-maestro UI. Confirm the first-turn response includes:
+6. **Wake the agent** via `aimaestro-agent.sh wake ops-<role>` or via the ai-maestro UI. Confirm the first-turn response includes:
    - The CFO identity acknowledgment
-   - Evidence that both `GEMINI.md` and `CFO_INSTRUCTIONS.md` were read (Optic and Mason do this by quoting a phrase from their instructions — do the same validation here)
+   - Evidence that both `GEMINI.md` and `CFO_INSTRUCTIONS.md` were read (the design and architect agents do this by quoting a phrase from their instructions — do the same validation here)
    - Readiness statement
 
-7. **Test mesh-aware behavior** by asking the CFO to send an AMP test message to Optic or Mason. If the CFO constructs a valid `amp-send` invocation on first try (with correctly quoted multi-word subject and body, correct `--priority` and `--type` flags), the mesh primer is doing its job. If the CFO pauses to research AMP syntax, something is wrong with the primer injection — check that `agent.meshAware !== false` and that the on-wake hook is a prompt-type hook (not a shell-command hook).
+7. **Test mesh-aware behavior** by asking the CFO to send an AMP test message to the design or architect agent. If the CFO constructs a valid `amp-send` invocation on first try (with correctly quoted multi-word subject and body, correct `--priority` and `--type` flags), the mesh primer is doing its job. If the CFO pauses to research AMP syntax, something is wrong with the primer injection — check that `agent.meshAware !== false` and that the on-wake hook is a prompt-type hook (not a shell-command hook).
 
 ---
 
@@ -293,7 +293,7 @@ Say you want to add a new Chief Financial Officer agent `ops-exec-cfo` to the N4
 
 Each host runs its own ai-maestro server for the agents that live on that host. Merging changes to `swickson/ai-maestro` `main` does not automatically deploy them anywhere. To activate a new version on a specific host, you have to pull and restart on that host.
 
-Holmes runs ai-maestro for Optic, Mason, Rollie, and the other agents registered under `hostId: "holmes"`. Milo runs ai-maestro for the Ziggy team, KAI (`dev-aimaestro-admin`), and any other agents registered under milo's hostId. Dashboard UI on one host calls into the appropriate remote host via its API when waking agents there.
+The prod host runs ai-maestro for the design, architect, and assistant agents, and the other agents registered under `hostId: "prod-host"`. The laptop runs ai-maestro for the Ziggy team, the lead (`dev-<team>-admin`), and any other agents registered under the laptop's hostId. Dashboard UI on one host calls into the appropriate remote host via its API when waking agents there.
 
 Which means: **when you deploy a new ai-maestro version (e.g., to activate a new wake-time injection or primer text), you must deploy it on every host where meshAware agents live**, not just the one running the dashboard. This is load-bearing because the wake flow runs on the agent's host, not the dashboard's host.
 
@@ -308,7 +308,7 @@ NODE_ENV=development yarn install
 NODE_ENV=development yarn build
 ```
 
-This is captured in the Holmes deploy incident from the Iron Syndicate meeting on 2026-04-10. Worth adding to a dedicated deploy script when someone gets around to it (consider `scripts/deploy-to-host.sh`).
+This is captured in the prod-host deploy incident from the dev-team meeting on 2026-04-10. Worth adding to a dedicated deploy script when someone gets around to it (consider `scripts/deploy-to-host.sh`).
 
 ### 6c. The amp-primer install is automatic
 
@@ -333,9 +333,9 @@ If you're deploying to a host whose hostname has changed (laptop rename, VM rebu
 
 Tracked as issues on `swickson/ai-maestro`:
 
-- **#6** — Container sandboxing bypassed on subsequent agent wakes. AI Maestro's docker-backed agents appear to run containerized only on first wake; subsequent wakes spawn on-host. Breaks the sandboxing intent silently. Not blocking the strategic-tier pattern for now because Optic/Mason/Rollie all run on-host anyway, but relevant for any future container-first deployment.
+- **#6** — Container sandboxing bypassed on subsequent agent wakes. AI Maestro's docker-backed agents appear to run containerized only on first wake; subsequent wakes spawn on-host. Breaks the sandboxing intent silently. Not blocking the strategic-tier pattern for now because the design/architect/assistant agents all run on-host anyway, but relevant for any future container-first deployment.
 - **#7** — Mesh primer injection for meshAware agents without a prompt-type on-wake hook. Currently the primer is gated on `agent.hooks?.['on-wake']` being a prompt-type value. Agents without an on-wake hook (or with a shell-command hook) silently miss the primer even when `meshAware: true`. Workaround: give every meshAware agent a minimal prompt-type hook. Proper fix: inject primer as a standalone stdin write after `waitForPrompt()` when there's no hook.
-- **#8** — Memory consolidation hardcoded to Claude Code session format. `services/agents-memory-service.ts` only reads conversation history from `~/.claude/projects/*/*.jsonl`. Gemini and Codex agents are silently skipped by the consolidator. Affects Optic, Mason, Rollie on Holmes. Fix is provider-aware source-path resolution and per-provider parsers, but requires empirical investigation of what Gemini and Codex actually persist (may be nothing).
+- **#8** — Memory consolidation hardcoded to Claude Code session format. `services/agents-memory-service.ts` only reads conversation history from `~/.claude/projects/*/*.jsonl`. Gemini and Codex agents are silently skipped by the consolidator. Affects the design, architect, and assistant agents on the prod host. Fix is provider-aware source-path resolution and per-provider parsers, but requires empirical investigation of what Gemini and Codex actually persist (may be nothing).
 
 All three are independent of the current strategic-tier pattern and do not block adding new agents. They are quality-of-life improvements to pick up later.
 
@@ -368,4 +368,4 @@ All three are independent of the current strategic-tier pattern and do not block
 
 ### Origin
 
-This pattern was designed, implemented, reviewed, deployed, and validated during a single extended session on 2026-04-10 and 2026-04-11 involving KAI, CelestIA, and dev-aimaestro-holmes (Watson) with Shane driving. The Iron Syndicate meeting thread contains the design discussion and review history. Optic and Mason were the first real-world agents migrated using the pattern; Rollie was retrofitted shortly after as the first case of issue #7 (primer for hookless agents). The Ziggy dev team was refactored onto the same pattern on 2026-04-11.
+This pattern was designed, implemented, reviewed, deployed, and validated during a single extended session on 2026-04-10 and 2026-04-11 involving the lead, a peer dev (dev-host), and a peer dev (prod-host) with the operator driving. The dev-team meeting thread contains the design discussion and review history. The design and architect agents were the first real-world agents migrated using the pattern; the assistant agent was retrofitted shortly after as the first case of issue #7 (primer for hookless agents). The Ziggy dev team was refactored onto the same pattern on 2026-04-11.

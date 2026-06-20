@@ -11,7 +11,7 @@ import path from 'path'
 // updated to forward `botSlug` (per-bot targeting / cold-start), but the
 // headless twin kept passing only { platform, subject } — so headless/API-only
 // mode silently fell back to context.botSlug and broke the per-bot contract
-// (Columbo catch on #217). This test pins BOTH paths.
+// (the PR-review agent's catch on #217). This test pins BOTH paths.
 // ============================================================================
 
 vi.mock('@/services/users-service', () => ({
@@ -63,7 +63,7 @@ describe('headless-router parity — /notify handler must also forward botSlug (
       'utf-8',
     )
     // Anchor on the unique notifyUser call in the /notify handler and assert it
-    // forwards botSlug — the exact drift Columbo caught (headless dropped botSlug
+    // forwards botSlug — the exact drift the PR-review agent caught (headless dropped botSlug
     // while the Next route kept it).
     const idx = src.indexOf('notifyUser(params.id, body.message')
     expect(idx, 'notifyUser call not found in headless-router /notify handler').toBeGreaterThan(-1)

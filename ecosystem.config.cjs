@@ -23,7 +23,7 @@ module.exports = {
     name: 'ai-maestro',
     script: 'scripts/start-with-ssh.sh',
     // Resolve cwd to the directory of THIS ecosystem file (host-agnostic). A
-    // hardcoded absolute path is per-host (bananajr/Milo/Holmes differ) and
+    // hardcoded absolute path is per-host (the dev host/the laptop/the prod host differ) and
     // breaks `pm2 restart ecosystem.config.cjs` on any host where it's wrong —
     // the pm2-status-lies class (pm2 reports online from a dead cwd). See #188.
     cwd: __dirname,

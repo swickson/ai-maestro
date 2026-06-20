@@ -708,7 +708,7 @@ describe('wakeAgent', () => {
   })
 
   it('scrubs CLAUDE_CODE_CHILD_SESSION at launch but keeps EXPERIMENTAL_AGENT_TEAMS (#196)', async () => {
-    // Site-level guard (Columbo PR #199 suggestion): pins the launch site itself,
+    // Site-level guard (the PR-review agent's PR #199 suggestion): pins the launch site itself,
     // not just the LAUNCH_ENV_SCRUB constant, so a future revert to a bare
     // `unset CLAUDECODE` here fails loudly. CLAUDE_CODE_CHILD_SESSION=1 inherited
     // from the agent-teams pm2 parent suppresses per-project transcripts.

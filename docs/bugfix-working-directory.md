@@ -5,7 +5,7 @@
 
 ## Problem
 
-When creating an agent via the wizard UI and specifying a working directory, the agent always ended up with `/Users/shanewickson` (the home directory) instead of the user's selection. This happened regardless of what path was entered.
+When creating an agent via the wizard UI and specifying a working directory, the agent always ended up with `/Users/<user>` (the home directory) instead of the user's selection. This happened regardless of what path was entered.
 
 ## Root Cause Analysis
 
@@ -25,13 +25,13 @@ The `workingDirectory` string from the wizard (e.g., `~/projects/my-app`) was pa
 tmux new-session -d -s "name" -c "~/projects/my-app"
 ```
 
-**tmux does not expand `~`.** It silently falls back to `$HOME` (`/Users/shanewickson`). This was confirmed empirically -- creating a tmux session with `-c "~/anything"` always results in `#{pane_current_path}` reporting the home directory.
+**tmux does not expand `~`.** It silently falls back to `$HOME` (`/Users/<user>`). This was confirmed empirically -- creating a tmux session with `-c "~/anything"` always results in `#{pane_current_path}` reporting the home directory.
 
 ### Bug 2: Session listing used tmux-derived path instead of registry
 
 **File:** `services/sessions-service.ts:222-227` (original)
 
-`fetchLocalSessions()` populated `workingDirectory` from `tmux display-message #{pane_current_path}` via `runtime.listSessions()`. Even if the agent registry stored the correct path, the session list overwrote it with whatever tmux reported -- which after tilde-path failure was `/Users/shanewickson`.
+`fetchLocalSessions()` populated `workingDirectory` from `tmux display-message #{pane_current_path}` via `runtime.listSessions()`. Even if the agent registry stored the correct path, the session list overwrote it with whatever tmux reported -- which after tilde-path failure was `/Users/<user>`.
 
 ### Bug 3: Wizard placeholder encouraged tilde paths
 
@@ -84,12 +84,12 @@ The following agents had their registry entries manually corrected:
 
 | Agent | Field | Before | After |
 |-------|-------|--------|-------|
-| `dev-aimaestro-admin` | workingDirectory | `/Users/shanewickson` | `/Users/shanewickson/Antigravity/ai-maestro` |
-| `dev-aimaestro-admin` | sessions[0].workingDirectory | `/Users/shanewickson` | `/Users/shanewickson/Antigravity/ai-maestro` |
-| `dev-aimaestro-admin` | preferences.defaultWorkingDirectory | `/Users/shanewickson` | `/Users/shanewickson/Antigravity/ai-maestro` |
-| `dev-aimaestrogw-operator` | workingDirectory | `~/Antigravity/aimaestro-gateways` | `/Users/shanewickson/Antigravity/aimaestro-gateways` |
-| `dev-aimaestrogw-operator` | sessions[0].workingDirectory | `~/Antigravity/aimaestro-gateways` | `/Users/shanewickson/Antigravity/aimaestro-gateways` |
-| `dev-aimaestrogw-operator` | preferences.defaultWorkingDirectory | `~/Antigravity/aimaestro-gateways` | `/Users/shanewickson/Antigravity/aimaestro-gateways` |
+| `dev-<team>-admin` | workingDirectory | `/Users/<user>` | `/Users/<user>/Antigravity/ai-maestro` |
+| `dev-<team>-admin` | sessions[0].workingDirectory | `/Users/<user>` | `/Users/<user>/Antigravity/ai-maestro` |
+| `dev-<team>-admin` | preferences.defaultWorkingDirectory | `/Users/<user>` | `/Users/<user>/Antigravity/ai-maestro` |
+| `dev-<team>-gw-operator` | workingDirectory | `~/Antigravity/aimaestro-gateways` | `/Users/<user>/Antigravity/aimaestro-gateways` |
+| `dev-<team>-gw-operator` | sessions[0].workingDirectory | `~/Antigravity/aimaestro-gateways` | `/Users/<user>/Antigravity/aimaestro-gateways` |
+| `dev-<team>-gw-operator` | preferences.defaultWorkingDirectory | `~/Antigravity/aimaestro-gateways` | `/Users/<user>/Antigravity/aimaestro-gateways` |
 
 `test-wizard-dir3` was a debug artifact and was deleted from the registry.
 
@@ -100,13 +100,13 @@ The following agents had their registry entries manually corrected:
 
 ## Expected Results After Restart
 
-1. `dev-aimaestro-admin` should start with working directory `/Users/shanewickson/Antigravity/ai-maestro`
+1. `dev-<team>-admin` should start with working directory `/Users/<user>/Antigravity/ai-maestro`
 2. Creating a new agent via the wizard with any path (including `~/...`) should correctly resolve and persist the full absolute path
 3. The session list should show registry-stored paths, not tmux-derived paths
 
 ## If the Fix Did NOT Take
 
-1. Check `~/.aimaestro/agents/registry.json` -- verify `dev-aimaestro-admin` still has the corrected `workingDirectory`
+1. Check `~/.aimaestro/agents/registry.json` -- verify `dev-<team>-admin` still has the corrected `workingDirectory`
 2. Check if AI Maestro server was restarted (`pm2 restart ai-maestro`) to pick up the code changes
 3. The three code changes are in:
    - `services/sessions-service.ts` (tilde expansion + registry preference)

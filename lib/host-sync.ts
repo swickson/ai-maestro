@@ -651,7 +651,7 @@ export async function syncWithAllPeers(): Promise<{
       })
 
       if (result.success) {
-        // Check if the peer's hostname has changed (e.g. milo-dock → shanes-m3-pro-mbp)
+        // Check if the peer's hostname has changed (e.g. the laptop's docked vs wireless name)
         // The peer responds with its current identity — if the ID differs from what we
         // have stored, migrate the host record (same logic as validateHosts for self).
         if (result.peerHost && result.peerHost.id !== peer.id) {

@@ -152,11 +152,11 @@ describe('user-directory', () => {
     const users = [
       {
         id: 'user-1',
-        displayName: 'Shane Wickson',
-        aliases: ['gosub', 'shane', 'swick'],
+        displayName: 'the operator',
+        aliases: ['<user>', 'operator', 'op'],
         platforms: [
-          { type: 'discord', platformUserId: '123456789', handle: 'gosub' },
-          { type: 'slack', platformUserId: 'U0ABC', handle: 'shane.wickson' },
+          { type: 'discord', platformUserId: '123456789', handle: '<user>' },
+          { type: 'slack', platformUserId: 'U0ABC', handle: 'alice.anderson' },
         ],
         role: 'operator',
         trustLevel: 'full',
@@ -183,9 +183,9 @@ describe('user-directory', () => {
 
     it('getUserByAlias — case insensitive', async () => {
       const { getUserByAlias } = await import('@/lib/user-directory')
-      expect(getUserByAlias('gosub')?.id).toBe('user-1')
-      expect(getUserByAlias('GOSUB')?.id).toBe('user-1')
-      expect(getUserByAlias('Shane')?.id).toBe('user-1')
+      expect(getUserByAlias('<user>')?.id).toBe('user-1')
+      expect(getUserByAlias('OPERATOR')?.id).toBe('user-1')
+      expect(getUserByAlias('op')?.id).toBe('user-1')
       expect(getUserByAlias('unknown')).toBeNull()
     })
 
@@ -199,8 +199,8 @@ describe('user-directory', () => {
 
     it('getUserByDisplayName — case insensitive', async () => {
       const { getUserByDisplayName } = await import('@/lib/user-directory')
-      expect(getUserByDisplayName('Shane Wickson')?.id).toBe('user-1')
-      expect(getUserByDisplayName('shane wickson')?.id).toBe('user-1')
+      expect(getUserByDisplayName('the operator')?.id).toBe('user-1')
+      expect(getUserByDisplayName('THE OPERATOR')?.id).toBe('user-1')
       expect(getUserByDisplayName('Nobody')).toBeNull()
     })
 

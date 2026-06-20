@@ -7,7 +7,7 @@
 #
 # Examples:
 #   meeting-send.sh abc-123 "Hello team!"
-#   meeting-send.sh abc-123 "I agree with @kai" --from agent-uuid --alias Watson
+#   meeting-send.sh abc-123 "I agree with @the-lead" --from agent-uuid --alias a-peer-dev
 #
 # Environment:
 #   AIMAESTRO_HOST    — API base URL (default: http://localhost:23000)

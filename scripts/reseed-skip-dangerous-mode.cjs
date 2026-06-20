@@ -30,7 +30,7 @@
  *   node scripts/reseed-skip-dangerous-mode.cjs [--dry-run] [--registry PATH]
  *
  * Default registry: ~/.aimaestro/agents/registry.json. Mesh-wide deploy is
- * per-host: run on each host (Milo / Holmes / bananajr) since the registry +
+ * per-host: run on each host (the laptop / the prod host / the dev host) since the registry +
  * per-agent claude-settings.json are host-local.
  *
  * Cross-references: kanban 97bd5dad (this fix), 3205393e (admin-closed root

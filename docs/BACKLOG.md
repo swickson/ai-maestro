@@ -2054,7 +2054,7 @@ Agents are reactive today — they only work when a human wakes them and types a
 - Monitor whether scheduled tasks ran successfully or failed
 
 **Inspiration:**
-The swickson fork included a manual cron script (`scripts/cron-wake-hardin.sh`) that:
+The <user> fork included a manual cron script (`scripts/cron-wake-an agent.sh`) that:
 1. Checks agent status via API
 2. Wakes the agent if hibernated
 3. Waits for the session to be ready (polling, up to 60s)

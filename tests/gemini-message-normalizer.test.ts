@@ -3,7 +3,7 @@
  *
  * Pins the Gemini-JSONL → Claude-shape transform so cloud-Gemini chat-panel
  * rendering stays provider-agnostic in ChatView. Sample shapes are
- * empirically grounded from Watson's 2026-05-11 Holmes Mason/Optic probe
+ * empirically grounded from a peer dev (prod-host)'s 2026-05-11 probe on the prod host
  * (kanban d937c33d).
  */
 

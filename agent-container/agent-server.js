@@ -253,8 +253,8 @@ wss.on('connection', (ws, req) => {
     // View.tsx) sends a resize immediately on WS connect, so spawn typically
     // happens within ms. This avoids the 80x24-then-resize flash where Claude
     // / gemini TUIs initially render at 80 cols then jump to the real size,
-    // producing broken-line wrap on first paint (Shane empirical 2026-05-05
-    // Hale screenshots).
+    // producing broken-line wrap on first paint (the operator empirical 2026-05-05
+    // an agent screenshots).
     //
     // pendingInput (declared in outer scope) buffers any 'input' messages
     // that arrive before spawn (rare — client sends resize before any input

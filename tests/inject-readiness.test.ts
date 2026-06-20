@@ -124,7 +124,7 @@ describe('isBlockingPrompt (the inject gate discriminator)', () => {
 describe('isTerminalIdle (sync fast-path — POSITIVE/busy is trustworthy, idle is not)', () => {
   // NOTE: untracked⇒idle here is BY DESIGN. sessionActivity is only populated
   // while a dashboard client streams the pane, so an UNWATCHED busy pane reads
-  // idle by this signal alone (the Bishop blind spot). The fix lives one layer up
+  // idle by this signal alone (the gateway-agent blind spot). The fix lives one layer up
   // in isPaneBusy, which PROBES via capture-pane on apparent-idle — see below.
   it('treats an untracked session as idle (fast-path only; isPaneBusy then probes)', () => {
     expect(isTerminalIdle(sess, NOW)).toBe(true)
@@ -163,7 +163,7 @@ describe('paneShowsBusyFooter (empirically-calibrated, line-anchored)', () => {
   })
 
   it('does NOT match an idle Claude status bar (false-positive guard)', () => {
-    expect(paneShowsBusyFooter('dev-aimaestrogw-holmes | 1 unread')).toBe(false)
+    expect(paneShowsBusyFooter('dev-team-role | 1 unread')).toBe(false)
     expect(paneShowsBusyFooter('Opus 4.8 (1M context) | ctx 31% | $31.36')).toBe(false)
     expect(paneShowsBusyFooter('⏵⏵ bypass permissions on (shift+tab to cycle)')).toBe(false)
     expect(paneShowsBusyFooter('❯ ')).toBe(false)
@@ -177,7 +177,7 @@ describe('paneShowsBusyFooter (empirically-calibrated, line-anchored)', () => {
     expect(paneShowsBusyFooter('● Running the migration now and then testing')).toBe(false)
   })
 
-  it('COLUMBO CASE: a busy-quoting body line IMMEDIATELY above the idle footer → false', () => {
+  it('PR-REVIEW-AGENT CASE: a busy-quoting body line IMMEDIATELY above the idle footer → false', () => {
     // The dangerous case the region-only fix missed: tail-8 INCLUDES this body
     // line, so only structural ANCHORING (not the window) can reject it. The "●"
     // response bullet is outside the spinner class, and the busy tokens are mid-line.
@@ -187,7 +187,7 @@ describe('paneShowsBusyFooter (empirically-calibrated, line-anchored)', () => {
       '────────────────────',
       '❯ ',
       '────────────────────',
-      '  dev-aimaestrogw-holmes | 0 unread',
+      '  dev-team-role | 0 unread',
       '  Opus 4.8 (1M context) | ctx 31% | $1.00',
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n')
@@ -198,7 +198,7 @@ describe('paneShowsBusyFooter (empirically-calibrated, line-anchored)', () => {
     // The defect a fixed tail-N window had: a transient feedback prompt / Tip line
     // / interior blanks FLOAT the spinner up (measured -7/-9/-11 on real panes), so
     // a windowed match slices it out → court. Full-pane + anchoring catches it
-    // anywhere. Reproduces KAI's -11 capture (feedback-prompt layout).
+    // anywhere. Reproduces the lead's -11 capture (feedback-prompt layout).
     const chrome = [
       '────────────────────',
       '❯ ',
@@ -237,7 +237,7 @@ describe('isPaneBusy (client-independent probe — closes the unwatched-pane bli
     expect(probe.calls).toBe(0) // short-circuited, no probe
   })
 
-  it('BISHOP CASE: untracked (apparent-idle) but capture shows busy footer -> BUSY', async () => {
+  it('GATEWAY-AGENT CASE: untracked (apparent-idle) but capture shows busy footer -> BUSY', async () => {
     const probe = fakeProbe(BUSY_PANE)
     expect(await isPaneBusy(sess, NOW, probe)).toBe(true)
     expect(probe.calls).toBe(1) // footer match on first capture, no second capture/delay
@@ -280,7 +280,7 @@ describe('readHookState', () => {
     expect(readHookState(wd)?.status).toBe('permission_request')
   })
 
-  it('never stales a permission waiting_for_input (CelestIA edge: must not auto-approve)', () => {
+  it('never stales a permission waiting_for_input (peer-dev edge: must not auto-approve)', () => {
     writeState(wd, { status: 'waiting_for_input', notificationType: 'permission_prompt', updatedAt: new Date(Date.now() - 600_000).toISOString() })
     const state = readHookState(wd)
     expect(state?.status).toBe('waiting_for_input')

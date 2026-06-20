@@ -554,7 +554,7 @@ export function extractAntigravityUsage(dbPath: string): AntigravityUsage | null
 }
 
 /**
- * The cross-language emit contract (LOCKED 2026-06-16 with KAI + Sam).
+ * The cross-language emit contract (LOCKED 2026-06-16 with the lead + an agent).
  *
  * Part 1 (this module, TS) is the SOLE source of truth for antigravity token
  * counting; the Ziggy spend pipeline (Python, github.com/swickson/ziggy

@@ -5,7 +5,7 @@
 
 ## Problem
 
-A MacBook that connects via Thunderbolt dock reports hostname `milo-dock.internal`, but on WiFi reports `shanes-m3-pro-mbp`. The codebase treated these as two separate machines, causing a cascade of failures across the agent registry, AMP messaging, and API key management.
+A MacBook (the laptop) that connects via Thunderbolt dock reports hostname `host-dock.internal`, but on WiFi reports `host-wifi`. The codebase treated these as two separate machines, causing a cascade of failures across the agent registry, AMP messaging, and API key management.
 
 The issue was first noticed when the AI Maestro UI showed duplicate "hosts" entries in the hosts section, which led to an initial small fix to `isSelf()` in a prior session. This session uncovered the full extent of the damage.
 
@@ -43,7 +43,7 @@ Even after switching agent lookup to use `isSelf()`, it still returned `false` f
 const matchedHost = cachedHosts.find(h => h.id.toLowerCase() === hostIdLower)
 ```
 
-When asked "is `milo-dock.internal` this machine?", it looked for a host with `id === "milo-dock.internal"`. But after hostname migration, the host's ID had been updated to `shanes-m3-pro-mbp`, with `milo-dock.internal` only present in the aliases array -- which was never searched.
+When asked "is `host-dock.internal` this machine?", it looked for a host with `id === "host-dock.internal"`. But after hostname migration, the host's ID had been updated to `host-wifi`, with `host-dock.internal` only present in the aliases array -- which was never searched.
 
 ### Layer 3: Hostname migration discarded old aliases
 
@@ -60,7 +60,7 @@ validHosts[selfIdx] = {
 }
 ```
 
-After migration, `milo-dock.internal` was gone from both the ID field and the aliases array, making it unrecoverable.
+After migration, `host-dock.internal` was gone from both the ID field and the aliases array, making it unrecoverable.
 
 ## Cascading Failures
 
@@ -68,20 +68,20 @@ The hostname mismatch propagated through every system that depends on agent iden
 
 ### 1. Duplicate agents in the registry
 
-When the MacBook was on WiFi (`shanes-m3-pro-mbp`), any operation that called `getAgentByName()` or `createAgent()` failed to find agents registered under `milo-dock.internal`. This created duplicates:
+When the MacBook was on WiFi (`host-wifi`), any operation that called `getAgentByName()` or `createAgent()` failed to find agents registered under `host-dock.internal`. This created duplicates:
 
 | Original | Duplicate | Trigger |
 |----------|-----------|---------|
-| dev-ziggy-orchestrator (Maestro) | dev-ziggy-orchestrator (Nikolai) | Auto-registration from tmux session |
-| dev-ziggy-se (Ziggy-SE) | dev-ziggy-se (Natalia) | Auto-registration from tmux session |
-| dev-ziggy-se (Ziggy-SE) | dev-ziggy-se (Gaius) | Manual curl re-registration |
+| dev-<team>-orchestrator (label A) | dev-<team>-orchestrator (dup 1) | Auto-registration from tmux session |
+| dev-<team>-se (label B) | dev-<team>-se (dup 2) | Auto-registration from tmux session |
+| dev-<team>-se (label B) | dev-<team>-se (dup 3) | Manual curl re-registration |
 
 ### 2. AMP public key overwrites
 
 Each duplicate agent registered with the AMP server using a new keypair. The server stored the new public key, overwriting the original. When the original agent (with its original private key) tried to send messages, signature verification failed:
 
 ```
-[AMP Route] Invalid signature from dev-ziggy-orchestrator@n4x-corp.aimaestro.local
+[AMP Route] Invalid signature from dev-<team>-orchestrator@<org>.aimaestro.local
 ```
 
 ### 3. Orphaned API keys causing 500 errors
@@ -98,7 +98,7 @@ When duplicate agents were created, `amp-init --auto` set `AMP_DIR` to the dupli
 
 ### 5. API key accumulation
 
-The AMP registration endpoint issued a new API key on every re-registration without revoking old ones. Combined with repeated auto-registrations from hostname-triggered duplicates, agents accumulated many active keys (up to 10 for dev-ziggy-orchestrator). While not a functional failure, this cluttered the key store and created confusion during debugging.
+The AMP registration endpoint issued a new API key on every re-registration without revoking old ones. Combined with repeated auto-registrations from hostname-triggered duplicates, agents accumulated many active keys (up to 10 for dev-<team>-orchestrator). While not a functional failure, this cluttered the key store and created confusion during debugging.
 
 ### 6. `.index.json` overwrites
 
@@ -191,14 +191,14 @@ console.log(`[AMP Register] Re-registering agent '${normalizedName}' (same key f
 
 In addition to the code fixes, the following manual cleanup was required to restore the system:
 
-1. **Deleted duplicate agents** from `~/.aimaestro/agents/registry.json` (Natalia, Nikolai, Gaius)
+1. **Deleted duplicate agents** from `~/.aimaestro/agents/registry.json` (dup 1, dup 2, dup 3)
 2. **Merged inbox messages** from duplicate agent directories into originals
 3. **Fixed `.index.json`** to point to correct local UUIDs (3 times -- the registration endpoint kept overwriting it)
 4. **Re-registered agents** with correct public keys after duplicates had overwritten them
 5. **Fixed API key records** in `~/.aimaestro/amp-api-keys.json` to point to correct agent UUIDs
 6. **Revoked 23 stale API keys**, leaving 1 active key per agent
-7. **Added `milo-dock.internal` to host aliases** in `~/.aimaestro/hosts.json` (since the migration had already run and wouldn't re-trigger)
-8. **Updated `dev-ziggy-se` AMP config** after rename from `ziggy` (config.json, registration file, registry metadata)
+7. **Added `host-dock.internal` to host aliases** in `~/.aimaestro/hosts.json` (since the migration had already run and wouldn't re-trigger)
+8. **Updated `dev-<team>-se` AMP config** after rename from `ziggy` (config.json, registration file, registry metadata)
 
 ## Lessons Learned
 

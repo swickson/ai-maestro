@@ -9,11 +9,11 @@ vi.mock('@/lib/user-directory', () => {
   const users = [
     {
       id: 'user-1',
-      displayName: 'Shane Wickson',
-      aliases: ['gosub', 'shane'],
+      displayName: 'the operator',
+      aliases: ['<user>', 'operator'],
       platforms: [
-        { type: 'discord', platformUserId: '123', handle: 'gosub' },
-        { type: 'teams', platformUserId: 'aad-xyz', handle: 'Shane', context: { tenantId: 't1', botSlug: 'bot-alpha' } },
+        { type: 'discord', platformUserId: '123', handle: '<user>' },
+        { type: 'teams', platformUserId: 'aad-xyz', handle: 'the operator', context: { tenantId: 't1', botSlug: 'bot-alpha' } },
       ],
       role: 'operator',
       trustLevel: 'full',
@@ -124,7 +124,7 @@ describe('users-service', () => {
     it('returns user when found', () => {
       const result = findUserById('user-1')
       expect(result.status).toBe(200)
-      expect(result.data?.user.displayName).toBe('Shane Wickson')
+      expect(result.data?.user.displayName).toBe('the operator')
     })
 
     it('returns 404 when not found', () => {
@@ -161,7 +161,7 @@ describe('users-service', () => {
 
   describe('resolveUser', () => {
     it('resolves by alias', () => {
-      const result = resolveUser({ alias: 'gosub' })
+      const result = resolveUser({ alias: '<user>' })
       expect(result.status).toBe(200)
       expect(result.data?.user.id).toBe('user-1')
     })
@@ -173,7 +173,7 @@ describe('users-service', () => {
     })
 
     it('resolves by displayName', () => {
-      const result = resolveUser({ displayName: 'Shane Wickson' })
+      const result = resolveUser({ displayName: 'the operator' })
       expect(result.status).toBe(200)
       expect(result.data?.user.id).toBe('user-1')
     })
@@ -225,7 +225,7 @@ describe('users-service', () => {
       // botSlug refreshed to latest bot, tenantId preserved
       expect(teams.context).toEqual({ tenantId: 't1', botSlug: 'bot-beta' })
       expect(teams.platformUserId).toBe('aad-xyz')
-      expect(teams.handle).toBe('Shane')
+      expect(teams.handle).toBe('the operator')
       // discord mapping untouched
       const discord = updates.platforms!.find(p => p.type === 'discord')!
       expect(discord.platformUserId).toBe('123')
@@ -280,7 +280,7 @@ describe('users-service', () => {
     })
 
     it('explicit options.botSlug TARGETS that bot, overriding context.botSlug (#13 cold-start)', async () => {
-      // Proactive DM that must send as a specific bot (e.g. LeoAI) rather than
+      // Proactive DM that must send as a specific bot (e.g. an agent) rather than
       // whichever bot last had inbound — this is what drives a gateway cold-start.
       const result = await notifyUser('user-1', 'hi', { platform: 'teams', botSlug: 'leoai' })
       expect(result.status).toBe(200)

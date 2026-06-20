@@ -75,13 +75,13 @@ describe('canonicalStringify', () => {
 
   it('canonicalizes deeply-nested AMP-shaped envelope payloads', () => {
     const payload = {
-      meta: { team: 'iron-syndicate', host: 'milo' },
+      meta: { team: 'the-dev-team', host: 'the-laptop' },
       attachments: [{ size: 1234, name: 'log.txt', kind: 'amp-v1' }],
       body: 'check the run',
       type: 'notification',
     }
     expect(canonicalStringify(payload)).toBe(
-      '{"attachments":[{"kind":"amp-v1","name":"log.txt","size":1234}],"body":"check the run","meta":{"host":"milo","team":"iron-syndicate"},"type":"notification"}'
+      '{"attachments":[{"kind":"amp-v1","name":"log.txt","size":1234}],"body":"check the run","meta":{"host":"the-laptop","team":"the-dev-team"},"type":"notification"}'
     )
   })
 

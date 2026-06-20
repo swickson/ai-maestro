@@ -1,7 +1,7 @@
 # Cloud (Sandboxed) Agents
 
 **Status:** Design + operator guide
-**Authors:** Watson (dev-aimaestro-holmes), CelestIA (dev-aimaestro-bananajr), KAI (dev-aimaestro-admin)
+**Authors:** a peer dev (prod-host) (dev-<team>-<role>), a peer dev (dev-host) (dev-<team>-<role>), the lead (dev-<team>-<role>)
 **Related:** [#6](https://github.com/swickson/ai-maestro/issues/6) (wakeAgent fallthrough bug, prerequisite), [#52](https://github.com/swickson/ai-maestro/issues/52) (mount spec + operator flow)
 
 ---
@@ -10,7 +10,7 @@
 
 Cloud agents (`deployment.type = 'cloud'`) run inside a docker container per-agent for blast-radius containment. The container starts on every wake, the agent's process runs inside it, and the agent sees only the host filesystem paths explicitly bind-mounted into the container.
 
-Cloud agents are the right default for any agent running with `--yolo`, `--dangerously-skip-permissions`, or any other non-interactive flag that disables the per-action permission prompts. Host-level (`deployment.type = 'local'`) agents remain appropriate for trusted operator-controlled workflows — e.g., dev-aimaestro-holmes, the docker/ziggy build agent on Holmes, and the gateway agent on Holmes — but those should be a small, named set, not the default.
+Cloud agents are the right default for any agent running with `--yolo`, `--dangerously-skip-permissions`, or any other non-interactive flag that disables the per-action permission prompts. Host-level (`deployment.type = 'local'`) agents remain appropriate for trusted operator-controlled workflows — e.g., dev-<team>-<role>, the docker/ziggy build agent on the prod host, and the gateway agent on the prod host — but those should be a small, named set, not the default.
 
 > **Prerequisite:** Issue [#6](https://github.com/swickson/ai-maestro/issues/6) must be fixed first. Until it is, cloud agents only spawn inside their container on the *first* wake; subsequent wakes silently fall through to a host-native code path. Until #6 is closed, the sandboxing intent of `deployment.type = 'cloud'` is not enforced after the first session.
 
@@ -26,19 +26,19 @@ For agents whose work lives entirely inside their working directory (or a parent
 
 | Agent | Mounts |
 | --- | --- |
-| Distill, Hale | `/home/gosub/agents/<agent>` (rw) |
-| Mason, Optic | `n4-armory` (rw) + `n4safety-app` (ro) + `n4safety-website` (ro) |
+| an agent, an agent | `/home/<user>/agents/<agent>` (rw) |
+| an agent, an agent | `the strategic working dir` (rw) + `the application repo` (ro) + `the project website` (ro) |
 
 Read-only on sibling references prevents an agent scoped to one project from accidentally writing into a peer project.
 
 ### Pattern B — Specialized-tooling agents
 
-For agents that depend on an actively-developed peer project (Rollie + future Vance need ziggy), bind-mount the live project read-write so edits cross the host↔container boundary immediately.
+For agents that depend on an actively-developed peer project (a worker agent + the future exec-assistant agent need ziggy), bind-mount the live project read-write so edits cross the host↔container boundary immediately.
 
 | Agent | Mounts |
 | --- | --- |
-| Rollie | home (rw) + `/home/gosub/code/ziggy` (rw) + ziggy-ingest binary (ro) + MCP server surface |
-| Vance (planned) | same shape as Rollie |
+| a worker agent | home (rw) + `/home/<user>/code/ziggy` (rw) + ziggy-ingest binary (ro) + MCP server surface |
+| the exec-assistant agent (planned) | same shape as the worker agent |
 
 Pattern B intentionally avoids `git clone + build` inside the container on first wake — for an actively-developed dep, the container should always see the working tree the operator is editing on the host. No "stale ziggy inside the container" failure mode.
 
@@ -61,18 +61,18 @@ Auto-injected by `POST /api/agents/docker/create` so amp-helper resolves the age
 
 Operator-supplied `extraEnv` in the create request merges on top — same key wins for the operator, so any of these can be overridden when needed. Precedence: **image default `ENV` < auto-injected common envs < operator `extraEnv`**.
 
-### UID/GID alignment (load-bearing — Hutch's "#1 silent failure")
+### UID/GID alignment (load-bearing — the ops agent's "#1 silent failure")
 
 The container's `claude` user is uid=1000/gid=1000. The host user that owns `~/.agent-messaging/` and `~/.aimaestro/` **must also be uid=1000** for the bind mounts to work. If the UIDs don't match:
 
 - amp-send writes from inside the container produce host files with mismatched ownership; relay silently breaks or emits permission-denied.
-- The new agent's per-agent dirs are created as the server-process user (uid 1000 on bananajr/Holmes by convention) — if the container runs at a different uid, the keys/registrations directory is unreadable from inside.
+- The new agent's per-agent dirs are created as the server-process user (uid 1000 on the dev host/prod host by convention) — if the container runs at a different uid, the keys/registrations directory is unreadable from inside.
 
 If your host user isn't uid 1000, either rebuild the image with a matching `USER_ID` build arg (the Dockerfile accepts one) or override at runtime via `docker run --user`.
 
 ### Per-agent vs whole-directory `~/.agent-messaging` mount
 
-This doc bind-mounts only the per-agent subdir (`~/.agent-messaging/agents/<id>/`) into the container. An alternative is to bind the whole parent `~/.agent-messaging/` so the container sees every agent's message dirs (used by some Holmes deployments to enable cross-agent inbox reads from inside relay agents).
+This doc bind-mounts only the per-agent subdir (`~/.agent-messaging/agents/<id>/`) into the container. An alternative is to bind the whole parent `~/.agent-messaging/` so the container sees every agent's message dirs (used by some prod-host deployments to enable cross-agent inbox reads from inside relay agents).
 
 | | Per-agent (this doc's default) | Whole-directory |
 |---|---|---|
@@ -119,7 +119,7 @@ For MCP servers or CLI tools that aren't on npm, or that you want to keep out of
     },
     "sandbox": {
       "mounts": [
-        { "hostPath": "/home/gosub/agents/rollie", "containerPath": "/home/gosub/agents/rollie" },
+        { "hostPath": "/home/<user>/agents/an agent", "containerPath": "/home/<user>/agents/an agent" },
         { "hostPath": "/opt/mcp-foo", "containerPath": "/opt/mcp-foo", "readOnly": true }
       ]
     }
@@ -155,26 +155,26 @@ When promoting, document the daemon's host-side lifecycle (systemd unit or equiv
 
 ## Operator workflow examples
 
-### "I want to try the Linear MCP server on Mason."
+### "I want to try the Linear MCP server on an agent."
 
-1. Edit `/home/gosub/agents/mason/.claude/mcp-config.json` on the host.
+1. Edit `/home/<user>/agents/an agent/.claude/mcp-config.json` on the host.
 2. Add `"linear": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-linear"] }`.
-3. Restart Mason. New session sees the new server.
+3. Restart the agent. New session sees the new server.
 
 (Tier 1 — no image rebuild, no schema change.)
 
-### "Rollie needs `ziggy-cli` on his PATH inside the container."
+### "A worker agent needs `ziggy-cli` on its PATH inside the container."
 
-1. Build `ziggy-cli` on the host into `/home/gosub/code/ziggy/target/release/`.
-2. Already covered — `/home/gosub/code/ziggy` is in Rollie's mount list.
-3. In Rollie's `.claude/settings.json`, add the mounted path to `PATH` via the launcher script, or invoke binaries by full path.
+1. Build `ziggy-cli` on the host into `/home/<user>/code/ziggy/target/release/`.
+2. Already covered — `/home/<user>/code/ziggy` is in the worker agent's mount list.
+3. In the worker agent's `.claude/settings.json`, add the mounted path to `PATH` via the launcher script, or invoke binaries by full path.
 
 (Tier 2 by virtue of the existing mount. No schema change beyond what Pattern B already requires.)
 
 ### "I want to add a custom Python MCP server I'm hacking on."
 
-1. Develop on the host at `/home/gosub/code/my-mcp/`.
-2. Add `{ "hostPath": "/home/gosub/code/my-mcp", "containerPath": "/opt/my-mcp" }` to the agent's `deployment.sandbox.mounts[]`.
+1. Develop on the host at `/home/<user>/code/my-mcp/`.
+2. Add `{ "hostPath": "/home/<user>/code/my-mcp", "containerPath": "/opt/my-mcp" }` to the agent's `deployment.sandbox.mounts[]`.
 3. Edit `mcp-config.json`: `"my-mcp": { "command": "python", "args": ["/opt/my-mcp/server.py"] }`.
 4. Restart agent. Iterate freely on the host — every restart sees the latest code.
 
@@ -229,11 +229,11 @@ This is **only** an issue for `provider: 'local-container'` cloud agents — hos
 8. **Restore agent.db and brain.** If the agent had non-trivial accumulated state — conversations, consolidations, `doc_chunks` with vector embeddings, code graph — the snapshot under `~/.aimaestro/backups/agents/<oldId>-<timestamp>/agent-data/` contains the original `agent.db` and `brain/`. To restore: `pm2 stop ai-maestro` (the server holds an open SQLite handle on the new dir's `agent.db`), copy the backup files over `~/.aimaestro/agents/<newId>/agent.db` and `~/.aimaestro/agents/<newId>/brain/cortex-inbox.jsonl`, remove any stale `agent.db-journal` / `agent.db-wal` / `agent.db-shm` siblings, `pm2 start ai-maestro`. Save the freshly-bootstrapped agent.db as a `.pre-restore-<epoch>` first if you want a rollback. Also copy the snapshot's `~/.agent-messaging/agents/<oldId>/{keys,registrations,IDENTITY.md,config.json,messages,attachments}` into the corresponding new-UUID dir, then rewrite `config.json`'s `agent.id` field to the new UUID (`jq --arg new "$NEW" '.agent.id = $new' config.json`). The keypair and provider registrations carry over so the AMP fingerprint is preserved.
 9. **Wake to verify.** `POST /api/agents/<newId>/wake` with body `{}` should return `success: true` and emit `[Wake] Agent <name> (<newId>) — running in CONTAINER aim-<name> (already running)` in `pm2 logs ai-maestro`. No new host tmux session should be created (`tmux ls | grep <name>` returns nothing). Smoke-test AMP from inside the container with `docker exec <containerName> amp-identity` (should print the original fingerprint) and `docker exec <containerName> amp-send <peer-name> "test" "test"` (should return `Status: delivered`).
 
-(Two non-tier observations from the first batch of migrations on 2026-04-25 — Hale, Mason, Optic on Holmes:)
+(Two non-tier observations from the first batch of migrations on 2026-04-25 — three agents on the prod host:)
 
 - **The UUID changes.** Every reference that pinned the old UUID — cross-host directory caches, scripts, kanban tasks — needs refresh. AMP routing survives because addresses are email-style (`<name>@<tenant>.aimaestro.local`), not UUID-based.
-- **Agents with empty databases (40 KB / 56 rows of pure schema scaffolding) lose nothing in step 8.** Agents with real accumulated state (Hale's was 3 MB / 14,225 rows: conversations, consolidations, vector embeddings, code graph; Hardin's was 5.3 MB) need step 8 explicitly or the historical brain is orphaned in the backup tree. When `2db1aa3b` lands, in-place redeploy will obviate steps 1, 2, 5, 6, 7, and 8 — the recipe collapses to "update mounts + recreate container."
-- **Steps 6 + 7 (AMP metadata + api-keys repoint) were derived from Hardin's 2026-04-26 migration.** Without them, every amp-send from the migrated agent returned HTTP 500 even though identity dirs were correctly mounted and amp-helper resolved the fingerprint. The smoke-test pattern in step 9 surfaces this immediately — run it before declaring the migration done.
+- **Agents with empty databases (40 KB / 56 rows of pure schema scaffolding) lose nothing in step 8.** Agents with real accumulated state (one agent's was 3 MB / 14,225 rows: conversations, consolidations, vector embeddings, code graph; another agent's was 5.3 MB) need step 8 explicitly or the historical brain is orphaned in the backup tree. When `2db1aa3b` lands, in-place redeploy will obviate steps 1, 2, 5, 6, 7, and 8 — the recipe collapses to "update mounts + recreate container."
+- **Steps 6 + 7 (AMP metadata + api-keys repoint) were derived from an agent's 2026-04-26 migration.** Without them, every amp-send from the migrated agent returned HTTP 500 even though identity dirs were correctly mounted and amp-helper resolved the fingerprint. The smoke-test pattern in step 9 surfaces this immediately — run it before declaring the migration done.
 
 ---
 
@@ -245,7 +245,7 @@ The agent's identity files (`~/.aimaestro/agents/<id>`, `~/.agent-messaging/agen
 - Mesh address (`<name>@<tenant>.aimaestro.local`) is stable.
 - Hook debug logs accumulate in the host-visible location for forensic inspection.
 
-The agent's working directory (`/home/gosub/agents/<name>` by convention) is also bind-mounted, so any state the agent writes there — checkpoint files, scratch notes, project work — survives container recycling.
+The agent's working directory (`/home/<user>/agents/<name>` by convention) is also bind-mounted, so any state the agent writes there — checkpoint files, scratch notes, project work — survives container recycling.
 
 ---
 
@@ -253,9 +253,9 @@ The agent's working directory (`/home/gosub/agents/<name>` by convention) is als
 
 A small set of agents intentionally stays at `deployment.type = 'local'` (host-level, no container):
 
-- **dev-aimaestro-holmes (Watson)** — production server agent on Holmes, runs the dashboard process and meeting routing.
-- **dev-aimaestro-hutch** — handles docker and ziggy build orchestration on Holmes; needs host-level docker access to manage other agents' containers.
-- Possibly **dev-aimaestro-dataia** — gateway agent on Holmes; pending Shane's call.
+- **dev-<team>-<role> (a peer dev (prod-host))** — production server agent on the prod host, runs the dashboard process and meeting routing.
+- **dev-<team>-<role>** — handles docker and ziggy build orchestration on the prod host; needs host-level docker access to manage other agents' containers.
+- Possibly **dev-<team>-<role>** — gateway agent on the prod host; pending the operator's call.
 
 These agents have full host filesystem access by design. They are operationally trusted and run interactive, prompt-confirmed flows. Any new host-level agent should be a deliberate, named exception — not a default for "this is too hard to containerize right now."
 
@@ -270,9 +270,9 @@ These agents have full host filesystem access by design. They are operationally 
 | AgentCreationWizard docker tab | Done |
 | `wakeAgent()` honors `deployment.type=cloud` on every wake | Done — PR [#56](https://github.com/swickson/ai-maestro/pull/56) (closes [#6](https://github.com/swickson/ai-maestro/issues/6)) |
 | `deployment.sandbox.mounts[]` schema + docker-create plumbing | Done — PR [#58](https://github.com/swickson/ai-maestro/pull/58) |
-| Cloud-agent MCP-server policy (Option C hybrid; Rollie is B) | Decided — PR [#59](https://github.com/swickson/ai-maestro/pull/59) / `docs/CLOUD-AGENT-MCP-DECISION.md` |
-| Pattern A migrations: Hale, Mason, Optic on Holmes | Done (2026-04-25) |
-| Pattern B migration (Rollie) | Pending Hutch's pickup; MCP-strategy resolved |
-| Cloud agents visible in dashboard list (#60 Half A) | Server-side merged in PR [#62](https://github.com/swickson/ai-maestro/pull/62) (v0.30.12); Holmes container rebuild pending |
+| Cloud-agent MCP-server policy (Option C hybrid; the worker agent is B) | Decided — PR [#59](https://github.com/swickson/ai-maestro/pull/59) / `docs/CLOUD-AGENT-MCP-DECISION.md` |
+| Pattern A migrations: three agents on the prod host | Done (2026-04-25) |
+| Pattern B migration (the worker agent) | Pending the ops agent's pickup; MCP-strategy resolved |
+| Cloud agents visible in dashboard list (#60 Half A) | Server-side merged in PR [#62](https://github.com/swickson/ai-maestro/pull/62) (v0.30.12); prod-host container rebuild pending |
 | Cloud-agent terminal pipe (#60 Half B) | Pending — kanban `0c3b6339` (server.mjs:925 cloud branch + handleRemoteWorker reuse) |
 | In-place container redeploy for an existing agent record | Pending — kanban `2db1aa3b` (sibling: `43753261` `agent.update()` mutation guard) |

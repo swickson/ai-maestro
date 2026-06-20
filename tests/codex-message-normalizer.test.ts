@@ -3,8 +3,8 @@
  *
  * Pins the Codex rollout-JSONL → Claude-shape transform so cloud-Codex
  * chat-panel rendering stays provider-agnostic in ChatView. Sample shapes are
- * empirically grounded from live cloud-Codex rollouts (Gushie ca9d97c2,
- * Holmes 2026-06-15, issue #159).
+ * empirically grounded from live cloud-Codex rollouts (an agent ca9d97c2,
+ * the prod host 2026-06-15, issue #159).
  */
 
 import { describe, it, expect } from 'vitest'
