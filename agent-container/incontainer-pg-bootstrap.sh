@@ -81,22 +81,33 @@ if pg_ctl -D "${PGDATA}" status >/dev/null 2>&1; then
 else
   log "initdb -> fresh empty datadir at ${PGDATA}"
   rm -rf "${PGDATA}"; mkdir -p "${PGDATA}"
-  initdb -D "${PGDATA}" --no-sync --username=postgres >/dev/null
-  pg_ctl -D "${PGDATA}" -o "-k /tmp -p ${PGPORT} -c listen_addresses=localhost" -w start
+  initdb -D "${PGDATA}" --no-sync --username=postgres >/dev/null \
+    || { log "FATAL: initdb failed (is the postgresql-<major> server pkg in the image + on PATH?)"; exit 1; }
+  pg_ctl -D "${PGDATA}" -o "-k /tmp -p ${PGPORT} -c listen_addresses=localhost" -w start \
+    || { log "FATAL: pg_ctl start failed"; exit 1; }
 fi
+
+# Fail loud if Postgres is not actually accepting connections. Without this, a
+# silently-failed start/initdb lets the create+migrate steps below no-op and the
+# script would STILL write the success fragment + exit 0 — the false-green
+# (broken/empty/unmigrated loopback DB looking ready) caught in review.
+psql -h localhost -p "${PGPORT}" -U postgres -tAc 'SELECT 1' >/dev/null 2>&1 \
+  || { log "FATAL: postgres not accepting connections on localhost:${PGPORT}"; exit 1; }
 
 # --- create role + db to match the DSN (idempotent) ---------------------------
 role_exists="$(psql -h localhost -p "${PGPORT}" -U postgres -tAc \
   "SELECT 1 FROM pg_roles WHERE rolname='${PG_USER}'" 2>/dev/null)"
 if [ "${role_exists}" != "1" ]; then
   psql -h localhost -p "${PGPORT}" -U postgres -v ON_ERROR_STOP=1 \
-    -c "CREATE ROLE \"${PG_USER}\" WITH LOGIN PASSWORD '${PG_PW}' SUPERUSER;"
+    -c "CREATE ROLE \"${PG_USER}\" WITH LOGIN PASSWORD '${PG_PW}' SUPERUSER;" \
+    || { log "FATAL: CREATE ROLE ${PG_USER} failed"; exit 1; }
 fi
 db_exists="$(psql -h localhost -p "${PGPORT}" -U postgres -tAc \
   "SELECT 1 FROM pg_database WHERE datname='${PG_DB}'" 2>/dev/null)"
 if [ "${db_exists}" != "1" ]; then
   psql -h localhost -p "${PGPORT}" -U postgres -v ON_ERROR_STOP=1 \
-    -c "CREATE DATABASE \"${PG_DB}\" OWNER \"${PG_USER}\";"
+    -c "CREATE DATABASE \"${PG_DB}\" OWNER \"${PG_USER}\";" \
+    || { log "FATAL: CREATE DATABASE ${PG_DB} failed"; exit 1; }
 fi
 
 # --- migrate from empty -------------------------------------------------------
@@ -110,7 +121,8 @@ cd "${WORKDIR}" || exit 1
 # Migrate AGAINST LOOPBACK explicitly — never the ambient DATABASE_URL (which on
 # an orchestrator is the dev branch). Prisma reads DATABASE_URL, so pin it here.
 log "migrating in $(pwd) against loopback: ${MIGRATE_CMD}"
-DATABASE_URL="${LOOPBACK_DSN}" bash -c "${MIGRATE_CMD}"
+DATABASE_URL="${LOOPBACK_DSN}" bash -c "${MIGRATE_CMD}" \
+  || { log "FATAL: migrate command failed (${MIGRATE_CMD}) — NOT writing the success fragment"; exit 1; }
 
 # Hand the loopback DSN to the integration suite via TEST_DATABASE_URL. The N4
 # suite config resolves TEST_DATABASE_URL ?? DATABASE_URL ?? .env and asserts
