@@ -3284,7 +3284,7 @@ describe('provisionCloudInstructions — mesh primer injection (relocation, clou
     expect(provisioned).toBe(false)
   })
 
-  // ── Existing-agent backfill migration (Columbo #264) ──────────────────────
+  // ── Existing-agent backfill migration (review feedback, #264) ─────────────
   // The regression: an agent provisioned BEFORE the relocation has an existing
   // instructions.md with NO primer, and its source is now absent. Once the wake
   // paste stops carrying the primer, that agent loses mesh awareness unless the

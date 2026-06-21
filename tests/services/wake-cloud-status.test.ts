@@ -195,7 +195,7 @@ describe('wakeAgent — cloud container status reconciliation', () => {
     expect(mockAgentRegistry.setCloudContainerStatus).toHaveBeenCalledWith('cloud-stopped', 'running')
   })
 
-  it('stopped container: ensures mesh-awareness in instructions BEFORE startContainer (Columbo #264 path-level regression)', async () => {
+  it('stopped container: ensures mesh-awareness in instructions BEFORE startContainer (#264 path-level regression)', async () => {
     // The wiring gap: a plain hibernate→wake (docker start) must provision the
     // mounted instructions.md BEFORE the container boots — the program reads its
     // instruction file at boot, ahead of the on-wake hook. Without this, an

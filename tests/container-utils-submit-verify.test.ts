@@ -92,14 +92,14 @@ describe('isContainerSubmitConfirmed — hardening', () => {
   })
 
   it('non-empty pane with no composer marker → NOT confirmed (could be a scrolled-out unsent composer)', () => {
-    // The correctness guarantee (Columbo #263): "no marker found" must never be
+    // The correctness guarantee (review feedback, #263): "no marker found" must never be
     // read as "submitted" — a large unsent paste whose composer marker scrolled
     // out of the capture window lands here, and confirming it would strand the
     // agent. Cannot confirm → retry (a benign extra Enter if it had submitted).
     expect(isContainerSubmitConfirmed('some output\nmore output\n', SENT_KEYS)).toBe(false)
   })
 
-  it('Columbo case: large UNSENT paste, composer marker scrolled ABOVE the captured tail → NOT confirmed', () => {
+  it('scrolled-out case: large UNSENT paste, composer marker scrolled ABOVE the captured tail → NOT confirmed', () => {
     // Simulates the bottom-N capture of a huge unsent paste: only wrapped
     // continuation lines (2-space indent, no marker) and the status line are
     // in-frame; the marker-prefixed composer line scrolled out the top, and there
