@@ -213,18 +213,24 @@ describe('sendKeysToContainer', () => {
     vi.clearAllMocks()
   })
 
-  it('sends literal text then a separate Enter, in order (text before submit)', async () => {
+  it('sends literal text, then submits with a confirmed Enter (fast path: no retry)', async () => {
     const calls: string[] = []
     mockExec.mockImplementation((cmd: string, cb: Function) => {
       calls.push(cmd)
+      // capture-pane → a pane showing the submit landed (streaming affordance),
+      // so the verify loop confirms on the first capture and early-exits. This
+      // is the fast-submitter (Claude/agy) path: ≤1 capture, no retry.
+      if (cmd.includes('capture-pane')) {
+        return cb(null, '› Write tests\n\n• Working (0s • esc to interrupt)\n', '')
+      }
       cb(null, '', '')
     })
 
     await sendKeysToContainer('aim-test', 'test-session', 'hello world', { enter: true })
 
-    // Two execs: the literal text, then Enter — the gap between them lets the
-    // in-container TUI process the text before the submit (issue #159).
-    expect(calls.length).toBe(2)
+    // Text first (literal, before any submit), then exactly one Enter, then the
+    // single confirming capture — 3 execs total, no retry.
+    expect(calls.length).toBe(3)
     expect(calls[0]).toContain('send-keys')
     expect(calls[0]).toContain('-l ')
     expect(calls[0]).toContain("'hello world'")
@@ -232,7 +238,32 @@ describe('sendKeysToContainer', () => {
     expect(calls[1]).toContain('send-keys')
     expect(calls[1]).toContain(' Enter')
     expect(calls[1]).not.toContain('-l ')
+    expect(calls[2]).toContain('capture-pane')
   })
+
+  it('retries Enter until the submit is confirmed (codex large-paste path)', async () => {
+    const calls: string[] = []
+    let captureN = 0
+    mockExec.mockImplementation((cmd: string, cb: Function) => {
+      calls.push(cmd)
+      if (cmd.includes('capture-pane')) {
+        captureN += 1
+        // 1st capture: text still sitting unsent in the composer → not confirmed.
+        // 2nd capture: composer reset (cleared) → confirmed.
+        if (captureN === 1) {
+          return cb(null, '› hello world still sitting in the composer\n  gpt-5.5 default\n', '')
+        }
+        return cb(null, '› \n  gpt-5.5 default\n', '')
+      }
+      cb(null, '', '')
+    })
+
+    await sendKeysToContainer('aim-test', 'test-session', 'hello world', { enter: true })
+
+    // Two Enters: the first did not land, the loop re-sent and confirmed.
+    const enterCalls = calls.filter(c => c.includes('send-keys') && c.includes(' Enter'))
+    expect(enterCalls.length).toBe(2)
+  }, 10000)
 
   it('does not send a trailing Enter when enter is not set', async () => {
     const calls: string[] = []
@@ -252,6 +283,9 @@ describe('sendKeysToContainer', () => {
     const calls: string[] = []
     mockExec.mockImplementation((cmd: string, cb: Function) => {
       calls.push(cmd)
+      // Confirm on first capture so the verify loop early-exits (keeps the test
+      // fast — no real-timer retry backoff).
+      if (cmd.includes('capture-pane')) return cb(null, '• Working (esc to interrupt)\n', '')
       cb(null, '', '')
     })
 

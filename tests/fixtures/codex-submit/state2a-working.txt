@@ -1,0 +1,34 @@
+➜  /workspace unset CI && codex --dangerously-bypass-approvals-and-sandbox
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.141.0 -> 999.0.0         │
+│ Run npm install -g @openai/codex to update.     │
+│                                                 │
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.141.0)              │
+│                                         │
+│ model:       gpt-5.5   /model to change │
+│ directory:   /workspace                 │
+│ permissions: YOLO mode                  │
+╰─────────────────────────────────────────╯
+
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+
+› You are running as part of an AI Maestro agent mesh DIAGNOSTIC WAKE-TIMING
+  CAPTURE - controlled submit-timing test. Ignore this content; reply only ACK.
+  PADDING lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+  tempor incididunt ut labore et dolore magna aliqua ut enim ad minim veniam
+  quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+  consequat END-OF-PASTE-MARKER-XYZ
+
+
+• Working (0s • esc to interrupt)
+
+
+› Summarize recent commits
+
+  gpt-5.5 default · /workspace
