@@ -46,29 +46,29 @@ async function main() {
 
   let writes = 0, noops = 0
   for (const a of agents) {
-  const sourcePath = cloudInstructionsSourcePath(a.label || a.name, a.deployment?.sandbox?.teamId)
-  const instr = path.join(os.homedir(), '.aimaestro', 'agents', a.id, 'instructions.md')
-  const fileExists = fs.existsSync(instr)
-  const hasPrimer = fileExists && fs.readFileSync(instr, 'utf8').includes(PRIMER_TELL)
-  const plan = planCloudInstructions({
-    sourceExists: fs.existsSync(sourcePath),
-    fileExists,
-    hasPrimer,
-    meshAware: a.meshAware,
-  })
-  const id8 = a.id.slice(0, 8)
-  const name = (a.name || '').padEnd(28)
-  if (!APPLY) {
+    const sourcePath = cloudInstructionsSourcePath(a.label || a.name, a.deployment?.sandbox?.teamId)
+    const instr = path.join(os.homedir(), '.aimaestro', 'agents', a.id, 'instructions.md')
+    const fileExists = fs.existsSync(instr)
+    const hasPrimer = fileExists && fs.readFileSync(instr, 'utf8').includes(PRIMER_TELL)
+    const plan = planCloudInstructions({
+      sourceExists: fs.existsSync(sourcePath),
+      fileExists,
+      hasPrimer,
+      meshAware: a.meshAware,
+    })
+    const id8 = a.id.slice(0, 8)
+    const name = (a.name || '').padEnd(28)
+    if (!APPLY) {
+      plan.willWrite ? writes++ : noops++
+      console.log(`  ${id8} ${name} ${plan.willWrite ? 'WOULD' : 'skip'}: ${plan.action}`)
+      continue
+    }
+    // Exact wake-path call: (agentId, sourcePath, undefined hostHome, meshAware)
+    provisionCloudInstructions(a.id, sourcePath, undefined, a.meshAware)
+    const nowPrimer = fs.existsSync(instr) && fs.readFileSync(instr, 'utf8').includes(PRIMER_TELL)
     plan.willWrite ? writes++ : noops++
-    console.log(`  ${id8} ${name} ${plan.willWrite ? 'WOULD' : 'skip'}: ${plan.action}`)
-    continue
+    console.log(`  ${id8} ${name} ${plan.action} | primer ${hasPrimer ? '1' : '0'}->${nowPrimer ? '1' : '0'}`)
   }
-  // Exact wake-path call: (agentId, sourcePath, undefined hostHome, meshAware)
-  provisionCloudInstructions(a.id, sourcePath, undefined, a.meshAware)
-  const nowPrimer = fs.existsSync(instr) && fs.readFileSync(instr, 'utf8').includes(PRIMER_TELL)
-  plan.willWrite ? writes++ : noops++
-  console.log(`  ${id8} ${name} ${plan.action} | primer ${hasPrimer ? '1' : '0'}->${nowPrimer ? '1' : '0'}`)
-}
   console.log(
     APPLY
       ? `[sweep] done: ${writes} written, ${noops} no-op`
