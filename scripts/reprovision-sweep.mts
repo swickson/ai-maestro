@@ -25,23 +25,27 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { loadAgents } from '@/lib/agent-registry'
-import {
-  provisionCloudInstructions,
-  cloudInstructionsSourcePath,
-  planCloudInstructions,
-} from '@/lib/cloud-instructions'
-
 const APPLY = process.argv.includes('--apply')
 const PRIMER_TELL = 'part of an AI Maestro agent mesh'
 
-const agents = loadAgents().filter(
-  (a: any) => a?.deployment?.type === 'cloud' && a?.status !== 'deleted'
-)
-console.log(`[sweep] ${APPLY ? 'APPLY' : 'DRY-RUN'} — ${agents.length} live cloud agents (tombstones excluded)`)
+// App modules are loaded via DYNAMIC import inside main() rather than static
+// top-level imports. Under node 24's stricter ESM, statically importing these
+// named exports fails ("does not provide an export named 'cloudInstructionsSourcePath'")
+// due to module instantiation-order in the lib graph; deferring to a runtime
+// import resolves them after the static graph settles. (node 20 tolerated the
+// static form, which masked the failure — verified on node 24.17.)
+async function main() {
+  const { loadAgents } = await import('@/lib/agent-registry')
+  const { provisionCloudInstructions, cloudInstructionsSourcePath, planCloudInstructions } =
+    await import('@/lib/cloud-instructions')
 
-let writes = 0, noops = 0
-for (const a of agents) {
+  const agents = loadAgents().filter(
+    (a: any) => a?.deployment?.type === 'cloud' && a?.status !== 'deleted'
+  )
+  console.log(`[sweep] ${APPLY ? 'APPLY' : 'DRY-RUN'} — ${agents.length} live cloud agents (tombstones excluded)`)
+
+  let writes = 0, noops = 0
+  for (const a of agents) {
   const sourcePath = cloudInstructionsSourcePath(a.label || a.name, a.deployment?.sandbox?.teamId)
   const instr = path.join(os.homedir(), '.aimaestro', 'agents', a.id, 'instructions.md')
   const fileExists = fs.existsSync(instr)
@@ -65,8 +69,14 @@ for (const a of agents) {
   plan.willWrite ? writes++ : noops++
   console.log(`  ${id8} ${name} ${plan.action} | primer ${hasPrimer ? '1' : '0'}->${nowPrimer ? '1' : '0'}`)
 }
-console.log(
-  APPLY
-    ? `[sweep] done: ${writes} written, ${noops} no-op`
-    : `[sweep] plan: ${writes} would-write, ${noops} no-op — re-run with --apply to write`
-)
+  console.log(
+    APPLY
+      ? `[sweep] done: ${writes} written, ${noops} no-op`
+      : `[sweep] plan: ${writes} would-write, ${noops} no-op — re-run with --apply to write`
+  )
+}
+
+main().catch((err) => {
+  console.error('[sweep] failed:', err)
+  process.exit(1)
+})
