@@ -20,6 +20,7 @@ import type { Agent, SandboxMount } from '@/types/agent'
 import { PERMISSION_MODE_TO_CLI } from '@/types/agent'
 import type { AgentPermissionMode } from '@/types/agent'
 import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
+import { cloudInstructionsSourcePath, provisionCloudInstructions } from '@/lib/cloud-instructions'
 import { resolveStartCommand, cloudProgram } from '@/lib/agent-paths'
 
 const execAsync = promisify(exec)
@@ -1822,53 +1823,11 @@ export function cloudInstructionsContainerPath(program: string | undefined): str
   }
 }
 
-// Resolve the host-side source instruction file for an agent: a per-team
-// instruction-source dir holding the the gateway agent-maintained <Label>_INSTRUCTIONS.md.
-// Lives at ~/.aimaestro/ai-team-src/<teamId>/ — a SIBLING of the /ai-team mount
-// dir, deliberately NOT inside it: /ai-team is bind-mounted RO into worker
-// containers, so source files placed there would be readable by every peer,
-// contradicting the "§1 = per-agent identity, not shared plan content" model
-// (a peer dev #193 review). the gateway agent owns + maintains these files at this path on each
-// host. Label is sanitized to a safe basename (no separators / traversal) since
-// it indexes a filesystem path.
-export function cloudInstructionsSourcePath(
-  label: string | undefined,
-  teamId: string | undefined,
-  hostHome: string = os.homedir()
-): string {
-  const base = path.join(hostHome, '.aimaestro', 'ai-team-src')
-  const dir = teamId ? path.join(base, teamId) : base
-  const safeLabel = (label || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'AGENT'
-  return path.join(dir, `${safeLabel}_INSTRUCTIONS.md`)
-}
-
-// Provision the per-agent instruction file. SEED-FROM-SOURCE-IS-TRUTH: when the
-// orchestrator source exists, (re)seed the per-agent copy from it on every
-// provision — the mount is RO into the container so the agent can never edit it,
-// which means there is no in-container hand-edit to preserve, and re-seeding lets
-// the gateway agent's source-of-truth edits reach the agent on the next rebuild. When the
-// source is ABSENT (e.g. moved, or a cross-host rebuild where the source isn't
-// present), KEEP the existing per-agent copy untouched — that copy is the
-// durability fallback (migrateAgentPersistence carries instructions.md across
-// /recreate UUID rotation). Returns whether a per-agent file now exists.
-export function provisionCloudInstructions(
-  agentId: string,
-  sourcePath: string,
-  hostHome: string = os.homedir()
-): { provisioned: boolean; instructionsPath: string } {
-  const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
-  const instructionsPath = path.join(agentDir, 'instructions.md')
-  if (fs.existsSync(sourcePath)) {
-    try {
-      fs.mkdirSync(agentDir, { recursive: true })
-      fs.copyFileSync(sourcePath, instructionsPath)
-      fs.chmodSync(instructionsPath, 0o644)
-    } catch (err) {
-      console.warn(`[provisionCloudInstructions] seed ${sourcePath} -> ${instructionsPath}:`, err instanceof Error ? err.message : err)
-    }
-  }
-  return { provisioned: fs.existsSync(instructionsPath), instructionsPath }
-}
+// Per-agent instruction-file provisioning lives in lib/cloud-instructions.ts so
+// the wake path (agents-core-service) can call it without a service import cycle.
+// Imported at the top of this file (used by the two call sites below) and
+// re-exported here for back-compat with existing importers.
+export { cloudInstructionsSourcePath, provisionCloudInstructions }
 
 // File-level RO mount of the per-agent instructions.md onto the program's native
 // discovery path. Gated on the file existing on host (existsSync) — so it's a
@@ -2702,7 +2661,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   // not-yet-authored). Non-fatal — a missing instruction file shouldn't block
   // create; the gated mount simply won't be added.
   try {
-    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(body.label || name, teamId))
+    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(body.label || name, teamId), undefined, getAgent(agentId)?.meshAware)
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud instructions:', err instanceof Error ? err.message : err)
   }
@@ -3481,7 +3440,7 @@ export async function updateContainerMountsAndExtraEnv(
   // instructions: an agent created before #191 has no instructions.md; on
   // update-runtime it seeds from the source. No-op when the source is absent.
   try {
-    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(agent.label || agent.name, teamId))
+    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(agent.label || agent.name, teamId), undefined, agent.meshAware)
   } catch (err) {
     console.warn('[update-runtime] Could not provision cloud instructions:', err instanceof Error ? err.message : err)
   }

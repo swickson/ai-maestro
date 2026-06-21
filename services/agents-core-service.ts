@@ -29,6 +29,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
+import { MESH_PRIMER, loadMeshPrimer } from '@/lib/mesh-primer'
 import type {
   Agent,
   AgentSession,
@@ -76,6 +77,7 @@ import {
   stopContainer,
   tmuxHasSessionInContainer,
 } from '@/lib/container-utils'
+import { provisionCloudInstructions, cloudInstructionsSourcePath } from '@/lib/cloud-instructions'
 import type { Host } from '@/types/host'
 import { type ServiceResult, missingField, notFound, invalidField, invalidRequest, operationFailed, gone, timeout } from '@/services/service-errors'
 
@@ -308,44 +310,15 @@ async function waitForPrompt(
   return false
 }
 
-/**
- * Short mesh-awareness primer prepended to prompt-type on-wake hooks.
- *
- * Universal (provider-agnostic): works for Claude (with or without the
- * agent-messaging skill installed), Gemini, and Codex. Uses a self-
- * dereferencing design — the primer is short, and points at amp-primer
- * as the escape hatch for full protocol detail.
- *
- * Opt-out per-agent via Agent.meshAware === false.
- *
- * NOTE: No ${variable} interpolation is applied to MESH_PRIMER. The hook
- * variables (${projectDirectory}, ${agentName}) are interpolated only on
- * the user's hook string in executeHook. If you need dynamic values in
- * the primer in the future, run the interpolation loop over finalPrompt
- * instead of resolved.
- *
- * Command syntax here MUST match the real amp-* CLI surface in
- * plugins/ai-maestro/scripts/amp-*.sh — if you edit this string, re-run
- * `amp-send --help` (or equivalent) to verify the flags and values stay
- * in sync. The test suite contains a regex smoke check as a safety net.
- */
-export const MESH_PRIMER = [
-  'You are running as part of an AI Maestro agent mesh. Other agents in the mesh can send you messages and you can send messages to them.',
-  'To send a message: use your agent-messaging skill if available, otherwise invoke amp-send <recipient> "<subject>" "<body>" [--priority low|normal|high|urgent] [--type request|response|notification|task|status]. Quote multi-word subjects and bodies so the shell does not split them into separate positional args.',
-  'For the full mesh protocol, command reference, and peer list, run: amp-primer (available in your PATH alongside the other amp-* commands).',
-].join(' ')
-
-/**
- * Load mesh-awareness primer content for an agent.
- * Returns empty string if the agent has opted out via meshAware === false.
- * Defaults to enabled (returns the primer) when meshAware is unset.
- *
- * Exported for direct unit testing; the wake flow calls it internally.
- */
-export function loadMeshPrimer(agent: Agent): string {
-  if (agent.meshAware === false) return ''
-  return MESH_PRIMER
-}
+// Mesh-awareness primer. Definition lives in lib/mesh-primer.ts (single source
+// of truth, shared with the provisioning layer without a service import cycle).
+// Re-exported here for back-compat with existing importers. Definition lives in
+// lib/mesh-primer.ts (single source of truth, shared with the provisioning layer
+// without a service import cycle; imported at the top of this file). For CLOUD
+// agents the primer is now injected into the persistent instruction file at
+// provision time (see provisionCloudInstructions) instead of being prepended to
+// the wake paste; the HOST wake path below still prepends it (follow-up).
+export { MESH_PRIMER, loadMeshPrimer }
 
 /**
  * Execute a lifecycle hook, interpolating runtime variables.
@@ -478,8 +451,14 @@ async function waitForPromptInContainer(
 
 /**
  * Cloud-branch counterpart of executeHook. Mirrors the host path's variable
- * interpolation + meshPrimer prepend, but dispatches via sendKeysToContainer
- * against the in-container tmux session instead of host runtime.sendKeys.
+ * interpolation, but dispatches via sendKeysToContainer against the in-container
+ * tmux session instead of host runtime.sendKeys.
+ *
+ * Mesh awareness is NOT prepended to the paste here — for cloud agents the primer
+ * now lives in the persistent instruction file (provisionCloudInstructions),
+ * which keeps the on-wake paste small (the inflated paste was the codex
+ * submit-timing trigger) and gates mesh awareness on `meshAware` rather than on
+ * the hook's `prompt:` prefix.
  *
  * Kept as a separate function (not a refactor of executeHook) per a peer dev
  * (prod-host)'s §E review: smaller blast radius for this PR. Post-merge follow-up tracked
@@ -490,7 +469,6 @@ async function executeHookInContainer(
   sessionName: string,
   hookValue: string,
   variables: Record<string, string> = {},
-  meshPrimer: string = '',
 ): Promise<void> {
   let resolved = hookValue
   for (const [key, value] of Object.entries(variables)) {
@@ -501,12 +479,16 @@ async function executeHookInContainer(
 
   if (resolved.startsWith('prompt:')) {
     const userPrompt = resolved.slice('prompt:'.length).trim()
-    const finalPrompt = meshPrimer ? `${meshPrimer}\n\n${userPrompt}` : userPrompt
-    await sendKeysToContainer(containerName, sessionName, finalPrompt, { literal: true, enter: true })
+    await sendKeysToContainer(containerName, sessionName, userPrompt, { literal: true, enter: true })
   } else {
-    const sanitized = sanitizeArgs(resolved)
-    if (sanitized) {
-      await sendKeysToContainer(containerName, sessionName, sanitized, { literal: true, enter: true })
+    // Plain-text hook: type it into the agent's composer verbatim. No
+    // sanitizeArgs here — sendKeysToContainer shell-quotes the docker exec and
+    // sends literally (-l), so the content reaches the TUI as typed; stripping
+    // apostrophes/parens/#/em-dash (the host-path sanitizer) would mangle a
+    // legitimate instruction.
+    const text = resolved.trim()
+    if (text) {
+      await sendKeysToContainer(containerName, sessionName, text, { literal: true, enter: true })
     }
   }
 }
@@ -1718,6 +1700,24 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
 
       if (status === 'stopped' || status === 'created') {
         try {
+          // Ensure mesh awareness is in the mounted instructions.md BEFORE the
+          // container starts — the program reads its instruction file at boot,
+          // ahead of the on-wake hook. Plain wake (docker start of an existing
+          // container) is the one bring-up that does not otherwise re-provision,
+          // so an existing pre-relocation agent would wake with NO in-file primer
+          // AND no wake-paste prepend (removed). Backfilling here closes that
+          // gap so plain-wake self-heals like create/update-runtime. Idempotent
+          // (detect-then-append / copy-overwrite) + non-fatal.
+          try {
+            provisionCloudInstructions(
+              agentId,
+              cloudInstructionsSourcePath(agent.label || agentName, agent.deployment?.sandbox?.teamId),
+              undefined,
+              agent.meshAware
+            )
+          } catch (err) {
+            console.warn(`[Wake/Cloud] mesh-awareness ensure failed for ${agentName}:`, err instanceof Error ? err.message : err)
+          }
           await startContainer(containerName)
           console.log(`[Wake] Agent ${agentName} (${agentId}) — running in CONTAINER ${containerName} (started)`)
           updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory, true)
@@ -1737,14 +1737,15 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
               projectDirectory: projectDirectory || workingDirectory,
               agentName: agentName,
             }
-            const meshPrimer = loadMeshPrimer(agent)
+            // Mesh primer is no longer prepended to the cloud wake paste — it
+            // lives in the persistent instruction file (provisionCloudInstructions).
             ;(async () => {
               const tmuxReady = await waitForContainerTmux(containerName, sessionName)
               if (!tmuxReady) {
                 console.warn(`[Wake/Cloud] tmux session ${sessionName} not ready in ${containerName} after timeout — skipping on-wake hook`)
                 return
               }
-              await executeHookInContainer(containerName, sessionName, agent.hooks!['on-wake']!, hookVars, meshPrimer)
+              await executeHookInContainer(containerName, sessionName, agent.hooks!['on-wake']!, hookVars)
             })().catch(err => console.warn(`[Wake/Cloud] on-wake hook failed for ${agentName}:`, err))
           }
 

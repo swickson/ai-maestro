@@ -34,6 +34,7 @@ const {
   mockMessageQueue,
   mockFs,
   mockUuid,
+  mockCloudInstructions,
 } = vi.hoisted(() => {
   const mockRuntime = {
     listSessions: vi.fn().mockResolvedValue([]),
@@ -102,6 +103,10 @@ const {
     mockUuid: {
       v4: vi.fn(() => `uuid-${++uuidCounter}`),
     },
+    mockCloudInstructions: {
+      provisionCloudInstructions: vi.fn().mockReturnValue({ provisioned: true, instructionsPath: '/fake/instructions.md' }),
+      cloudInstructionsSourcePath: vi.fn().mockReturnValue('/fake/source_INSTRUCTIONS.md'),
+    },
   }
 })
 
@@ -126,6 +131,7 @@ vi.mock('@/lib/container-utils', () => ({
   stopContainer: vi.fn().mockResolvedValue(undefined),
   tmuxHasSessionInContainer: vi.fn().mockResolvedValue(false),
 }))
+vi.mock('@/lib/cloud-instructions', () => mockCloudInstructions)
 vi.mock('child_process', () => ({
   exec: vi.fn((_cmd: string, cb: Function) => cb(null, { stdout: '', stderr: '' })),
   execSync: vi.fn().mockReturnValue(''),
@@ -134,6 +140,7 @@ vi.mock('child_process', () => ({
 // Import module under test (after mocks)
 import { wakeAgent } from '@/services/agents-core-service'
 import { inspectContainerStatus, startContainer, sendKeysToContainer } from '@/lib/container-utils'
+import { provisionCloudInstructions, cloudInstructionsSourcePath } from '@/lib/cloud-instructions'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -186,5 +193,42 @@ describe('wakeAgent — cloud container status reconciliation', () => {
     expect((result.data as any)?.programStarted).toBe(true)
     expect(vi.mocked(startContainer)).toHaveBeenCalledWith('aim-cloud-stopped')
     expect(mockAgentRegistry.setCloudContainerStatus).toHaveBeenCalledWith('cloud-stopped', 'running')
+  })
+
+  it('stopped container: ensures mesh-awareness in instructions BEFORE startContainer (#264 path-level regression)', async () => {
+    // The wiring gap: a plain hibernate→wake (docker start) must provision the
+    // mounted instructions.md BEFORE the container boots — the program reads its
+    // instruction file at boot, ahead of the on-wake hook. Without this, an
+    // existing pre-relocation agent wakes with no in-file primer AND no
+    // wake-paste prepend (removed) = mesh-awareness loss. (Helper-level backfill
+    // behavior is covered in agents-docker-service.test.ts; this asserts the PATH.)
+    const agent = makeAgent({
+      id: 'cloud-ensure',
+      name: 'cloud-ensure',
+      label: 'Engineer',
+      meshAware: undefined, // default ON
+      deployment: {
+        type: 'cloud',
+        cloud: { provider: 'local-container', websocketUrl: 'ws://localhost:23010/term', containerName: 'aim-cloud-ensure', status: 'stopped' },
+        sandbox: { teamId: 'team-x' },
+      },
+    })
+    mockAgentRegistry.getAgent.mockReturnValue(agent)
+    mockAgentRegistry.loadAgents.mockReturnValue([agent])
+    vi.mocked(inspectContainerStatus).mockResolvedValue('stopped')
+
+    await wakeAgent('cloud-ensure', {})
+
+    // Resolved the agent's source path (label + teamId) and ran the ensure once...
+    expect(vi.mocked(cloudInstructionsSourcePath)).toHaveBeenCalledWith('Engineer', 'team-x')
+    expect(vi.mocked(provisionCloudInstructions)).toHaveBeenCalledTimes(1)
+    // ...with the source path + meshAware...
+    expect(vi.mocked(provisionCloudInstructions)).toHaveBeenCalledWith(
+      'cloud-ensure', '/fake/source_INSTRUCTIONS.md', undefined, undefined
+    )
+    // ...and crucially BEFORE the container started (the program reads at boot).
+    const ensureOrder = vi.mocked(provisionCloudInstructions).mock.invocationCallOrder[0]
+    const startOrder = vi.mocked(startContainer).mock.invocationCallOrder[0]
+    expect(ensureOrder).toBeLessThan(startOrder)
   })
 })
