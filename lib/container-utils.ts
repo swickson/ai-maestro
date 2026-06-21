@@ -145,8 +145,12 @@ const SUBMIT_BACKOFFS_MS = [150, 300, 600, 1200]
 // After each Enter, let the TUI transition (accept → stream / clear composer)
 // before we read the pane to judge whether the submit landed.
 const SUBMIT_REACT_MS = 150
-// Hard wall-clock ceiling for the whole confirm-and-retry loop. This runs in the
+// Wall-clock budget for the confirm-and-retry loop. This runs in the
 // orchestrator wake path, so a genuinely-wedged agent must not hang the wake.
+// SOFT ceiling: the deadline gates the START of each settle, but the final
+// Enter + react + capture of an in-flight attempt run unguarded (each docker
+// exec carries its own 5s timeout), so worst-case wall-clock can modestly exceed
+// this — it bounds the number of attempts, not the absolute elapsed time.
 const SUBMIT_DEADLINE_MS = 3000
 
 /**
@@ -174,7 +178,14 @@ async function submitEnterWithVerifyInContainer(
       { timeout: 5000 }
     )
     await new Promise(r => setTimeout(r, SUBMIT_REACT_MS))
-    const tail = await capturePaneFromContainer(containerName, sessionName, 10)
+    // Capture a generous tail so the live composer line stays in-frame for a
+    // realistically large unsent paste — this is an OPTIMIZATION (it lets the
+    // common case confirm via the bottom-most-marker path instead of falling
+    // through to a retry), NOT a correctness bound. No fixed window can guarantee
+    // the marker is captured: sendKeysToContainer also serves unbounded large-AMP
+    // delivery. Correctness is guaranteed by isContainerSubmitConfirmed treating
+    // a no-marker capture as unconfirmed (never as submitted).
+    const tail = await capturePaneFromContainer(containerName, sessionName, 40)
     if (isContainerSubmitConfirmed(tail, keys)) {
       if (attempt > 0) {
         console.warn(
@@ -231,7 +242,11 @@ function stripPromptMarker(line: string): string | null {
  * Two signals, ORed — biased toward confirmation (see the loop's rationale):
  *  - POSITIVE (fast path): "esc to interrupt" — the streaming/interrupt
  *    affordance shown only AFTER a submit is accepted. Immune to the transcript
- *    echo of the just-submitted prompt.
+ *    echo of the just-submitted prompt. NOTE: this is best-effort mid-stream —
+ *    if the agent was ALREADY streaming (a non-wake send that queued behind an
+ *    in-flight response) this can't distinguish "my submit" from the prior
+ *    stream. That's a wash vs the old single-Enter behavior (which also sent
+ *    exactly one Enter), so no regression; the wake/idle path is reliable.
  *  - LOAD-BEARING: the composer cleared. The live composer input line is the
  *    BOTTOM-MOST marker-prefixed line (the transcript echo uses the same marker
  *    but always renders above it, so scanning bottom-up isolates the input
@@ -253,9 +268,15 @@ export function isContainerSubmitConfirmed(paneTail: string, keys: string): bool
     // Bottom-most marker line = the live composer input line.
     return !content.includes(head)
   }
-  // Non-empty pane but no composer marker found — the TUI advanced past the input
-  // box. Treat as submitted; a stray Enter on a cleared composer is benign.
-  return true
+  // Non-empty pane, real head to find, but NO composer marker in the captured
+  // tail. This is NOT a confirmation: a large unsent paste whose composer marker
+  // has scrolled out of the capture window lands here too, and calling that
+  // "submitted" is the exact stuck-agent false-positive. Cannot confirm → return
+  // false → retry (a benign extra Enter if it had in fact submitted). THIS is the
+  // correctness guarantee — an uncaptured/scrolled-out composer is never mistaken
+  // for submitted, regardless of capture-window size (which no fixed value can
+  // bound, since the input can be unbounded large-AMP delivery).
+  return false
 }
 
 /**
