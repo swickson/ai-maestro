@@ -109,3 +109,38 @@ export function provisionCloudInstructions(
   }
   return { provisioned: fs.existsSync(instructionsPath), instructionsPath }
 }
+
+/**
+ * Pure predictor for `provisionCloudInstructions`' write decision — same branch
+ * logic, no I/O. Lets a dry-run print exactly what `--apply` would do (a sweep's
+ * plan MUST match its effect). Keep in lockstep with the branches above; the
+ * cloud-instructions-plan test asserts they agree for every input combination.
+ */
+export function planCloudInstructions(input: {
+  sourceExists: boolean
+  fileExists: boolean
+  hasPrimer: boolean
+  meshAware?: boolean
+}): { willWrite: boolean; action: string } {
+  const wantsPrimer = input.meshAware !== false
+  // Branch 1: source present → ALWAYS re-seed (copy-overwrite), regardless of
+  // meshAware; then append the primer iff wanted. Always a write.
+  if (input.sourceExists) {
+    return wantsPrimer
+      ? { willWrite: true, action: 're-seed from source + append primer' }
+      : { willWrite: true, action: 're-seed from source (no primer — meshAware=false)' }
+  }
+  // Branch 2: source absent but a per-agent copy exists (durability fallback).
+  if (input.fileExists) {
+    if (wantsPrimer && !input.hasPrimer) {
+      return { willWrite: true, action: 'backfill primer (source absent, was missing)' }
+    }
+    return {
+      willWrite: false,
+      action: wantsPrimer ? 'no-op (primer already present)' : 'no-op (meshAware=false, copy untouched)',
+    }
+  }
+  // Branch 3: source absent, no copy.
+  if (wantsPrimer) return { willWrite: true, action: 'seed primer-only file' }
+  return { willWrite: false, action: 'no-op (no source, no copy, meshAware=false)' }
+}
