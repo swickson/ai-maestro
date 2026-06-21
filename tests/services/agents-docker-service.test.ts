@@ -78,6 +78,7 @@ import {
   buildCloudInstructionsMount,
   lintOnWakePrompt,
 } from '@/services/agents-docker-service'
+import { primerOnlyInstructions } from '@/lib/mesh-primer'
 import type { Agent, SandboxMount } from '@/types/agent'
 
 describe('validateMounts', () => {
@@ -3206,13 +3207,14 @@ describe('provisionCloudInstructions (#191 seed-from-source)', () => {
     expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('v2-source-edit')
   })
 
-  it('PRESERVES an existing per-agent copy when the source is absent (durability fallback)', () => {
-    // Simulate a migrated copy with no source present on this host
+  it('PRESERVES an existing per-agent copy when the source is absent + meshAware off (pure durability fallback)', () => {
+    // Simulate a migrated copy with no source present on this host. meshAware:false
+    // isolates pure preservation from the primer backfill (tested separately).
     const agentDir = path.join(tmpHome, '.aimaestro', 'agents', 'a1')
     fs.mkdirSync(agentDir, { recursive: true })
     fs.writeFileSync(path.join(agentDir, 'instructions.md'), 'migrated-copy')
     const { provisioned, instructionsPath } = provisionCloudInstructions(
-      'a1', path.join(tmpHome, '.aimaestro', 'ai-team', 'nonexistent_INSTRUCTIONS.md'), tmpHome
+      'a1', path.join(tmpHome, '.aimaestro', 'ai-team', 'nonexistent_INSTRUCTIONS.md'), tmpHome, false
     )
     expect(provisioned).toBe(true)
     expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('migrated-copy')
@@ -3282,12 +3284,49 @@ describe('provisionCloudInstructions — mesh primer injection (relocation, clou
     expect(provisioned).toBe(false)
   })
 
-  it('SOURCELESS but an existing migrated copy is preserved untouched (not clobbered by primer-only)', () => {
+  // ── Existing-agent backfill migration (Columbo #264) ──────────────────────
+  // The regression: an agent provisioned BEFORE the relocation has an existing
+  // instructions.md with NO primer, and its source is now absent. Once the wake
+  // paste stops carrying the primer, that agent loses mesh awareness unless the
+  // existing copy is backfilled. Source-absent can't copy-overwrite, so it uses
+  // detect-then-append (append once iff the primer is missing).
+
+  it('BACKFILL: source-absent existing copy WITHOUT the primer → appends it exactly once', () => {
     const agentDir = path.join(tmpHome, '.aimaestro', 'agents', 'a1')
     fs.mkdirSync(agentDir, { recursive: true })
-    fs.writeFileSync(path.join(agentDir, 'instructions.md'), 'migrated-copy-with-its-own-primer')
+    fs.writeFileSync(path.join(agentDir, 'instructions.md'), '# Pre-relocation agent\nlegacy body')
     const { instructionsPath } = provisionCloudInstructions('a1', noSource(), tmpHome) // meshAware ON
-    expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('migrated-copy-with-its-own-primer')
+    const content = fs.readFileSync(instructionsPath, 'utf8')
+    expect(content.startsWith('# Pre-relocation agent')).toBe(true) // original preserved
+    expect(content).toContain('## Mesh Awareness')
+    expect(content).toContain('part of an AI Maestro agent mesh')
+  })
+
+  it('BACKFILL is idempotent: re-provisioning a source-absent backfilled copy does NOT double it', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', 'a1')
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'instructions.md'), '# Pre-relocation agent\nlegacy body')
+    provisionCloudInstructions('a1', noSource(), tmpHome) // first bring-up: backfills
+    const { instructionsPath } = provisionCloudInstructions('a1', noSource(), tmpHome) // second: no-op
+    const content = fs.readFileSync(instructionsPath, 'utf8')
+    expect(content.match(/## Mesh Awareness/g)?.length).toBe(1)
+  })
+
+  it('BACKFILL skipped when meshAware === false (existing copy left untouched; strip deferred)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', 'a1')
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'instructions.md'), '# Pre-relocation agent\nlegacy body')
+    const { instructionsPath } = provisionCloudInstructions('a1', noSource(), tmpHome, false)
+    expect(fs.readFileSync(instructionsPath, 'utf8')).toBe('# Pre-relocation agent\nlegacy body')
+  })
+
+  it('BACKFILL no-op when the existing copy already contains the primer (e.g. seeded-with-source then source removed)', () => {
+    const agentDir = path.join(tmpHome, '.aimaestro', 'agents', 'a1')
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, 'instructions.md'), primerOnlyInstructions())
+    const before = fs.readFileSync(path.join(agentDir, 'instructions.md'), 'utf8')
+    const { instructionsPath } = provisionCloudInstructions('a1', noSource(), tmpHome) // meshAware ON
+    expect(fs.readFileSync(instructionsPath, 'utf8')).toBe(before) // unchanged, not doubled
   })
 })
 

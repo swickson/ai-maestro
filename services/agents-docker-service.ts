@@ -20,7 +20,7 @@ import type { Agent, SandboxMount } from '@/types/agent'
 import { PERMISSION_MODE_TO_CLI } from '@/types/agent'
 import type { AgentPermissionMode } from '@/types/agent'
 import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
-import { meshAwarenessBlock, primerOnlyInstructions } from '@/lib/mesh-primer'
+import { MESH_PRIMER, meshAwarenessBlock, primerOnlyInstructions } from '@/lib/mesh-primer'
 import { resolveStartCommand, cloudProgram } from '@/lib/agent-paths'
 
 const execAsync = promisify(exec)
@@ -1880,13 +1880,35 @@ export function provisionCloudInstructions(
     } catch (err) {
       console.warn(`[provisionCloudInstructions] seed ${sourcePath} -> ${instructionsPath}:`, err instanceof Error ? err.message : err)
     }
-  } else if (wantsPrimer && !fs.existsSync(instructionsPath)) {
+  } else if (fs.existsSync(instructionsPath)) {
+    // Source ABSENT but an existing per-agent copy is present (durability
+    // fallback, carried across UUID rotation). BACKFILL the primer if it's
+    // missing: an agent provisioned BEFORE the relocation — or migrated — won't
+    // carry the ## Mesh Awareness block, and since the wake paste no longer
+    // prepends the primer, such an agent would lose mesh awareness entirely
+    // (the existing-agent regression). We cannot copy-overwrite here (there is no
+    // source), so idempotency is by DETECT-THEN-APPEND: append the block once iff
+    // the primer text isn't already present. This runs host-side on every
+    // provision, which happens before the container starts, so an existing agent
+    // self-heals on its next bring-up (a recycle sweep is only an accelerant).
+    // meshAware === false leaves the copy untouched here — stripping an
+    // already-present primer on opt-out is a deferred symmetric follow-up.
+    if (wantsPrimer) {
+      try {
+        const existing = fs.readFileSync(instructionsPath, 'utf8')
+        if (!existing.includes(MESH_PRIMER)) {
+          fs.appendFileSync(instructionsPath, meshAwarenessBlock())
+        }
+        fs.chmodSync(instructionsPath, 0o644)
+      } catch (err) {
+        console.warn(`[provisionCloudInstructions] backfill primer -> ${instructionsPath}:`, err instanceof Error ? err.message : err)
+      }
+    }
+  } else if (wantsPrimer) {
     // Source ABSENT and no existing per-agent copy: a mesh-aware agent with no
     // profile source. Seed a primer-only file so it still gains mesh awareness
     // and the instruction mount still happens (no-regression now that the wake
-    // paste no longer carries the primer). An EXISTING copy is left untouched —
-    // it is the durability fallback carried across UUID rotation, and already
-    // holds the primer from when it was seeded with a source.
+    // paste no longer carries the primer).
     try {
       fs.mkdirSync(agentDir, { recursive: true })
       fs.writeFileSync(instructionsPath, primerOnlyInstructions())
