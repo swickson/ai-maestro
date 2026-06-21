@@ -97,8 +97,15 @@ export async function removeContainer(name: string): Promise<void> {
  * path returns "session not found". This helper closes that gap by doing the
  * equivalent send inside the container.
  *
- * `opts.enter` appends a trailing Enter as a separate send-keys call (matches the
- * two-step pattern used elsewhere — text first, then Enter — to defeat TUI batching).
+ * `opts.enter` submits the typed text. When text was sent, the Enter goes
+ * through `submitEnterWithVerifyInContainer` — a confirm-and-retry loop that
+ * defeats the fixed-gap race: a large on-wake paste (e.g. codex with a mesh
+ * primer + instructions prepended) can still be ingesting when a single
+ * fixed-delay Enter fires, so the Enter no-ops and the prompt sits unsent in
+ * the composer (the agent idles, never acting on its dispatch). The loop sends
+ * Enter, confirms the submit landed (see `isContainerSubmitConfirmed`), and
+ * retries with growing backoff. Fast submitters (Claude, agy) confirm on the
+ * first capture and early-exit with no retry.
  */
 export async function sendKeysToContainer(
   containerName: string,
@@ -116,18 +123,160 @@ export async function sendKeysToContainer(
     )
   }
   if (opts.enter) {
-    // Gap between literal text and Enter so the in-container TUI (Claude Code,
-    // Codex) processes the typed text before the submit — without it the two
-    // send-keys can land in the same tmux tick and Enter fires on empty input.
-    // Mirrors the host TmuxRuntime.sendKeys 100ms gap (lib/tmux-runtime.ts).
     if (keys.length > 0) {
-      await new Promise(r => setTimeout(r, 100))
+      // Text was sent — submit it with confirm-and-retry.
+      await submitEnterWithVerifyInContainer(containerName, sessionName, keys)
+    } else {
+      // No text accompanied this Enter (e.g. the notification echo's standalone
+      // Enter) — there is nothing to confirm, so send a single plain Enter.
+      await execAsync(
+        `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} Enter`,
+        { timeout: 5000 }
+      )
     }
+  }
+}
+
+// Pre-Enter settle gaps (ms), growing per attempt: paste-ingest time scales with
+// payload size + host load, so a fixed gap that works for a small paste is too
+// short for a large one. The first gap covers the common fast case; later gaps
+// give a stuck composer progressively longer to finish ingesting before re-Enter.
+const SUBMIT_BACKOFFS_MS = [150, 300, 600, 1200]
+// After each Enter, let the TUI transition (accept → stream / clear composer)
+// before we read the pane to judge whether the submit landed.
+const SUBMIT_REACT_MS = 150
+// Wall-clock budget for the confirm-and-retry loop. This runs in the
+// orchestrator wake path, so a genuinely-wedged agent must not hang the wake.
+// SOFT ceiling: the deadline gates the START of each settle, but the final
+// Enter + react + capture of an in-flight attempt run unguarded (each docker
+// exec carries its own 5s timeout), so worst-case wall-clock can modestly exceed
+// this — it bounds the number of attempts, not the absolute elapsed time.
+const SUBMIT_DEADLINE_MS = 3000
+
+/**
+ * Send Enter to an in-container tmux pane and confirm the typed text actually
+ * submitted, retrying Enter with growing backoff until confirmed or the deadline
+ * is hit. Bias by design: a missed confirmation costs one extra Enter on an
+ * already-empty composer (a benign no-op newline), whereas giving up early
+ * leaves the prompt unsent and the agent idle (the bug this fixes) — so the loop
+ * retries-until-confirmed rather than testing for "still unsent".
+ */
+async function submitEnterWithVerifyInContainer(
+  containerName: string,
+  sessionName: string,
+  keys: string
+): Promise<void> {
+  const target = `${sessionName}:0.0`
+  const deadline = Date.now() + SUBMIT_DEADLINE_MS
+  for (let attempt = 0; attempt < SUBMIT_BACKOFFS_MS.length; attempt++) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    // Settle: let any in-flight paste finish ingesting before this Enter.
+    await new Promise(r => setTimeout(r, Math.min(SUBMIT_BACKOFFS_MS[attempt], remaining)))
     await execAsync(
       `docker exec ${shellQuote(containerName)} tmux send-keys -t ${shellQuote(target)} Enter`,
       { timeout: 5000 }
     )
+    await new Promise(r => setTimeout(r, SUBMIT_REACT_MS))
+    // Capture a generous tail so the live composer line stays in-frame for a
+    // realistically large unsent paste — this is an OPTIMIZATION (it lets the
+    // common case confirm via the bottom-most-marker path instead of falling
+    // through to a retry), NOT a correctness bound. No fixed window can guarantee
+    // the marker is captured: sendKeysToContainer also serves unbounded large-AMP
+    // delivery. Correctness is guaranteed by isContainerSubmitConfirmed treating
+    // a no-marker capture as unconfirmed (never as submitted).
+    const tail = await capturePaneFromContainer(containerName, sessionName, 40)
+    if (isContainerSubmitConfirmed(tail, keys)) {
+      if (attempt > 0) {
+        console.warn(
+          `[sendKeysToContainer] submit confirmed for ${target} after ${attempt + 1} Enter attempt(s)`
+        )
+      }
+      return
+    }
+    console.warn(
+      `[sendKeysToContainer] submit not confirmed for ${target} ` +
+        `(attempt ${attempt + 1}/${SUBMIT_BACKOFFS_MS.length}); composer still holds unsent text, retrying Enter`
+    )
   }
+  // Exhausted: surface loudly with a manual-recovery breadcrumb. Do not throw —
+  // the wake flow should continue; the operator (or a later poll) can re-send.
+  console.error(
+    `[sendKeysToContainer] SUBMIT UNCONFIRMED for ${target} after ${SUBMIT_BACKOFFS_MS.length} attempt(s)/` +
+      `${SUBMIT_DEADLINE_MS}ms — the prompt may still be sitting unsent in the composer. ` +
+      `Manual recovery: docker exec ${containerName} tmux send-keys -t ${target} Enter`
+  )
+}
+
+// Prompt-marker glyphs that begin a TUI input/echo line. Codex renders its
+// composer (and the transcript echo of a submitted prompt) with U+203A '›';
+// '❯' covers other AI-CLI composers. Kept deliberately narrow so a stray
+// transcript line can't be misread as the live composer.
+const PROMPT_MARKERS = ['›', '❯']
+
+/**
+ * The slice of `keys` we expect to see on the live composer line while the text
+ * is still unsent. First line only — a newline never lands on one rendered
+ * composer line, so a slice spanning newlines could never match (= a false
+ * "submitted" = stuck agent). Short enough (< minimum plausible composer width)
+ * that composer wrapping / a narrow pane can't truncate it before the match.
+ */
+export function composerHeadSlice(keys: string): string {
+  const firstLine = (keys.split('\n')[0] ?? '').trim()
+  const SLICE = 22
+  return firstLine.length <= SLICE ? firstLine : firstLine.slice(0, SLICE)
+}
+
+/** Strip a leading prompt marker from a line; null if the line has none. */
+function stripPromptMarker(line: string): string | null {
+  const t = line.trimStart()
+  for (const marker of PROMPT_MARKERS) {
+    if (t.startsWith(marker)) return t.slice(marker.length).trimStart()
+  }
+  return null
+}
+
+/**
+ * Decide whether a typed prompt actually submitted, from a captured pane tail.
+ *
+ * Two signals, ORed — biased toward confirmation (see the loop's rationale):
+ *  - POSITIVE (fast path): "esc to interrupt" — the streaming/interrupt
+ *    affordance shown only AFTER a submit is accepted. Immune to the transcript
+ *    echo of the just-submitted prompt. NOTE: this is best-effort mid-stream —
+ *    if the agent was ALREADY streaming (a non-wake send that queued behind an
+ *    in-flight response) this can't distinguish "my submit" from the prior
+ *    stream. That's a wash vs the old single-Enter behavior (which also sent
+ *    exactly one Enter), so no regression; the wake/idle path is reliable.
+ *  - LOAD-BEARING: the composer cleared. The live composer input line is the
+ *    BOTTOM-MOST marker-prefixed line (the transcript echo uses the same marker
+ *    but always renders above it, so scanning bottom-up isolates the input
+ *    line). If it no longer holds the head of what we sent, the text submitted
+ *    and the composer reset to its placeholder.
+ *
+ * Returns false on an empty capture (cannot confirm → keep retrying; the extra
+ * Enter is benign).
+ */
+export function isContainerSubmitConfirmed(paneTail: string, keys: string): boolean {
+  if (!paneTail || !paneTail.trim()) return false
+  if (paneTail.includes('esc to interrupt')) return true
+  const head = composerHeadSlice(keys)
+  if (!head) return true
+  const lines = paneTail.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const content = stripPromptMarker(lines[i])
+    if (content === null) continue
+    // Bottom-most marker line = the live composer input line.
+    return !content.includes(head)
+  }
+  // Non-empty pane, real head to find, but NO composer marker in the captured
+  // tail. This is NOT a confirmation: a large unsent paste whose composer marker
+  // has scrolled out of the capture window lands here too, and calling that
+  // "submitted" is the exact stuck-agent false-positive. Cannot confirm → return
+  // false → retry (a benign extra Enter if it had in fact submitted). THIS is the
+  // correctness guarantee — an uncaptured/scrolled-out composer is never mistaken
+  // for submitted, regardless of capture-window size (which no fixed value can
+  // bound, since the input can be unbounded large-AMP delivery).
+  return false
 }
 
 /**
