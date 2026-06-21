@@ -20,6 +20,7 @@ import type { Agent, SandboxMount } from '@/types/agent'
 import { PERMISSION_MODE_TO_CLI } from '@/types/agent'
 import type { AgentPermissionMode } from '@/types/agent'
 import { CONTAINER_CWD_GEMINI_PROJECT } from '@/lib/container-utils'
+import { meshAwarenessBlock, primerOnlyInstructions } from '@/lib/mesh-primer'
 import { resolveStartCommand, cloudProgram } from '@/lib/agent-paths'
 
 const execAsync = promisify(exec)
@@ -1854,17 +1855,44 @@ export function cloudInstructionsSourcePath(
 export function provisionCloudInstructions(
   agentId: string,
   sourcePath: string,
-  hostHome: string = os.homedir()
+  hostHome: string = os.homedir(),
+  meshAware?: boolean
 ): { provisioned: boolean; instructionsPath: string } {
   const agentDir = path.join(hostHome, '.aimaestro', 'agents', agentId)
   const instructionsPath = path.join(agentDir, 'instructions.md')
+  // Mesh awareness defaults ON; opt out only via meshAware === false. Gating the
+  // primer here (its intended knob) is the coupling fix: previously the primer
+  // was prepended to the wake paste only for prompt:-prefixed hooks, so the
+  // hook's prefix accidentally gated mesh awareness.
+  const wantsPrimer = meshAware !== false
   if (fs.existsSync(sourcePath)) {
+    // Source present: re-seed from it (source-of-truth) then append the mesh
+    // primer as durable context. copyFileSync overwrites first, so the append is
+    // idempotent across re-provisions — it never accumulates, and toggling
+    // meshAware off drops the primer on the next provision.
     try {
       fs.mkdirSync(agentDir, { recursive: true })
       fs.copyFileSync(sourcePath, instructionsPath)
+      if (wantsPrimer) {
+        fs.appendFileSync(instructionsPath, meshAwarenessBlock())
+      }
       fs.chmodSync(instructionsPath, 0o644)
     } catch (err) {
       console.warn(`[provisionCloudInstructions] seed ${sourcePath} -> ${instructionsPath}:`, err instanceof Error ? err.message : err)
+    }
+  } else if (wantsPrimer && !fs.existsSync(instructionsPath)) {
+    // Source ABSENT and no existing per-agent copy: a mesh-aware agent with no
+    // profile source. Seed a primer-only file so it still gains mesh awareness
+    // and the instruction mount still happens (no-regression now that the wake
+    // paste no longer carries the primer). An EXISTING copy is left untouched —
+    // it is the durability fallback carried across UUID rotation, and already
+    // holds the primer from when it was seeded with a source.
+    try {
+      fs.mkdirSync(agentDir, { recursive: true })
+      fs.writeFileSync(instructionsPath, primerOnlyInstructions())
+      fs.chmodSync(instructionsPath, 0o644)
+    } catch (err) {
+      console.warn(`[provisionCloudInstructions] seed primer-only -> ${instructionsPath}:`, err instanceof Error ? err.message : err)
     }
   }
   return { provisioned: fs.existsSync(instructionsPath), instructionsPath }
@@ -2702,7 +2730,7 @@ export async function createDockerAgent(body: DockerCreateRequest): Promise<Serv
   // not-yet-authored). Non-fatal — a missing instruction file shouldn't block
   // create; the gated mount simply won't be added.
   try {
-    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(body.label || name, teamId))
+    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(body.label || name, teamId), undefined, getAgent(agentId)?.meshAware)
   } catch (err) {
     console.warn('[Docker Service] Could not provision cloud instructions:', err instanceof Error ? err.message : err)
   }
@@ -3481,7 +3509,7 @@ export async function updateContainerMountsAndExtraEnv(
   // instructions: an agent created before #191 has no instructions.md; on
   // update-runtime it seeds from the source. No-op when the source is absent.
   try {
-    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(agent.label || agent.name, teamId))
+    provisionCloudInstructions(agentId, cloudInstructionsSourcePath(agent.label || agent.name, teamId), undefined, agent.meshAware)
   } catch (err) {
     console.warn('[update-runtime] Could not provision cloud instructions:', err instanceof Error ? err.message : err)
   }
