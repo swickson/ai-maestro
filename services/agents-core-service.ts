@@ -77,6 +77,7 @@ import {
   stopContainer,
   tmuxHasSessionInContainer,
 } from '@/lib/container-utils'
+import { provisionCloudInstructions, cloudInstructionsSourcePath } from '@/lib/cloud-instructions'
 import type { Host } from '@/types/host'
 import { type ServiceResult, missingField, notFound, invalidField, invalidRequest, operationFailed, gone, timeout } from '@/services/service-errors'
 
@@ -1699,6 +1700,24 @@ export async function wakeAgent(agentId: string, params: WakeAgentParams): Promi
 
       if (status === 'stopped' || status === 'created') {
         try {
+          // Ensure mesh awareness is in the mounted instructions.md BEFORE the
+          // container starts — the program reads its instruction file at boot,
+          // ahead of the on-wake hook. Plain wake (docker start of an existing
+          // container) is the one bring-up that does not otherwise re-provision,
+          // so an existing pre-relocation agent would wake with NO in-file primer
+          // AND no wake-paste prepend (removed). Backfilling here closes that
+          // gap so plain-wake self-heals like create/update-runtime. Idempotent
+          // (detect-then-append / copy-overwrite) + non-fatal.
+          try {
+            provisionCloudInstructions(
+              agentId,
+              cloudInstructionsSourcePath(agent.label || agentName, agent.deployment?.sandbox?.teamId),
+              undefined,
+              agent.meshAware
+            )
+          } catch (err) {
+            console.warn(`[Wake/Cloud] mesh-awareness ensure failed for ${agentName}:`, err instanceof Error ? err.message : err)
+          }
           await startContainer(containerName)
           console.log(`[Wake] Agent ${agentName} (${agentId}) — running in CONTAINER ${containerName} (started)`)
           updateAgentSessionInRegistry(agentId, sessionIndex, 'online', workingDirectory, true)
