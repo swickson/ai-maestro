@@ -14,7 +14,11 @@
 # /usr/local/bin first keeps node at the ABI the native addons were built
 # against; /opt/homebrew/bin right after makes tmux (and other brew tools)
 # discoverable.
-export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+# ${PATH:+:$PATH} appends the inherited PATH only when it is non-empty, so an
+# unset/empty PATH (e.g. a bare pm2 restart) does not leave a trailing colon
+# — a trailing colon puts the CWD on the command search path, which the tmux
+# lookups below would then trust.
+export PATH="/usr/local/bin:/opt/homebrew/bin${PATH:+:$PATH}"
 
 echo "[AI Maestro] Starting up..."
 
