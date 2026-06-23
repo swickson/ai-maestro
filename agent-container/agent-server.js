@@ -170,15 +170,23 @@ function startHeartbeat() {
 async function bootstrapDbIfEnabled() {
   if (process.env.INCONTAINER_PG_BOOTSTRAP !== '1') return // not a DB-isolated seat
   const workdirRel = process.env.DB_BOOTSTRAP_WORKDIR || 'apps/web'
-  // /workspace first (orchestrator-style root): if a seat ever had both, the
-  // bind-mounted real repo wins. In practice only one of the two exists per seat.
-  const candidateRoots = ['/workspace', '/workspace/repo']
+  // Resolve where node_modules must be, mirroring the script's WORKDIR handling:
+  // an ABSOLUTE DB_BOOTSTRAP_WORKDIR is honored as-is (the script cd's straight to
+  // it, so the spawn cwd is irrelevant); otherwise it's relative to the repo root,
+  // which differs by seat — a worker clones into /workspace/repo while an
+  // orchestrator binds the repo at /workspace (probe /workspace first so the real
+  // bind wins if a seat ever had both).
   let repoRoot = null
-  for (const root of candidateRoots) {
-    if (fs.existsSync(path.join(root, workdirRel, 'node_modules'))) { repoRoot = root; break }
+  if (path.isAbsolute(workdirRel)) {
+    if (fs.existsSync(path.join(workdirRel, 'node_modules'))) repoRoot = '/workspace'
+  } else {
+    for (const root of ['/workspace', '/workspace/repo']) {
+      if (fs.existsSync(path.join(root, workdirRel, 'node_modules'))) { repoRoot = root; break }
+    }
   }
   if (!repoRoot) {
-    console.log(`[db-bootstrap] INCONTAINER_PG_BOOTSTRAP=1 but no ${workdirRel}/node_modules under ${candidateRoots.join(' or ')} — skipping (first-create/pre-npm-ci; on-wake instruction clause will bootstrap)`)
+    const probed = path.isAbsolute(workdirRel) ? workdirRel : '/workspace[/repo]'
+    console.log(`[db-bootstrap] INCONTAINER_PG_BOOTSTRAP=1 but ${workdirRel}/node_modules not found (probed ${probed}) — skipping (first-create/pre-npm-ci; on-wake instruction clause will bootstrap)`)
     return
   }
   console.log(`[db-bootstrap] running incontainer-pg-bootstrap.sh (cwd=${repoRoot}) before AI tool launch`)
