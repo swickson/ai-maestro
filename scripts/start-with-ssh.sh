@@ -3,6 +3,19 @@
 # AI Maestro - Startup script with SSH configuration
 # This script ensures SSH agent works in tmux sessions before starting the server
 
+# Step 0: Pin PATH so the server is launched with a known-good toolchain
+# regardless of who restarts pm2 (interactive shell, cron, launchd, a
+# background agent shell). Two failure modes this prevents:
+#   - tmux not found -> session discovery returns zero agents (everything
+#     shows offline). tmux lives in Homebrew's bin on macOS.
+#   - wrong node ABI -> native modules (node-pty, better-sqlite3) are built
+#     for the runtime node; /usr/local/bin/node (v24) must win over Homebrew
+#     node (v25) so the prebuilt .node files load.
+# /usr/local/bin first keeps node at the ABI the native addons were built
+# against; /opt/homebrew/bin right after makes tmux (and other brew tools)
+# discoverable.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+
 echo "[AI Maestro] Starting up..."
 
 # Step 1: Update SSH agent symlink if needed
