@@ -114,3 +114,75 @@ describe('incontainer-pg-bootstrap.sh — fail-loud contract (Postgres-free guar
     expect(fs.existsSync(fragment)).toBe(false)
   })
 })
+
+describe('incontainer-pg-bootstrap.sh — WORKDIR git-root anchoring (Postgres-free)', () => {
+  // These exercise the relative-WORKDIR -> git-toplevel resolution. apps/web is
+  // deliberately absent so the script aborts at the (now early, pre-Postgres)
+  // workdir guard, keeping the cases hermetic; the abort message proves which
+  // path was resolved.
+  let tmpDir: string
+  let fragment: string
+  let pgdata: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-pgboot-gitroot-'))
+    fragment = path.join(tmpDir, 'frag.env')
+    pgdata = path.join(tmpDir, 'pgdata')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('resolves a RELATIVE workdir against the git toplevel, not the caller CWD', () => {
+    // git work tree at tmpDir; invoke from a nested subdir. CWD-relative would be
+    // <subdir>/apps/web; git-root anchoring must yield <toplevel>/apps/web.
+    spawnSync('git', ['init', '-q', tmpDir], { encoding: 'utf8' })
+    const subdir = path.join(tmpDir, 'nested', 'deep')
+    fs.mkdirSync(subdir, { recursive: true })
+
+    const r = spawnSync('bash', [SCRIPT], {
+      encoding: 'utf8',
+      timeout: 15000,
+      killSignal: 'SIGKILL',
+      cwd: subdir,
+      env: {
+        ...process.env,
+        INCONTAINER_PG_BOOTSTRAP: '1',
+        TEST_DATABASE_URL: 'postgresql://u:p@localhost:5432/d',
+        DB_BOOTSTRAP_WORKDIR: 'apps/web', // relative -> must anchor to git toplevel
+        DB_BOOTSTRAP_ENV_FILE: fragment,
+        PGDATA: pgdata,
+      },
+    })
+
+    expect(r.status).toBe(1)
+    expect(fs.existsSync(fragment)).toBe(false)
+    const realTmp = fs.realpathSync(tmpDir) // git reports the canonical toplevel
+    expect(r.stderr).toContain(`${realTmp}/apps/web`)
+    expect(r.stderr).not.toContain(`${subdir}/apps/web`)
+    expect(r.stderr).toContain('workdir')
+  })
+
+  it('falls back to a CWD-relative workdir when not inside a git work tree', () => {
+    // No git init: git rev-parse fails, WORKDIR stays relative, still aborts at the
+    // workdir guard before Postgres — confirms the anchoring is additive.
+    const r = spawnSync('bash', [SCRIPT], {
+      encoding: 'utf8',
+      timeout: 15000,
+      killSignal: 'SIGKILL',
+      cwd: tmpDir,
+      env: {
+        ...process.env,
+        INCONTAINER_PG_BOOTSTRAP: '1',
+        TEST_DATABASE_URL: 'postgresql://u:p@localhost:5432/d',
+        DB_BOOTSTRAP_WORKDIR: 'apps/web',
+        DB_BOOTSTRAP_ENV_FILE: fragment,
+        PGDATA: pgdata,
+      },
+    })
+    expect(r.status).toBe(1)
+    expect(fs.existsSync(fragment)).toBe(false)
+    expect(r.stderr).toContain('workdir')
+  })
+})

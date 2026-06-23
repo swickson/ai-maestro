@@ -56,6 +56,30 @@ PGPORT="${PGPORT:-5432}"
 WORKDIR="${DB_BOOTSTRAP_WORKDIR:-apps/web}"
 MIGRATE_CMD="${DB_BOOTSTRAP_MIGRATE_CMD:-npx prisma generate && npx prisma migrate deploy}"
 
+# Anchor a RELATIVE WORKDIR to the repo git-root so this script works regardless
+# of the caller's CWD. The `cd "${WORKDIR}"` before the migrate step assumed CWD
+# was already the repo root; invoking from elsewhere (e.g. from inside apps/web)
+# aborted with a spurious "workdir missing". When WORKDIR is relative and we're
+# inside a git work tree, resolve it against the git toplevel; otherwise leave it
+# CWD-relative (unchanged fallback). The agent-server.js entrypoint stage sets CWD
+# to the repo root already, so this is belt-and-suspenders there and the real fix
+# for any hand-invocation from a subdir.
+case "${WORKDIR}" in
+  /*) : ;;  # absolute path: honor as given
+  *)
+    GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+    [ -n "${GIT_ROOT}" ] && WORKDIR="${GIT_ROOT}/${WORKDIR}"
+    ;;
+esac
+
+# Fail FAST (before initdb) when the project workdir / its deps aren't present —
+# nothing downstream can migrate without them, so don't spin up Postgres first.
+# (The agent-server.js entrypoint gate already skips invoking us when node_modules
+# is absent; this is the defense-in-depth + the hand-invocation guard.)
+if [ ! -d "${WORKDIR}" ]; then
+  log "workdir '${WORKDIR}' missing — has 'npm ci' run yet? aborting"; exit 1
+fi
+
 # postgres server binaries (initdb/pg_ctl/postgres) live in the versioned dir,
 # which is not on the default PATH. Scope it here rather than baking the image
 # PATH (the runtime PATH is overridden by createDockerAgent and wouldn't carry).
@@ -114,9 +138,6 @@ fi
 # This from-empty run IS the authoritative correctness proof; it also recreates
 # the append-only AuditLog immutability trigger the integration suite depends on,
 # so it MUST complete before the DB-backed gate runs.
-if [ ! -d "${WORKDIR}" ]; then
-  log "workdir '${WORKDIR}' missing — has the worker run 'npm ci' yet? aborting"; exit 1
-fi
 cd "${WORKDIR}" || exit 1
 # Migrate AGAINST LOOPBACK explicitly — never the ambient DATABASE_URL (which on
 # an orchestrator is the dev branch). Prisma reads DATABASE_URL, so pin it here.
