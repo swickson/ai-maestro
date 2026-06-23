@@ -13,6 +13,8 @@
  */
 
 const http = require('http')
+const fs = require('fs')
+const path = require('path')
 const { WebSocketServer } = require('ws')
 const pty = require('node-pty')
 const { spawn } = require('child_process')
@@ -143,6 +145,68 @@ function startHeartbeat() {
   heartbeatTimer = setInterval(beat, HEARTBEAT_INTERVAL_MS)
 }
 
+// Flag-gated in-container Postgres bootstrap — entrypoint stage.
+//
+// Runs incontainer-pg-bootstrap.sh BEFORE the AI tool launches so a DB-isolated
+// agent (worker OR orchestrator) never gets the keyboard before its loopback PG
+// is migrated and ready. Deliberately runs HERE in agent-server.js (the container
+// CMD), NOT as a Claude SessionStart hook: a Claude hook both blocks session-ready
+// and injects its stdout into the agent's context window, and the cold
+// initdb/migrate output poisoned claude startup (wedged pre-first-API). Here the
+// script's stdout goes only to the container logs — it can never reach the agent
+// context. agent-server.js is also the single launcher for claude/codex/
+// antigravity, so one insertion covers every harness.
+//
+// Gate: INCONTAINER_PG_BOOTSTRAP=1 AND the project's <workdir>/node_modules is
+// present (the migrate step needs it). node_modules persists on the host-bind
+// workspace, so deps-present is the steady-state hot path on every wake. On
+// first-create / pre-npm-ci / never-cloned (empty workspace, e.g. an antigravity
+// worker that never got a task) it is absent and we QUIETLY skip — letting the
+// on-wake instruction clause clone+npm ci+bootstrap as it does today.
+//
+// The repo root differs by seat: a worker clones into /workspace/repo, while an
+// orchestrator binds the repo at /workspace. Probe both, keyed off the SAME
+// DB_BOOTSTRAP_WORKDIR the script honors so the gate and the script cannot drift.
+async function bootstrapDbIfEnabled() {
+  if (process.env.INCONTAINER_PG_BOOTSTRAP !== '1') return // not a DB-isolated seat
+  const workdirRel = process.env.DB_BOOTSTRAP_WORKDIR || 'apps/web'
+  // Resolve where node_modules must be, mirroring the script's WORKDIR handling:
+  // an ABSOLUTE DB_BOOTSTRAP_WORKDIR is honored as-is (the script cd's straight to
+  // it, so the spawn cwd is irrelevant); otherwise it's relative to the repo root,
+  // which differs by seat — a worker clones into /workspace/repo while an
+  // orchestrator binds the repo at /workspace (probe /workspace first so the real
+  // bind wins if a seat ever had both).
+  let repoRoot = null
+  if (path.isAbsolute(workdirRel)) {
+    if (fs.existsSync(path.join(workdirRel, 'node_modules'))) repoRoot = '/workspace'
+  } else {
+    for (const root of ['/workspace', '/workspace/repo']) {
+      if (fs.existsSync(path.join(root, workdirRel, 'node_modules'))) { repoRoot = root; break }
+    }
+  }
+  if (!repoRoot) {
+    const probed = path.isAbsolute(workdirRel) ? workdirRel : '/workspace[/repo]'
+    console.log(`[db-bootstrap] INCONTAINER_PG_BOOTSTRAP=1 but ${workdirRel}/node_modules not found (probed ${probed}) — skipping (first-create/pre-npm-ci; on-wake instruction clause will bootstrap)`)
+    return
+  }
+  console.log(`[db-bootstrap] running incontainer-pg-bootstrap.sh (cwd=${repoRoot}) before AI tool launch`)
+  const code = await new Promise((resolve) => {
+    const child = spawn('/usr/local/bin/incontainer-pg-bootstrap.sh', [], {
+      cwd: repoRoot,
+      stdio: 'inherit', // -> container logs ONLY; never the agent context window
+    })
+    child.on('exit', (c) => resolve(c))
+    child.on('error', (err) => { console.error(`[db-bootstrap] spawn error: ${err.message}`); resolve(-1) })
+  })
+  if (code === 0) {
+    console.log('[db-bootstrap] complete — loopback Postgres ready before AI tool launch')
+  } else {
+    // Do NOT block the launch on a bootstrap failure — a wedged agent is worse
+    // than a degraded one. Surface loudly; the agent (or a manual re-run) recovers.
+    console.error(`[db-bootstrap] FAILED (exit ${code}) — launching AI tool anyway; agent must bootstrap manually`)
+  }
+}
+
 // Initialize tmux session on startup
 async function initializeTmuxSession() {
   try {
@@ -156,6 +220,14 @@ async function initializeTmuxSession() {
     try {
       await exec(`tmux new-session -d -s "${SESSION_NAME}" -c "${WORKSPACE}"`)
       console.log(`✓ Created tmux session: ${SESSION_NAME}`)
+
+      // Bring up the loopback DB (flag-gated, no-op for non-DB seats) BEFORE the
+      // agent gets the keyboard. Awaited so a DB-isolated agent never starts its
+      // tool before Postgres is migrated and ready. Runs in this CMD process (not
+      // a Claude hook), so its output goes to container logs, never agent context.
+      // The HTTP/health listener is already up (httpServer.listen fired before
+      // this callback), so a slow from-empty migrate does not fail the healthcheck.
+      await bootstrapDbIfEnabled()
 
       // Optionally start an AI tool in the session (e.g., 'claude', 'aider', 'cursor').
       //
