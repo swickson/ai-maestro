@@ -1730,20 +1730,28 @@ async function startServer(handleRequest) {
     // Lightweight connection that only participates in chat:* protocol.
     // Skips PTY attach, history capture, and raw terminal broadcast.
     if (query.chatOnly === '1') {
-      // Remote host: proxy the chatOnly WebSocket to the remote server
+      // Remote host: proxy the chatOnly WebSocket to the remote server.
+      // Proxy ONLY to a genuine, *resolvable* remote host. A host param that
+      // doesn't resolve to a registry entry — and isn't a self-alias — must
+      // degrade to LOCAL handling, never fail closed. macOS hostname drift can
+      // write a junk hostId (e.g. "mac.lan guest wan") into registry.json; that
+      // value leaks through non-normalizing views into the chat WS URL, and the
+      // old `if (!host) close(1008)` silently killed every chat with no
+      // user-visible error. Treating unresolvable-but-not-remote as local lets
+      // the downstream sendChatMessage service surface a real error if the
+      // session truly isn't here, instead of a dead socket. See kanban 522cb931.
       if (query.host && typeof query.host === 'string') {
         try {
           const host = getHostById(query.host)
-          if (!host) {
-            ws.close(1008, `Host not found: ${query.host}`)
-            return
-          }
-          if (!isSelf(host.id)) {
+          if (host && !isSelf(host.id)) {
             console.log(`[Chat] Proxying chat-only WS for ${sessionName} to remote host ${host.id}`)
             handleRemoteWorker(ws, sessionName, host.url, '&chatOnly=1')
             return
           }
-          // isSelf — fall through to local chatOnly handling
+          if (!host && !isSelf(query.host)) {
+            console.warn(`[Chat] Host '${query.host}' for ${sessionName} is unresolvable and not self — treating as local (likely a stale/drifted hostId)`)
+          }
+          // host is self, OR unresolvable-but-not-remote — fall through to local
         } catch (err) {
           console.error(`[Chat] Error routing chatOnly to remote host:`, err)
           ws.close(1011, 'Remote host routing error')
@@ -1851,24 +1859,28 @@ async function startServer(handleRequest) {
       return // Skip all PTY/terminal setup below
     }
 
-    // Check if this is a remote host connection
+    // Check if this is a remote host connection.
+    // Mirror the chatOnly gate above: proxy ONLY to a genuine, resolvable
+    // remote host. An unresolvable host param that isn't a self-alias degrades
+    // to LOCAL tmux handling rather than failing closed (1008) — a stale/drifted
+    // hostId (macOS hostname drift) must not kill terminal streaming. See kanban
+    // 522cb931. If the session genuinely isn't local, the PTY attach below
+    // surfaces a real error instead of a silent 1008.
     if (query.host && typeof query.host === 'string') {
       try {
         const host = getHostById(query.host)
 
-        if (!host) {
-          console.error(`🌐 [REMOTE] Host not found: ${query.host}`)
-          ws.close(1008, `Host not found: ${query.host}`)
-          return
+        if (!host && !isSelf(query.host)) {
+          console.warn(`🌐 [REMOTE] Host '${query.host}' unresolvable and not self — treating as local (likely a stale/drifted hostId)`)
         }
 
-        if (host.enabled === false) {
+        if (host && host.enabled === false) {
           console.warn(`🌐 [REMOTE] Host disabled, attempting anyway: ${query.host} (${host.offlineReason || 'no reason'})`)
         }
 
         // Use isSelf() to determine if this is a local or remote host
         // This is more reliable than checking host.type which may be undefined
-        if (!isSelf(host.id)) {
+        if (host && !isSelf(host.id)) {
           // Forward original query params (cols, rows, socket) so remote PTY
           // spawns with the correct terminal dimensions
           const forwardParams = []
