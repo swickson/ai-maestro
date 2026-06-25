@@ -35,8 +35,9 @@ Use `--type request` and pick `--priority` per the table:
 3. DM the operator via the prod host Maestro:
    ```
    POST http://<TAILSCALE_IP>:23000/api/users/<operator-user-id>/notify
-   { "subject": "<Agent> asks", "message": "<Question>\n\n<any unblocking context>" }
+   { "botSlug": "<your-bot-slug>", "subject": "<Agent> asks", "message": "<Question>\n\n<any unblocking context>" }
    ```
+   **Pin your bot's slug.** Omitting `botSlug` falls back to most-recent-inbound-bot recency, which **mis-attributes your DM through the wrong bot** for any operator who talks to multiple bots. Use the bare resolver slug for your bot — not the directory form `teams-<slug>-bot`; an unknown slug is a clean 400, never a silent mis-route. (Recommended now; will become required for multi-bot operators once the gateway multi-bot guard ships.)
 4. AMP ack back to the agent: "Your question has been forwarded to the operator via Discord. Standing by."
 5. The operator's Discord reply arrives via discord-bot → AMP inbox.
 6. AMP the answer back to the requesting agent with `--type response`.
