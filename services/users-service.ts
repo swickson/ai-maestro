@@ -220,8 +220,11 @@ export function autoCreateExternalUser(params: AutoCreateParams): ServiceResult<
  *
  * Used by gateways on every inbound message. Teams (multi-bot on one port) sends
  * `{ platform:'teams', platformUserId:<aad>, context:{ botSlug } }` so the stored
- * context.botSlug refreshes to the latest bot each contact — this is what makes
- * "most-recently-inbound bot wins" work for proactive DMs (see notifyUser).
+ * context.botSlug refreshes to the latest bot each contact. This still drives
+ * reply/thread resolution and the gateway's single-bot reuse, but is NO LONGER the
+ * proactive-DM bot selector: notifyUser no longer falls back to it (that recency
+ * guess mis-attributed multi-bot DMs — see notifyUser), so an unpinned proactive DM
+ * is forwarded with an absent botSlug and the gateway arbitrates.
  */
 export function updateLastSeen(
   userId: string,
@@ -318,15 +321,20 @@ export async function notifyUser(
 
   // Gateway runs on the same host as Maestro, on its per-platform port.
   const gatewayUrl = `http://localhost:${endpoint.port}${endpoint.path}`
-  // Multi-bot platforms (Teams) need to know which bot to deliver as. An explicit
-  // options.botSlug TARGETS a specific bot (e.g. a proactive DM that must send as
-  // LeoAI, not as whichever bot last had inbound) — this is the correct-attribution
-  // path AND what triggers a cold-start (the gateway finds no thread for that bot
-  // and createConversation's, see dm.ts findByUserAndBot). When not specified, we
-  // fall back to the per-user mapping context.botSlug (most-recently-inbound bot),
-  // preserving existing behavior. undefined for single-bot platforms (Discord) and
-  // dropped by JSON.stringify, preserving body shape. (#13)
-  const botSlug = options?.botSlug ?? (targetMapping.context as { botSlug?: string } | undefined)?.botSlug
+  // Multi-bot platforms (Teams) need to know which bot to deliver as. We pass through
+  // ONLY an explicit options.botSlug — the caller TARGETS a specific bot (e.g. a
+  // proactive DM that must send as its own bot, not as whichever bot last had inbound).
+  // We deliberately do NOT fall back to the per-user mapping context.botSlug
+  // (most-recently-inbound bot): that recency guess MIS-ATTRIBUTES a botSlug-less
+  // proactive DM through the wrong bot for any user who talks to multiple bots, and
+  // because notifyUser pre-filled a non-empty botSlug, the gateway's "absent botSlug +
+  // multi-bot -> 409" guard could never fire on this path. Passing undefined when
+  // unpinned makes the gateway the SINGLE arbiter: it 409s an unpinned multi-bot send
+  // and reuses the lone live bot for a single-bot user (gateway dm.ts). notifyUser
+  // can't cheaply know multi-bot-ness anyway (context holds only a single recency
+  // slug), so the gateway is the right place to decide. undefined is dropped by
+  // JSON.stringify, preserving body shape. (multi-bot mis-attribution fix)
+  const botSlug = options?.botSlug
   // Teams cold-start DM (#13): the gateway needs the tenant to createConversation
   // for a user it has never DM'd. tenantId is captured per-user on the mapping
   // context on inbound (auto-create / updateLastSeen store it). Same shape as
