@@ -157,6 +157,15 @@ describe('updateTeam', () => {
     expect(updated!.instructions).toBe('# Team Guidelines\n\nBe nice.')
   })
 
+  it('persists chiefOfStaffId (Mission Control lead-identity)', () => {
+    const team = createTeam({ name: 'Lead Team', agentIds: ['lead', 'a2'] })
+    const updated = updateTeam(team.id, { chiefOfStaffId: 'lead' })
+
+    expect(updated!.chiefOfStaffId).toBe('lead')
+    // survives a reload (written to disk, read back via getAllTeams/getTeam path)
+    expect(getTeam(team.id)!.chiefOfStaffId).toBe('lead')
+  })
+
   it('updates lastActivityAt field', () => {
     const team = createTeam({ name: 'Activity Team', agentIds: [] })
     const ts = '2025-06-15T10:30:00.000Z'

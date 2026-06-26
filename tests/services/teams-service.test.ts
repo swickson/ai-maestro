@@ -242,6 +242,48 @@ describe('updateTeamById', () => {
     })
   })
 
+  it('sets chiefOfStaffId when the agent is a team member', () => {
+    mockTeams.getTeam.mockReturnValue(makeTeam({ id: 'team-1', agentIds: ['lead', 'a2'] }))
+    mockTeams.updateTeam.mockReturnValue(makeTeam({ id: 'team-1', chiefOfStaffId: 'lead' }))
+
+    const result = updateTeamById('team-1', { chiefOfStaffId: 'lead' })
+
+    expect(result.status).toBe(200)
+    expect(mockTeams.updateTeam).toHaveBeenCalledWith('team-1', { chiefOfStaffId: 'lead' })
+  })
+
+  it('rejects chiefOfStaffId when the agent is not a team member', () => {
+    mockTeams.getTeam.mockReturnValue(makeTeam({ id: 'team-1', agentIds: ['a1', 'a2'] }))
+
+    const result = updateTeamById('team-1', { chiefOfStaffId: 'outsider' })
+
+    expect(result.status).toBe(400)
+    expect((result.data as ServiceError).message).toContain('member of the team')
+    expect(mockTeams.updateTeam).not.toHaveBeenCalled()
+  })
+
+  it('validates chiefOfStaffId against agentIds supplied in the same call', () => {
+    // Current roster lacks the lead, but the same call adds them — should pass.
+    mockTeams.getTeam.mockReturnValue(makeTeam({ id: 'team-1', agentIds: ['a1'] }))
+    mockTeams.updateTeam.mockReturnValue(makeTeam({ id: 'team-1' }))
+
+    const result = updateTeamById('team-1', { agentIds: ['a1', 'lead'], chiefOfStaffId: 'lead' })
+
+    expect(result.status).toBe(200)
+    expect(mockTeams.updateTeam).toHaveBeenCalledWith('team-1', { agentIds: ['a1', 'lead'], chiefOfStaffId: 'lead' })
+  })
+
+  it('clears chiefOfStaffId when empty string is passed', () => {
+    mockTeams.updateTeam.mockReturnValue(makeTeam({ id: 'team-1' }))
+
+    const result = updateTeamById('team-1', { chiefOfStaffId: '' })
+
+    expect(result.status).toBe(200)
+    // '' clears → undefined; no membership check needed, getTeam not consulted
+    expect(mockTeams.updateTeam).toHaveBeenCalledWith('team-1', { chiefOfStaffId: undefined })
+    expect(mockTeams.getTeam).not.toHaveBeenCalled()
+  })
+
   it('returns 404 when team not found', () => {
     mockTeams.updateTeam.mockReturnValue(null)
 

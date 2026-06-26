@@ -45,6 +45,10 @@ export interface UpdateTeamParams {
   lastMeetingAt?: string
   instructions?: string
   lastActivityAt?: string
+  // Agent ID of the team's chief-of-staff / orchestrator. Mission Control reads
+  // this to resolve the single per-team lead it renders in the left rail (P1a).
+  // Pass '' to clear. Must be a member of the team (validated in updateTeamById).
+  chiefOfStaffId?: string
 }
 
 export interface CreateTaskParams {
@@ -148,6 +152,21 @@ export function updateTeamById(id: string, params: UpdateTeamParams): ServiceRes
     if (params.lastMeetingAt !== undefined) updates.lastMeetingAt = params.lastMeetingAt
     if (params.instructions !== undefined) updates.instructions = params.instructions
     if (params.lastActivityAt !== undefined) updates.lastActivityAt = params.lastActivityAt
+    if (params.chiefOfStaffId !== undefined) {
+      // '' clears the lead; a non-empty id must belong to the team (use the
+      // incoming agentIds if they're being updated in this same call, else the
+      // team's current roster). Keeps Mission Control's per-team lead honest.
+      const cos = params.chiefOfStaffId
+      if (cos !== '') {
+        const current = getTeam(id)
+        if (!current) return notFound('Team', id)
+        const roster = params.agentIds !== undefined ? params.agentIds : current.agentIds
+        if (!roster.includes(cos)) {
+          return invalidField('chiefOfStaffId', 'chiefOfStaffId must be an agent that is a member of the team')
+        }
+      }
+      updates.chiefOfStaffId = cos === '' ? undefined : cos
+    }
     const team = updateTeam(id, updates as any)
     if (!team) {
       return notFound('Team', id)
