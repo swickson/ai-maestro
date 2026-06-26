@@ -199,3 +199,22 @@ describe('getAllDirectoryEntries activity enrichment (local fresh, remote synced
     expect(remote?.activity?.observedStuck).toBe(true)
   })
 })
+
+describe('syncWithPeers carries remote activity through the pull-sync (Columbo #279 fix)', () => {
+  it('stores activity from a peer local entry onto the stored remote entry', async () => {
+    const hosts = await import('@/lib/hosts-config')
+    vi.mocked(hosts.getPeerHosts).mockReturnValue([{ id: 'laptop', url: 'http://laptop:23000' } as any])
+    const peerEntry = {
+      agentId: 'uuid-remote', name: 'dev-remote', hostId: 'laptop', ampRegistered: true,
+      source: 'local', lastSeen: 'x',
+      activity: { state: 'stuck', observedStuck: true, lastActivityAt: 'x' },
+    }
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ entries: [peerEntry] }) })) as any
+    const dir = await import('@/lib/agent-directory')
+    await dir.syncWithPeers()
+    const stored = dir.lookupAgentById('uuid-remote')
+    expect(stored?.source).toBe('remote')
+    expect(stored?.activity?.state).toBe('stuck')        // dropped (undefined) before the fix
+    expect(stored?.activity?.observedStuck).toBe(true)
+  })
+})

@@ -427,7 +427,11 @@ export async function syncWithPeers(timeout: number = 5000): Promise<{
                 hostId: entry.hostId,
                 hostUrl: entry.hostUrl || host.url,
                 ampAddress: entry.ampAddress,
-                ampRegistered: entry.ampRegistered
+                ampRegistered: entry.ampRegistered,
+                // Carry the peer's runtime activity through the pull-sync (P2):
+                // the peer's getLocalEntriesForSync enriched it; without this it
+                // is dropped here and remote agents show no activity on the pane.
+                activity: entry.activity
               })
               result.newAgents++
             }
