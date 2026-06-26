@@ -284,6 +284,28 @@ describe('updateTeamById', () => {
     expect(mockTeams.getTeam).not.toHaveBeenCalled()
   })
 
+  it('auto-clears an orphaned chief when an agentIds-only update removes them', () => {
+    // Existing chief 'lead' is dropped from the roster, no chiefOfStaffId in this call
+    mockTeams.getTeam.mockReturnValue(makeTeam({ id: 'team-1', agentIds: ['lead', 'a2'], chiefOfStaffId: 'lead' }))
+    mockTeams.updateTeam.mockReturnValue(makeTeam({ id: 'team-1' }))
+
+    const result = updateTeamById('team-1', { agentIds: ['a2', 'a3'] })
+
+    expect(result.status).toBe(200)
+    expect(mockTeams.updateTeam).toHaveBeenCalledWith('team-1', { agentIds: ['a2', 'a3'], chiefOfStaffId: undefined })
+  })
+
+  it('leaves the chief intact when an agentIds update still includes them', () => {
+    mockTeams.getTeam.mockReturnValue(makeTeam({ id: 'team-1', agentIds: ['lead', 'a2'], chiefOfStaffId: 'lead' }))
+    mockTeams.updateTeam.mockReturnValue(makeTeam({ id: 'team-1' }))
+
+    const result = updateTeamById('team-1', { agentIds: ['lead', 'a3'] })
+
+    expect(result.status).toBe(200)
+    // chiefOfStaffId not touched — only agentIds in the update payload
+    expect(mockTeams.updateTeam).toHaveBeenCalledWith('team-1', { agentIds: ['lead', 'a3'] })
+  })
+
   it('returns 404 when team not found', () => {
     mockTeams.updateTeam.mockReturnValue(null)
 

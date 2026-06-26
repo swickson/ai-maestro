@@ -166,6 +166,14 @@ export function updateTeamById(id: string, params: UpdateTeamParams): ServiceRes
         }
       }
       updates.chiefOfStaffId = cos === '' ? undefined : cos
+    } else if (params.agentIds !== undefined) {
+      // Roster changed without an explicit chief in this call: if the existing
+      // chief is no longer a member, auto-clear it so Mission Control never
+      // renders a lead who left the team. (Columbo #277 — orphaned-chief gap.)
+      const current = getTeam(id)
+      if (current?.chiefOfStaffId && !params.agentIds.includes(current.chiefOfStaffId)) {
+        updates.chiefOfStaffId = undefined
+      }
     }
     const team = updateTeam(id, updates as any)
     if (!team) {
