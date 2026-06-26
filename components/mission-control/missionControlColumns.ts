@@ -1,4 +1,5 @@
 import type { TaskStatus, TaskWithDeps } from '@/types/task'
+import type { TeamTaskSummary } from '@/types/team'
 
 /**
  * Mission Control matrix column configuration.
@@ -63,4 +64,14 @@ export function groupTasksByColumn(tasks: TaskWithDeps[]): Record<string, TaskWi
  */
 export function teamNeedsAttention(grouped: Record<string, TaskWithDeps[]>): boolean {
   return (grouped[ATTENTION_STATUS]?.length ?? 0) > 0
+}
+
+/**
+ * Summary-level twin of {@link teamNeedsAttention} for the cross-host read model:
+ * a team needs the operator iff its rolled-up needs_input count is non-zero. This
+ * is the path the live matrix uses (it renders from the synced TeamTaskSummary,
+ * not from per-team task arrays). A missing summary is treated as "no alarm".
+ */
+export function summaryNeedsAttention(summary?: TeamTaskSummary): boolean {
+  return (summary?.needsYouCount ?? 0) > 0
 }

@@ -10,12 +10,32 @@
  *   chief-of-staff. Agents can only message teammates + COS + manager.
  */
 
+import type { TaskStatus } from '@/types/task'
+
 /**
  * Team communication type
  * - open: No restrictions, any agent can message team members (default, backward compat)
  * - closed: Isolated — messages from outside the team are routed through the chief-of-staff
  */
 export type TeamType = 'open' | 'closed'
+
+/**
+ * Rolled-up task state for a team — the cross-host Mission Control read model.
+ *
+ * Task files (~/.aimaestro/teams/tasks-<id>.json) are NOT synced across the mesh;
+ * only the owning host can read a team's tasks. So the owning host computes this
+ * summary and attaches it to the Team object, which DOES ride the team-directory
+ * sync. A remote host then renders each team's task state from counts alone —
+ * no per-team task fetch, and one poll covers every team (Mission Control P2b).
+ */
+export interface TeamTaskSummary {
+  /** Count of tasks in each status (all six statuses always present, 0 if none). */
+  counts: Record<TaskStatus, number>
+  /** Total task count across all statuses. */
+  total: number
+  /** counts.needs_input — the agent-declared "operator must act" count (NEEDS-YOU). */
+  needsYouCount: number
+}
 
 export interface Team {
   id: string              // UUID
@@ -31,6 +51,7 @@ export interface Team {
   lastActivityAt?: string // ISO - updated on any team interaction
   hostId?: string         // Host that owns this team (set on creation, used for mesh sync)
   source?: 'local' | 'remote'  // Runtime only — not persisted, set during sync
+  taskSummary?: TeamTaskSummary  // Runtime only — not persisted; computed on the owning host, rides the directory sync
 }
 
 export interface TeamsFile {

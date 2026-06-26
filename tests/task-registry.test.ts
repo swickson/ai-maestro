@@ -52,6 +52,7 @@ import {
   updateTask,
   deleteTask,
   wouldCreateCycle,
+  computeTeamTaskSummary,
 } from '@/lib/task-registry'
 import type { Task } from '@/types/task'
 
@@ -545,5 +546,62 @@ describe('wouldCreateCycle', () => {
     // Making C depend on B: C.blockedBy would add B. Walk from B:
     //   B blocks D (D.blockedBy includes B). D blocks nothing. Never reaches C. Safe.
     expect(wouldCreateCycle('team-1', 'c', 'b')).toBe(false)
+  })
+})
+
+// ============================================================================
+// computeTeamTaskSummary — the cross-host Mission Control rollup
+// ============================================================================
+
+describe('computeTeamTaskSummary', () => {
+  it('returns an all-zero summary for a team with no task file', () => {
+    const summary = computeTeamTaskSummary('team-empty')
+    expect(summary.total).toBe(0)
+    expect(summary.needsYouCount).toBe(0)
+    expect(summary.counts).toEqual({
+      backlog: 0,
+      pending: 0,
+      in_progress: 0,
+      needs_input: 0,
+      review: 0,
+      completed: 0,
+    })
+  })
+
+  it('counts tasks per status and mirrors needs_input into needsYouCount', () => {
+    saveTasks('team-1', [
+      makeTask({ id: 'a', teamId: 'team-1', status: 'backlog' }),
+      makeTask({ id: 'b', teamId: 'team-1', status: 'in_progress' }),
+      makeTask({ id: 'c', teamId: 'team-1', status: 'in_progress' }),
+      makeTask({ id: 'd', teamId: 'team-1', status: 'needs_input' }),
+      makeTask({ id: 'e', teamId: 'team-1', status: 'needs_input' }),
+      makeTask({ id: 'f', teamId: 'team-1', status: 'review' }),
+      makeTask({ id: 'g', teamId: 'team-1', status: 'completed' }),
+    ])
+
+    const summary = computeTeamTaskSummary('team-1')
+    expect(summary.total).toBe(7)
+    expect(summary.counts.backlog).toBe(1)
+    expect(summary.counts.in_progress).toBe(2)
+    expect(summary.counts.needs_input).toBe(2)
+    expect(summary.counts.review).toBe(1)
+    expect(summary.counts.completed).toBe(1)
+    expect(summary.counts.pending).toBe(0)
+    // needsYouCount is the operator-attention signal — exactly the needs_input count.
+    expect(summary.needsYouCount).toBe(2)
+  })
+
+  it('ignores unknown/legacy statuses (no Mission Control column) but keeps total honest', () => {
+    saveTasks('team-1', [
+      makeTask({ id: 'a', teamId: 'team-1', status: 'pending' }),
+      makeTask({ id: 'weird', teamId: 'team-1', status: 'archived' as Task['status'] }),
+    ])
+
+    const summary = computeTeamTaskSummary('team-1')
+    expect(summary.counts.pending).toBe(1)
+    // Unknown status contributes to total (it is a real task) but lands in no bucket.
+    expect(summary.total).toBe(2)
+    const bucketed = Object.values(summary.counts).reduce((a, b) => a + b, 0)
+    expect(bucketed).toBe(1)
   })
 })

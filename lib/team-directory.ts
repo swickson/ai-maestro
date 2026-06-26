@@ -12,6 +12,7 @@
 
 import { getPeerHosts } from './hosts-config'
 import { loadTeams, getLocalTeamsForSync } from './team-registry'
+import { computeTeamTaskSummary } from './task-registry'
 import type { Team } from '@/types/team'
 
 // Sync interval (60 seconds, same as agent directory)
@@ -34,7 +35,13 @@ let syncInterval: NodeJS.Timeout | null = null
  * This is the main function consumers should use instead of raw loadTeams().
  */
 export function getAllTeams(): Team[] {
-  const local = loadTeams().map(t => ({ ...t, source: 'local' as const }))
+  // Local teams get a freshly-computed task rollup (read-time-fresh); remote
+  // teams keep the rollup that rode the sync from their owning host.
+  const local = loadTeams().map(t => ({
+    ...t,
+    source: 'local' as const,
+    taskSummary: computeTeamTaskSummary(t.id),
+  }))
   const remote = Array.from(remoteTeams.values())
   return [...local, ...remote]
 }
@@ -101,6 +108,14 @@ export async function syncTeamsWithPeers(timeout: number = 5000): Promise<{
             remoteTeams.set(team.id, { ...team, source: 'remote' })
             teamHostMap.set(team.id, host.id)
             if (!existing) result.newTeams++
+          } else {
+            // Metadata unchanged (updatedAt not newer), but the runtime task
+            // rollup changes on task CRUD WITHOUT bumping Team.updatedAt — so the
+            // updatedAt gate alone would freeze a remote team's taskSummary stale
+            // forever (no new counts, no NEEDS-YOU alarm). Always refresh the
+            // runtime field from the peer's read-time-fresh value, the way the
+            // agent directory re-registers activity every sync.
+            remoteTeams.set(team.id, { ...existing, taskSummary: team.taskSummary })
           }
         }
       }

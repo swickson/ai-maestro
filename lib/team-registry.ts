@@ -11,6 +11,7 @@ import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { Team, TeamsFile } from '@/types/team'
 import { getSelfHostId } from './hosts-config'
+import { computeTeamTaskSummary } from './task-registry'
 
 const AIMAESTRO_DIR = path.join(os.homedir(), '.aimaestro')
 const TEAMS_DIR = path.join(AIMAESTRO_DIR, 'teams')
@@ -129,5 +130,9 @@ export function deleteTeam(id: string): boolean {
 export function getLocalTeamsForSync(): Team[] {
   const teams = loadTeams()
   const selfHostId = getSelfHostId()
-  return teams.filter(t => t.hostId === selfHostId && t.source !== 'remote')
+  // Attach the task-count rollup so it rides the directory sync to remote hosts
+  // (peers can't read this host's task files; the summary is their only view).
+  return teams
+    .filter(t => t.hostId === selfHostId && t.source !== 'remote')
+    .map(t => ({ ...t, taskSummary: computeTeamTaskSummary(t.id) }))
 }
