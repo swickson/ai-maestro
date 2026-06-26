@@ -253,16 +253,19 @@ describe('users-service', () => {
       vi.stubGlobal('fetch', fetchMock)
     })
 
-    it('routes teams to port 3024 and carries botSlug from mapping context', async () => {
+    it('routes teams to port 3024; unpinned send OMITS botSlug (no recency pre-fill) but still carries tenantId', async () => {
+      // Multi-bot mis-attribution fix: an unpinned proactive DM must NOT be pre-filled
+      // with context.botSlug (most-recently-inbound bot). It posts an ABSENT botSlug so
+      // the gateway is the single arbiter (409 for multi-bot, reuse for single-bot).
       const result = await notifyUser('user-1', 'hi', { platform: 'teams' })
       expect(result.status).toBe(200)
       const [url, init] = fetchMock.mock.calls[0]
       expect(url).toBe('http://localhost:3024/api/gateway/dm')
       const body = JSON.parse(init.body)
       expect(body.platformUserId).toBe('aad-xyz')
-      expect(body.botSlug).toBe('bot-alpha')
-      // #13 Teams cold-start: tenantId from mapping context reaches the gateway
-      // so it can createConversation for a never-DM'd user.
+      expect('botSlug' in body).toBe(false)        // NOT pre-filled with 'bot-alpha'
+      // tenantId is independent of the botSlug fallback (still needed for cold-start
+      // createConversation) and continues to reach the gateway.
       expect(body.tenantId).toBe('t1')
     })
 
@@ -289,11 +292,39 @@ describe('users-service', () => {
       expect(body.tenantId).toBe('t1')            // tenantId still carried (one per mapping)
     })
 
-    it('falls back to context.botSlug when no override is given (backward-compatible)', async () => {
+    it('does NOT fall back to context.botSlug even when a recency slug exists (multi-bot mis-attribution fix)', async () => {
+      // user-1's teams context carries botSlug 'bot-alpha' (most-recently-inbound bot).
+      // Pre-fix this leaked into the body and defeated the gateway's absent->409 guard,
+      // mis-attributing the DM through the wrong bot. Now an unpinned send omits botSlug.
       const result = await notifyUser('user-1', 'hi', { platform: 'teams' })
       expect(result.status).toBe(200)
       const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-      expect(body.botSlug).toBe('bot-alpha')      // unchanged default behavior
+      expect('botSlug' in body).toBe(false)
+      expect(body.botSlug).toBeUndefined()
+    })
+
+    it('cold-start (no recency slug in context) also omits botSlug, tenantId still carried', async () => {
+      // A never-DM'd user: tenantId captured on auto-create, but no context.botSlug
+      // (recency slug is only written on inbound). Dropping the fallback does not
+      // regress cold-start — there was no recency value to send anyway, and the gateway
+      // already requires a pinned botSlug to createConversation.
+      vi.mocked(directory.getUser).mockReturnValueOnce({
+        id: 'cold-user',
+        displayName: 'never-dmed operator',
+        aliases: ['coldstart'],
+        platforms: [
+          { type: 'teams', platformUserId: 'aad-cold', handle: 'x', context: { tenantId: 't1' } },
+        ],
+        role: 'operator',
+        trustLevel: 'full',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      } as any)
+      const result = await notifyUser('cold-user', 'hi', { platform: 'teams' })
+      expect(result.status).toBe(200)
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+      expect('botSlug' in body).toBe(false)
+      expect(body.tenantId).toBe('t1')
     })
   })
 })
