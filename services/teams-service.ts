@@ -87,7 +87,7 @@ export interface NotifyTeamParams {
   teamName: string
 }
 
-const VALID_TASK_STATUSES = ['backlog', 'pending', 'in_progress', 'review', 'completed']
+const VALID_TASK_STATUSES = ['backlog', 'pending', 'in_progress', 'needs_input', 'review', 'completed']
 
 // ===========================================================================
 // PUBLIC API -- called by API routes
@@ -290,7 +290,7 @@ export function updateTeamTask(
 
   // Validate status enum
   if (status !== undefined && !VALID_TASK_STATUSES.includes(status)) {
-    return invalidField('status', 'Invalid status. Must be backlog, pending, in_progress, review, or completed')
+    return invalidField('status', 'Invalid status. Must be backlog, pending, in_progress, needs_input, review, or completed')
   }
 
   try {

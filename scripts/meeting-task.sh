@@ -5,7 +5,7 @@
 # The Kanban has UI + API but no CLI path until now. Agents coordinating
 # inside a meeting use this to create, update, move, list, and delete tasks.
 #
-# Statuses (Kanban columns): backlog | pending | in_progress | review | completed
+# Statuses (Kanban columns): backlog | pending | in_progress | needs_input | review | completed
 #
 # Usage:
 #   meeting-task.sh create <team-id> <subject> [--description TEXT] [--owner UUID] [--priority N]
@@ -35,7 +35,7 @@ print_usage() {
 
 valid_status() {
   case "$1" in
-    backlog|pending|in_progress|review|completed) return 0 ;;
+    backlog|pending|in_progress|needs_input|review|completed) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -142,7 +142,7 @@ cmd_update() {
 
   [[ "$have_any" == "false" ]] && die "update requires at least one of --subject, --description, --status, --owner, --priority"
   if [[ -n "$status" ]] && ! valid_status "$status"; then
-    die "Invalid --status '${status}'. Must be: backlog, pending, in_progress, review, completed"
+    die "Invalid --status '${status}'. Must be: backlog, pending, in_progress, needs_input, review, completed"
   fi
 
   local body
@@ -180,7 +180,7 @@ cmd_move() {
   local team_id="${1:-}"; local task_id="${2:-}"; local status="${3:-}"
   shift 3 || true
   [[ -z "$team_id" || -z "$task_id" || -z "$status" ]] && die "Usage: meeting-task.sh move <team-id> <task-id> <status>"
-  valid_status "$status" || die "Invalid status '${status}'. Must be: backlog, pending, in_progress, review, completed"
+  valid_status "$status" || die "Invalid status '${status}'. Must be: backlog, pending, in_progress, needs_input, review, completed"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -222,7 +222,7 @@ cmd_list() {
     esac
   done
   if [[ -n "$filter_status" ]] && ! valid_status "$filter_status"; then
-    die "Invalid --status '${filter_status}'. Must be: backlog, pending, in_progress, review, completed"
+    die "Invalid --status '${filter_status}'. Must be: backlog, pending, in_progress, needs_input, review, completed"
   fi
 
   local resp

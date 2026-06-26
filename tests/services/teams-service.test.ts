@@ -562,7 +562,7 @@ describe('updateTeamTask', () => {
   })
 
   it('accepts valid status values', () => {
-    const validStatuses = ['backlog', 'pending', 'in_progress', 'review', 'completed'] as const
+    const validStatuses = ['backlog', 'pending', 'in_progress', 'needs_input', 'review', 'completed'] as const
     mockTeams.getTeam.mockReturnValue(makeTeam())
     mockTasks.getTask.mockReturnValue(makeTask())
 

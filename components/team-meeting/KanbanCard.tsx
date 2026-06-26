@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, Circle, PlayCircle, Eye, CheckCircle2, Lock, User } from 'lucide-react'
+import { Archive, Circle, PlayCircle, AlertTriangle, Eye, CheckCircle2, Lock, User } from 'lucide-react'
 import type { TaskWithDeps, TaskStatus } from '@/types/task'
 
 interface KanbanCardProps {
@@ -12,6 +12,7 @@ const statusIcon: Record<TaskStatus, typeof Circle> = {
   backlog: Archive,
   pending: Circle,
   in_progress: PlayCircle,
+  needs_input: AlertTriangle,
   review: Eye,
   completed: CheckCircle2,
 }
