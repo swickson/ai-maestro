@@ -97,7 +97,7 @@ export function createTeam(data: { name: string; description?: string; agentIds:
   return team
 }
 
-export function updateTeam(id: string, updates: Partial<Pick<Team, 'name' | 'description' | 'agentIds' | 'lastMeetingAt' | 'instructions' | 'lastActivityAt'>>): Team | null {
+export function updateTeam(id: string, updates: Partial<Pick<Team, 'name' | 'description' | 'agentIds' | 'lastMeetingAt' | 'instructions' | 'lastActivityAt' | 'chiefOfStaffId'>>): Team | null {
   const teams = loadTeams()
   const index = teams.findIndex(t => t.id === id)
   if (index === -1) return null
