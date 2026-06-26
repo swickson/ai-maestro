@@ -35,8 +35,9 @@ Use `--type request` and pick `--priority` per the table:
 3. DM the operator via the prod host Maestro:
    ```
    POST http://<TAILSCALE_IP>:23000/api/users/<operator-user-id>/notify
-   { "subject": "<Agent> asks", "message": "<Question>\n\n<any unblocking context>" }
+   { "botSlug": "<your-bot-slug>", "subject": "<Agent> asks", "message": "<Question>\n\n<any unblocking context>" }
    ```
+   **Pin your bot's slug — required for multi-bot operators.** As of the multi-bot mis-attribution fix (gateway #34/#35 + Maestro #274, deployed 2026-06-26), omitting `botSlug` no longer recency-guesses: Maestro forwards an absent slug and the gateway is the single arbiter — it returns **`409 ambiguous_bot`** (with the candidate slugs) for any operator who talks to multiple bots, instead of silently delivering through whichever bot was last inbound. For a single-bot operator the lone live bot is still reused, so a pin is optional there. Use the bare resolver slug for your bot — not the directory form `teams-<slug>-bot`; an unknown slug is a clean 400, never a silent mis-route.
 4. AMP ack back to the agent: "Your question has been forwarded to the operator via Discord. Standing by."
 5. The operator's Discord reply arrives via discord-bot → AMP inbox.
 6. AMP the answer back to the requesting agent with `--type response`.
