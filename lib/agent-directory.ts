@@ -123,9 +123,25 @@ function ensureDir(): void {
  * Load directory from disk
  */
 function loadDirectory(): AgentDirectory {
-  // Check cache
+  // Serve the in-memory cache only if it is BOTH within TTL AND not older than
+  // the on-disk file. The mtime check is load-bearing: the directory sync WRITER
+  // and a dashboard READER can be different module instances (Next bundles each
+  // route's imports separately), so a pure time-cache never sees the writer's
+  // file writes — it serves a stale blob and, via rebuildLocalDirectory's
+  // save-on-read, even clobbers the writer's fresh remote activity back to
+  // stale. A cheap statSync lets any reader detect any writer's change and
+  // re-read. saveDirectory stamps cacheTimestamp AFTER the write, so a writer
+  // never self-invalidates on its own writes.
   if (directoryCache && (Date.now() - cacheTimestamp) < CACHE_TTL) {
-    return directoryCache
+    try {
+      if (fs.statSync(DIRECTORY_FILE).mtimeMs <= cacheTimestamp) {
+        return directoryCache
+      }
+      // file is newer than our cache → fall through and re-read it
+    } catch {
+      // stat failed (e.g. file not yet created) — keep serving the cache
+      return directoryCache
+    }
   }
 
   ensureDir()
