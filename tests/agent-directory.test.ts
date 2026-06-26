@@ -34,19 +34,27 @@ vi.mock('@/lib/inject-readiness', () => ({
 const DIRECTORY_FILE = path.join(os.homedir(), '.aimaestro', 'agent-directory.json')
 
 let mockFs: Record<string, string>
-function seedFile(obj: unknown) { mockFs[DIRECTORY_FILE] = JSON.stringify(obj) }
+let mockMtimes: Record<string, number>   // path → mtimeMs, drives loadDirectory's mtime-invalidation
+function seedFile(obj: unknown) { mockFs[DIRECTORY_FILE] = JSON.stringify(obj); mockMtimes[DIRECTORY_FILE] = Date.now() }
 function readFile(): any { return JSON.parse(mockFs[DIRECTORY_FILE]) }
 
 beforeEach(() => {
   vi.resetModules()
   mockFs = {}
+  mockMtimes = {}
   vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => p.toString() in mockFs || p.toString().endsWith('.aimaestro'))
   vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) => {
     const c = mockFs[p.toString()]
     if (c === undefined) throw new Error(`ENOENT: ${p}`)
     return c
   })
-  vi.mocked(fs.writeFileSync).mockImplementation((p: fs.PathOrFileDescriptor, data: any) => { mockFs[p.toString()] = String(data) })
+  vi.mocked(fs.writeFileSync).mockImplementation((p: fs.PathOrFileDescriptor, data: any) => {
+    mockFs[p.toString()] = String(data)
+    mockMtimes[p.toString()] = Date.now()   // a write bumps the file's mtime, like a real fs
+  })
+  // mtime defaults to 0 (older than any cacheTimestamp) for unwritten paths, so
+  // tests that don't exercise mtime keep the prior cache semantics.
+  vi.mocked(fs.statSync).mockImplementation(((p: fs.PathLike) => ({ mtimeMs: mockMtimes[p.toString()] ?? 0 })) as any)
   vi.mocked(fs.mkdirSync).mockImplementation(() => undefined as any)
 })
 afterEach(() => vi.restoreAllMocks())
@@ -216,5 +224,58 @@ describe('syncWithPeers carries remote activity through the pull-sync (Columbo #
     expect(stored?.source).toBe('remote')
     expect(stored?.activity?.state).toBe('stuck')        // dropped (undefined) before the fix
     expect(stored?.activity?.observedStuck).toBe(true)
+  })
+})
+
+describe('loadDirectory cache freshness (P2b — mtime invalidation)', () => {
+  const localEntry = (id: string, name: string) =>
+    ({ agentId: id, name, hostId: 'prod', source: 'local', lastSeen: 'x' })
+  const remoteWithActivity = (id: string, name: string) =>
+    ({ agentId: id, name, hostId: 'laptop', source: 'remote', lastSeen: 'x',
+       activity: { state: 'active', observedStuck: false, lastActivityAt: 'x' } })
+  const dirOf = (...entries: any[]) =>
+    ({ version: 1, lastSync: 'x', entries: Object.fromEntries(entries.map(e => [e.agentId, e])) })
+
+  it('re-reads when the on-disk file is newer than the cache (cross-instance write)', async () => {
+    seedFile(dirOf(localEntry('a', 'alpha')))
+    const dir = await import('@/lib/agent-directory')
+    expect(dir.getAllDirectoryEntries().map(e => e.agentId)).toEqual(['a'])   // caches v1
+
+    // another module instance (the sync writer) writes a newer file out-of-band
+    mockFs[DIRECTORY_FILE] = JSON.stringify(dirOf(localEntry('b', 'bravo')))
+    mockMtimes[DIRECTORY_FILE] = Date.now() + 1_000_000
+
+    // a pure time-cache would still return ['a']; the mtime check forces a re-read
+    expect(dir.getAllDirectoryEntries().map(e => e.agentId)).toEqual(['b'])
+  })
+
+  it('does NOT clobber a writer fresh remote activity on a read (rebuild-on-read)', async () => {
+    seedFile(dirOf(localEntry('a', 'alpha')))
+    const dir = await import('@/lib/agent-directory')
+    dir.getAllDirectoryEntries()                                              // caches the activity-less v1
+
+    // the sync writer (another instance) lands a remote agent WITH activity
+    mockFs[DIRECTORY_FILE] = JSON.stringify(dirOf(localEntry('a', 'alpha'), remoteWithActivity('r', 'remote')))
+    mockMtimes[DIRECTORY_FILE] = Date.now() + 1_000_000
+
+    // service getAllDirectory does this load-then-save on EVERY read
+    dir.rebuildLocalDirectory()
+
+    // the saved file must STILL carry the remote activity — a stale-cache save would have wiped it
+    expect(readFile().entries.r?.activity?.state).toBe('active')
+    // and the merged read surfaces it (two consecutive reads both fresh)
+    expect(dir.getAllDirectoryEntries().find(e => e.agentId === 'r')?.activity?.state).toBe('active')
+  })
+
+  it('a writer own save does not self-invalidate its cache (cacheTimestamp set after write)', async () => {
+    seedFile(dirOf(localEntry('a', 'alpha')))
+    const dir = await import('@/lib/agent-directory')
+    dir.getAllDirectoryEntries()                                              // initial load + cache
+    dir.registerRemoteAgent({ agentId: 'r', name: 'remote', hostId: 'laptop', ampRegistered: true } as any)  // load(cache)+save
+    const readsAfterWrite = vi.mocked(fs.readFileSync).mock.calls.length
+    // mtime bumped by the save, but cacheTimestamp is stamped AFTER the write —
+    // so a follow-up read serves cache, not a re-read of the file it just wrote.
+    dir.getAllDirectoryEntries()
+    expect(vi.mocked(fs.readFileSync).mock.calls.length).toBe(readsAfterWrite)
   })
 })
