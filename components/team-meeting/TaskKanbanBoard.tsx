@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Archive, Circle, PlayCircle, Eye, CheckCircle2 } from 'lucide-react'
+import { X, Archive, Circle, PlayCircle, AlertTriangle, Eye, CheckCircle2 } from 'lucide-react'
 import type { Agent } from '@/types/agent'
 import type { TaskWithDeps, TaskStatus } from '@/types/task'
 import KanbanColumn from './KanbanColumn'
@@ -12,6 +12,7 @@ const COLUMNS: { status: TaskStatus; label: string; dotColor: string; icon: type
   { status: 'backlog', label: 'Backlog', dotColor: 'bg-gray-500', icon: Archive },
   { status: 'pending', label: 'To Do', dotColor: 'bg-gray-400', icon: Circle },
   { status: 'in_progress', label: 'In Progress', dotColor: 'bg-blue-400', icon: PlayCircle },
+  { status: 'needs_input', label: 'Needs You', dotColor: 'bg-red-400', icon: AlertTriangle },
   { status: 'review', label: 'Review', dotColor: 'bg-amber-400', icon: Eye },
   { status: 'completed', label: 'Done', dotColor: 'bg-emerald-400', icon: CheckCircle2 },
 ]

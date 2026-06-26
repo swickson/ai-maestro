@@ -5,7 +5,11 @@
  * with auto-unblocking when dependencies complete.
  */
 
-export type TaskStatus = 'backlog' | 'pending' | 'in_progress' | 'review' | 'completed'
+// 'needs_input' = orchestrator-declared "needs a human decision" (Mission Control's
+// NEEDS-YOU attention state). Distinct from the dependency-derived `isBlocked` flag
+// (TaskWithDeps.isBlocked) — that is task-waits-on-task and never surfaces as the red
+// attention column. needs_input is the only status that warrants a proactive operator ping.
+export type TaskStatus = 'backlog' | 'pending' | 'in_progress' | 'needs_input' | 'review' | 'completed'
 
 export interface Task {
   id: string                     // UUID

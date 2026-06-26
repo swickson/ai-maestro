@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Trash2, Archive, Circle, PlayCircle, Eye, CheckCircle2, Lock } from 'lucide-react'
+import { X, Trash2, Archive, Circle, PlayCircle, AlertTriangle, Eye, CheckCircle2, Lock } from 'lucide-react'
 import type { Agent } from '@/types/agent'
 import type { TaskWithDeps, TaskStatus } from '@/types/task'
 import DependencyPicker from './DependencyPicker'
@@ -82,6 +82,7 @@ export default function TaskDetailView({ task, agents, allTasks, onUpdate, onDel
             { status: 'backlog' as TaskStatus, icon: Archive, label: 'Backlog', activeClass: 'bg-gray-700 text-gray-200' },
             { status: 'pending' as TaskStatus, icon: Circle, label: 'To Do', activeClass: 'bg-gray-700 text-gray-200' },
             { status: 'in_progress' as TaskStatus, icon: PlayCircle, label: 'In Progress', activeClass: 'bg-blue-600/30 text-blue-300' },
+            { status: 'needs_input' as TaskStatus, icon: AlertTriangle, label: 'Needs You', activeClass: 'bg-red-600/30 text-red-300' },
             { status: 'review' as TaskStatus, icon: Eye, label: 'Review', activeClass: 'bg-amber-600/30 text-amber-300' },
             { status: 'completed' as TaskStatus, icon: CheckCircle2, label: 'Done', activeClass: 'bg-emerald-600/30 text-emerald-300' },
           ]).map(({ status: s, icon: Icon, label, activeClass }) => {

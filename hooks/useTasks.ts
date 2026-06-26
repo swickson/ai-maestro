@@ -110,6 +110,7 @@ export function useTasks(teamId: string | null): UseTasksResult {
       backlog: [],
       pending: [],
       in_progress: [],
+      needs_input: [],
       review: [],
       completed: [],
     }
