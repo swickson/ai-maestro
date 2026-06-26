@@ -16,7 +16,9 @@ import type { Team } from '@/types/team'
 import type { TeamTaskSummary } from '@/types/team'
 
 // Local teams come from team-registry; getAllTeams + syncTeamsWithPeers both read it.
-const mockLoadTeams = vi.fn<[], Team[]>(() => [])
+// (Annotate the return type, not vi.fn's generics — Vitest v4's single-type-param
+// vi.fn rejects <[], Team[]> and infers `never`, which fails tsc --noEmit.)
+const mockLoadTeams = vi.fn((): Team[] => [])
 vi.mock('@/lib/team-registry', () => ({
   loadTeams: () => mockLoadTeams(),
   getLocalTeamsForSync: vi.fn(() => []),
