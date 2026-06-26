@@ -1,13 +1,9 @@
 'use client'
 
-import { useMemo } from 'react'
 import AgentBadge from '@/components/AgentBadge'
-import KanbanCard from '@/components/team-meeting/KanbanCard'
-import { useTasks } from '@/hooks/useTasks'
 import {
   MISSION_CONTROL_COLUMNS,
-  groupTasksByColumn,
-  teamNeedsAttention,
+  summaryNeedsAttention,
 } from './missionControlColumns'
 import type { Team } from '@/types/team'
 import type { Agent } from '@/types/agent'
@@ -23,14 +19,15 @@ const noop = () => {}
 /**
  * One mission-control row = one team. Left cell carries the team name
  * prominently with the orchestrator's reused AgentBadge beneath it; the
- * remaining cells spread that team's active tasks across the status columns.
- * PURE READ — every interaction handler is a no-op and AgentBadge actions are off.
+ * remaining cells show that team's per-status task COUNTS.
+ *
+ * P2b: counts come from the synced `team.taskSummary` (the cross-host read
+ * model) — NOT a per-team task poll. The page does one aggregate poll for every
+ * team's summary, so a 30-team mesh is one request, not 30. PURE READ.
  */
 export default function TeamRow({ team, orchestrator }: TeamRowProps) {
-  const { tasks } = useTasks(team.id)
-
-  const byColumn = useMemo(() => groupTasksByColumn(tasks), [tasks])
-  const needsAttention = teamNeedsAttention(byColumn)
+  const summary = team.taskSummary
+  const needsAttention = summaryNeedsAttention(summary)
 
   return (
     <div className={`flex border-b border-slate-800 ${needsAttention ? 'bg-red-950/30' : ''}`}>
@@ -57,23 +54,41 @@ export default function TeamRow({ team, orchestrator }: TeamRowProps) {
         )}
       </div>
 
-      {/* Status columns — one cell per active status */}
+      {/* Status columns — one count cell per active status */}
       {MISSION_CONTROL_COLUMNS.map(col => {
-        const cards = byColumn[col.key] ?? []
-        const litRed = col.attention && cards.length > 0
+        const count = summary?.counts[col.key] ?? 0
+        const litRed = col.attention && count > 0
         // Attention-red wins; else context columns recede behind the emphasized ones.
         const cellBg = litRed ? 'bg-red-950/40' : col.emphasis ? '' : 'bg-slate-950/40'
         return (
           <div
             key={col.key}
-            className={`flex-1 min-w-[180px] p-2 border-r border-slate-800 space-y-2 ${cellBg}`}
+            className={`flex-1 min-w-[180px] p-2 border-r border-slate-800 flex items-center justify-center ${cellBg}`}
           >
-            {cards.map(task => (
-              <KanbanCard key={task.id} task={task} onSelect={noop} />
-            ))}
+            <CountCell count={count} attention={!!col.attention} emphasis={!!col.emphasis} />
           </div>
         )
       })}
     </div>
+  )
+}
+
+/**
+ * A single status count. Zero recedes to a faint dash so the eye lands on the
+ * columns that actually hold work; a lit NEEDS-YOU count goes red.
+ */
+function CountCell({ count, attention, emphasis }: { count: number; attention: boolean; emphasis: boolean }) {
+  if (count === 0) {
+    return <span className="text-slate-700 text-lg leading-none select-none">·</span>
+  }
+  const tone = attention
+    ? 'bg-red-500/20 text-red-300 border-red-500/40'
+    : emphasis
+      ? 'bg-slate-700/60 text-slate-100 border-slate-600'
+      : 'bg-slate-800/60 text-slate-400 border-slate-700'
+  return (
+    <span className={`min-w-[2rem] px-2 py-1 rounded-lg border text-center text-base font-bold tabular-nums ${tone}`}>
+      {count}
+    </span>
   )
 }

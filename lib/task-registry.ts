@@ -10,7 +10,8 @@ import path from 'path'
 import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import { loadAgents } from '@/lib/agent-registry'
-import type { Task, TaskWithDeps, TasksFile } from '@/types/task'
+import type { Task, TaskStatus, TaskWithDeps, TasksFile } from '@/types/task'
+import type { TeamTaskSummary } from '@/types/team'
 
 const TEAMS_DIR = path.join(os.homedir(), '.aimaestro', 'teams')
 
@@ -50,6 +51,30 @@ export function saveTasks(teamId: string, tasks: Task[]): boolean {
     console.error(`Failed to save tasks for team ${teamId}:`, error)
     return false
   }
+}
+
+/**
+ * Roll up a team's tasks into per-status counts for the cross-host Mission
+ * Control read model. Reads the team's local task file directly — only the
+ * owning host can do this; the summary then rides the team-directory sync.
+ *
+ * Status counts always cover all six statuses (0 when none); unknown/legacy
+ * statuses are ignored (they have no Mission Control column).
+ */
+export function computeTeamTaskSummary(teamId: string): TeamTaskSummary {
+  const tasks = loadTasks(teamId)
+  const counts: Record<TaskStatus, number> = {
+    backlog: 0,
+    pending: 0,
+    in_progress: 0,
+    needs_input: 0,
+    review: 0,
+    completed: 0,
+  }
+  for (const t of tasks) {
+    if (counts[t.status] !== undefined) counts[t.status]++
+  }
+  return { counts, total: tasks.length, needsYouCount: counts.needs_input }
 }
 
 /**

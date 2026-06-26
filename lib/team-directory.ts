@@ -12,6 +12,7 @@
 
 import { getPeerHosts } from './hosts-config'
 import { loadTeams, getLocalTeamsForSync } from './team-registry'
+import { computeTeamTaskSummary } from './task-registry'
 import type { Team } from '@/types/team'
 
 // Sync interval (60 seconds, same as agent directory)
@@ -34,7 +35,13 @@ let syncInterval: NodeJS.Timeout | null = null
  * This is the main function consumers should use instead of raw loadTeams().
  */
 export function getAllTeams(): Team[] {
-  const local = loadTeams().map(t => ({ ...t, source: 'local' as const }))
+  // Local teams get a freshly-computed task rollup (read-time-fresh); remote
+  // teams keep the rollup that rode the sync from their owning host.
+  const local = loadTeams().map(t => ({
+    ...t,
+    source: 'local' as const,
+    taskSummary: computeTeamTaskSummary(t.id),
+  }))
   const remote = Array.from(remoteTeams.values())
   return [...local, ...remote]
 }

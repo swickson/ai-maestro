@@ -18,8 +18,10 @@ import {
   ATTENTION_STATUS,
   groupTasksByColumn,
   teamNeedsAttention,
+  summaryNeedsAttention,
 } from '@/components/mission-control/missionControlColumns'
 import type { TaskWithDeps } from '@/types/task'
+import type { TeamTaskSummary } from '@/types/team'
 
 // Minimal TaskWithDeps factory — only fields the helpers read matter.
 function task(id: string, status: string, extra: Partial<TaskWithDeps> = {}): TaskWithDeps {
@@ -108,5 +110,28 @@ describe('teamNeedsAttention', () => {
       task('dep', 'pending', { isBlocked: true, blockedBy: ['x'] }),
     ])
     expect(teamNeedsAttention(grouped)).toBe(false)
+  })
+})
+
+describe('summaryNeedsAttention (cross-host read model)', () => {
+  function summary(needsYouCount: number): TeamTaskSummary {
+    return {
+      counts: { backlog: 0, pending: 0, in_progress: 0, needs_input: needsYouCount, review: 0, completed: 0 },
+      total: needsYouCount,
+      needsYouCount,
+    }
+  }
+
+  it('is true when the rolled-up needs_input count is non-zero', () => {
+    expect(summaryNeedsAttention(summary(1))).toBe(true)
+    expect(summaryNeedsAttention(summary(3))).toBe(true)
+  })
+
+  it('is false when no task needs the operator', () => {
+    expect(summaryNeedsAttention(summary(0))).toBe(false)
+  })
+
+  it('treats a missing summary as no alarm (team not yet synced)', () => {
+    expect(summaryNeedsAttention(undefined)).toBe(false)
   })
 })

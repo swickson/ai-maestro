@@ -8,13 +8,44 @@ import type { Agent } from '@/types/agent'
 /**
  * Mission Control — single pane of glass over every team.
  *
- * One row per team (the orchestrator is its face), active tasks spread across
- * status columns, a red row when a lead has declared a block. PURE READ: this
- * pane observes; it never writes the kanban and never pings Teams (the
- * orchestrator does both in its own workflow — the Mission Control design).
+ * One row per team (the orchestrator is its face), per-status task counts, a red
+ * row when a lead has declared a block. PURE READ: this pane observes; it never
+ * writes the kanban and never pings Teams (the orchestrator does both in its own
+ * workflow — the Mission Control design).
  *
- * P1b scaffold: this-host teams only. Cross-host fan-in is P2 (poll-sync).
+ * P2b: cross-host. Teams come from /api/teams (getAllTeams = local + synced
+ * peers, each carrying a synced taskSummary), so ONE poll covers every team's
+ * task state — no per-team task fetch. Leads resolve against the FEDERATED agent
+ * directory so off-host orchestrators render, with the local roster overlaid for
+ * richer (avatar/program/session) badges on this host's own leads.
  */
+
+/** Synthesize a minimal Agent from a federated directory entry so an off-host
+ *  lead still renders an AgentBadge. Degrades gracefully — no avatar (falls back
+ *  to the id-hashed one), no live session (shows offline) — the local roster
+ *  overlay below replaces these with the full record for this host's agents. */
+function entryToAgent(e: {
+  agentId?: string
+  name: string
+  label?: string
+  hostId: string
+  hostUrl?: string
+}): Agent | null {
+  if (!e.agentId) return null
+  return {
+    id: e.agentId,
+    name: e.name,
+    label: e.label,
+    hostId: e.hostId,
+    hostUrl: e.hostUrl,
+    sessions: [],
+    program: '',
+    taskDescription: '',
+    // Minimal record — AgentBadge/InfraIcon read only the fields above plus
+    // optionals; cast through unknown since the rest of Agent is absent by design.
+  } as unknown as Agent
+}
+
 export default function MissionControlPage() {
   const [teams, setTeams] = useState<Team[]>([])
   const [agentsById, setAgentsById] = useState<Record<string, Agent>>({})
@@ -26,20 +57,31 @@ export default function MissionControlPage() {
 
     const load = async () => {
       try {
-        const [teamsRes, agentsRes] = await Promise.all([
+        const [teamsRes, agentsRes, directoryRes] = await Promise.all([
           fetch('/api/teams'),
           fetch('/api/agents'),
+          fetch('/api/agents/directory/all'),
         ])
         if (!teamsRes.ok) throw new Error('Failed to load teams')
         if (!agentsRes.ok) throw new Error('Failed to load agents')
 
         const teamsData = await teamsRes.json()
         const agentsData = await agentsRes.json()
+        // Federated directory is best-effort — a lead just falls back to local-only.
+        const directoryData = directoryRes.ok ? await directoryRes.json() : { entries: [] }
         if (cancelled) return
 
         setTeams(teamsData.teams || [])
+
         const map: Record<string, Agent> = {}
+        // Federated entries first (resolves off-host leads, lighter badge)…
+        for (const e of (directoryData.entries || []) as Parameters<typeof entryToAgent>[0][]) {
+          const agent = entryToAgent(e)
+          if (agent) map[agent.id] = agent
+        }
+        // …then overlay the local roster so this host's own leads get full records.
         for (const a of (agentsData.agents || []) as Agent[]) map[a.id] = a
+
         setAgentsById(map)
         setError(null)
       } catch (e) {
@@ -50,8 +92,9 @@ export default function MissionControlPage() {
     }
 
     load()
-    // Roster refreshes slowly; per-team task state polls at 5s inside each row.
-    const interval = setInterval(load, 30000)
+    // One aggregate poll covers every team's task state (the synced summaries)
+    // plus the federated roster — so cadence can be brisk without N-per-team fan-out.
+    const interval = setInterval(load, 10000)
     return () => {
       cancelled = true
       clearInterval(interval)
