@@ -97,3 +97,48 @@ describe('getAllTeams — local-fresh / remote-preserved task rollup', () => {
     expect(local?.taskSummary).toEqual(FRESH)
   })
 })
+
+describe('syncTeamsWithPeers — remote taskSummary stays live (review-caught #282 gate fix)', () => {
+  it('refreshes an existing remote team taskSummary on re-sync even when updatedAt is UNCHANGED', async () => {
+    // taskSummary changes on task CRUD, which does NOT bump Team.updatedAt. The
+    // updatedAt gate alone would freeze the first-synced summary forever; this
+    // pins that the runtime rollup refreshes regardless.
+    mockLoadTeams.mockReturnValue([])
+
+    const SAME_UPDATED_AT = '2026-02-02T00:00:00.000Z'
+    const firstSummary: TeamTaskSummary = {
+      counts: { backlog: 0, pending: 1, in_progress: 0, needs_input: 0, review: 0, completed: 0 },
+      total: 1,
+      needsYouCount: 0,
+    }
+    // Same metadata/updatedAt, but a task was moved to needs_input on the owner.
+    const updatedSummary: TeamTaskSummary = {
+      counts: { backlog: 0, pending: 0, in_progress: 0, needs_input: 1, review: 0, completed: 0 },
+      total: 1,
+      needsYouCount: 1,
+    }
+
+    let summaryToServe = firstSummary
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        teams: [team('remote-1', { hostId: 'peer-1', updatedAt: SAME_UPDATED_AT, taskSummary: summaryToServe })],
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const dir = await import('@/lib/team-directory')
+
+    await dir.syncTeamsWithPeers()
+    expect(dir.getAllTeams().find(t => t.id === 'remote-1')?.taskSummary).toEqual(firstSummary)
+
+    // Owner adds a needs_input task — counts change, updatedAt does NOT.
+    summaryToServe = updatedSummary
+    await dir.syncTeamsWithPeers()
+
+    const remote = dir.getAllTeams().find(t => t.id === 'remote-1')
+    expect(remote?.updatedAt).toBe(SAME_UPDATED_AT)        // metadata genuinely unchanged
+    expect(remote?.taskSummary).toEqual(updatedSummary)    // …but the rollup refreshed
+    expect(remote?.taskSummary?.needsYouCount).toBe(1)     // the NEEDS-YOU alarm now reaches peers
+  })
+})

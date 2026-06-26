@@ -108,6 +108,14 @@ export async function syncTeamsWithPeers(timeout: number = 5000): Promise<{
             remoteTeams.set(team.id, { ...team, source: 'remote' })
             teamHostMap.set(team.id, host.id)
             if (!existing) result.newTeams++
+          } else {
+            // Metadata unchanged (updatedAt not newer), but the runtime task
+            // rollup changes on task CRUD WITHOUT bumping Team.updatedAt — so the
+            // updatedAt gate alone would freeze a remote team's taskSummary stale
+            // forever (no new counts, no NEEDS-YOU alarm). Always refresh the
+            // runtime field from the peer's read-time-fresh value, the way the
+            // agent directory re-registers activity every sync.
+            remoteTeams.set(team.id, { ...existing, taskSummary: team.taskSummary })
           }
         }
       }
