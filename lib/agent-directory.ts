@@ -16,6 +16,7 @@ import path from 'path'
 import os from 'os'
 import { getSelfHostId, getPeerHosts } from './hosts-config'
 import { loadAgents, normalizeHostId } from './agent-registry'
+import { readHookState, isBlockingPrompt, HOOK_BUSY_STALE_MS } from './inject-readiness'
 
 const AIMAESTRO_DIR = path.join(os.homedir(), '.aimaestro')
 const DIRECTORY_FILE = path.join(AIMAESTRO_DIR, 'agent-directory.json')
@@ -33,6 +34,20 @@ const SYNC_INTERVAL = 60 * 1000
 /**
  * Directory entry for a single agent
  */
+/**
+ * Per-agent runtime activity — the "who's idle / working / stuck" signal that
+ * Mission Control reads (P2). Derived from the CLIENT-INDEPENDENT hook state
+ * (services/shared-state via inject-readiness), NOT terminal scraping, so it's
+ * trustworthy for an unwatched pane. Computed fresh at read time for local
+ * agents in getLocalEntriesForSync(); rides the existing directory sync to
+ * peers (as-of-last-sync for remote agents). Never persisted on the entry.
+ */
+export interface AgentActivity {
+  state: 'active' | 'idle' | 'waiting' | 'stuck' | 'unknown'  // working / quiet / needs-input / wedged / no-signal
+  lastActivityAt?: string       // ISO — last hook state write
+  observedStuck?: boolean        // hook says 'busy' but stale > HOOK_BUSY_STALE_MS (token-timer stalled)
+}
+
 export interface AgentDirectoryEntry {
   agentId?: string              // Agent UUID — for cross-referencing with meeting participants
   name: string                  // Agent name (e.g., "backend-api")
@@ -43,6 +58,7 @@ export interface AgentDirectoryEntry {
   ampRegistered: boolean        // Is this a proper AMP-registered agent?
   lastSeen: string              // ISO timestamp of last verification
   source: 'local' | 'remote'    // Where we learned about this agent
+  activity?: AgentActivity      // Runtime state (P2) — read-time-fresh for local, synced for remote
 }
 
 /**
@@ -326,7 +342,9 @@ export function unregisterAgent(name: string, hostId?: string): boolean {
  */
 export function getAllDirectoryEntries(): AgentDirectoryEntry[] {
   const directory = loadDirectory()
-  return Object.values(directory.entries)
+  // Local entries get fresh activity here (the dashboard's merged view); remote
+  // entries keep the activity that rode the sync from their home host.
+  return enrichLocalActivity(Object.values(directory.entries))
 }
 
 /**
@@ -429,9 +447,61 @@ export async function syncWithPeers(timeout: number = 5000): Promise<{
 /**
  * Get local entries for sharing with peers
  */
+/**
+ * Derive an agent's runtime activity from its CLIENT-INDEPENDENT hook state
+ * (P2). Leans on the hook (written by the Claude hook at turn start/end, read
+ * from disk via readHookState) rather than `isTerminalIdle`, whose idle verdict
+ * is untrustworthy for an unwatched pane (#239 BUG1). Pure + synchronous — no
+ * tmux shell-out — so it's cheap to run for every agent on each directory read.
+ *
+ *   blocking prompt          -> 'waiting' (needs the human — the NEEDS-YOU row)
+ *   hook 'busy' & stale >5min -> 'stuck'  (token-timer stalled; observedStuck)
+ *   hook 'busy' & fresh       -> 'active'
+ *   otherwise (dormant/null)  -> 'idle'
+ */
+export function computeAgentActivity(workingDir?: string | null, now: number = Date.now()): AgentActivity {
+  const hookState = readHookState(workingDir)
+  const lastActivityAt = hookState?.updatedAt
+  if (isBlockingPrompt(hookState)) {
+    return { state: 'waiting', lastActivityAt, observedStuck: false }
+  }
+  if (hookState?.status === 'busy') {
+    const age = hookState.updatedAt ? now - new Date(hookState.updatedAt).getTime() : Infinity
+    if (age >= HOOK_BUSY_STALE_MS) {
+      return { state: 'stuck', lastActivityAt, observedStuck: true }
+    }
+    return { state: 'active', lastActivityAt, observedStuck: false }
+  }
+  // Claude-not-busy is authoritative idle; a null/dormant hook also reads as
+  // quiet for display purposes (nothing observable demanding attention).
+  return { state: 'idle', lastActivityAt, observedStuck: false }
+}
+
+/**
+ * Attach fresh runtime activity to LOCAL entries at READ time (never persisted).
+ * Remote entries are left untouched — they carry their home host's activity as of
+ * the last sync. workingDirectory is stored on the agent registry (agent-first
+ * architecture), not on the directory entry — resolve it by canonical id, else
+ * by name. Shared by getLocalEntriesForSync (sync payload) + getAllDirectoryEntries
+ * (the dashboard's merged view) so both surface the same signal.
+ */
+function enrichLocalActivity(entries: AgentDirectoryEntry[]): AgentDirectoryEntry[] {
+  const agents = loadAgents()
+  const now = Date.now()
+  return entries.map(e => {
+    if (e.source !== 'local') return e
+    const agent = agents.find(a =>
+      e.agentId ? a.id === e.agentId : (a.name || a.alias)?.toLowerCase() === e.name.toLowerCase()
+    )
+    const workingDir = agent?.workingDirectory || agent?.sessions?.[0]?.workingDirectory
+    return { ...e, activity: computeAgentActivity(workingDir, now) }
+  })
+}
+
 export function getLocalEntriesForSync(): AgentDirectoryEntry[] {
   const directory = loadDirectory()
-  return Object.values(directory.entries).filter(e => e.source === 'local')
+  const locals = Object.values(directory.entries).filter(e => e.source === 'local')
+  return enrichLocalActivity(locals)
 }
 
 // ============================================================================

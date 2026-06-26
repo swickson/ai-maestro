@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { readHookState } from '@/lib/inject-readiness'
+import { loadAgents } from '@/lib/agent-registry'
 
 vi.mock('fs')
 vi.mock('@/lib/hosts-config', () => ({
@@ -22,6 +24,11 @@ vi.mock('@/lib/hosts-config', () => ({
 vi.mock('@/lib/agent-registry', () => ({
   loadAgents: vi.fn(() => []),
   normalizeHostId: vi.fn((h: string) => (h || '').toLowerCase()),
+}))
+vi.mock('@/lib/inject-readiness', () => ({
+  readHookState: vi.fn(() => null),
+  isBlockingPrompt: vi.fn((s: any) => s?.status === 'waiting_for_input' || s?.status === 'permission_request' || s?.status === 'question_prompt'),
+  HOOK_BUSY_STALE_MS: 5 * 60_000,
 }))
 
 const DIRECTORY_FILE = path.join(os.homedir(), '.aimaestro', 'agent-directory.json')
@@ -127,5 +134,68 @@ describe('fresh rebuildLocalDirectory keys local agents by agentId (#42)', () =>
     dir.rebuildLocalDirectory()
     expect(Object.keys(readFile().entries)).toEqual(['uuid-peer'])
     expect(dir.lookupAgentById('uuid-peer')?.source).toBe('local')
+  })
+})
+
+describe('runtime activity (P2 — who is idle / working / stuck)', () => {
+  const NOW = 1_000_000_000_000
+
+  it('waiting when a blocking prompt is pending (the NEEDS-YOU signal)', async () => {
+    vi.mocked(readHookState).mockReturnValue({ status: 'permission_request', updatedAt: new Date(NOW).toISOString() } as any)
+    const dir = await import('@/lib/agent-directory')
+    const a = dir.computeAgentActivity('/work/dir', NOW)
+    expect(a.state).toBe('waiting')
+    expect(a.observedStuck).toBe(false)
+  })
+
+  it('active when the hook is busy and fresh', async () => {
+    vi.mocked(readHookState).mockReturnValue({ status: 'busy', updatedAt: new Date(NOW - 60_000).toISOString() } as any)
+    const dir = await import('@/lib/agent-directory')
+    expect(dir.computeAgentActivity('/work/dir', NOW).state).toBe('active')
+  })
+
+  it('stuck + observedStuck when the hook says busy but is stale > 5min (token-timer stalled)', async () => {
+    vi.mocked(readHookState).mockReturnValue({ status: 'busy', updatedAt: new Date(NOW - 6 * 60_000).toISOString() } as any)
+    const dir = await import('@/lib/agent-directory')
+    const a = dir.computeAgentActivity('/work/dir', NOW)
+    expect(a.state).toBe('stuck')
+    expect(a.observedStuck).toBe(true)
+  })
+
+  it('idle when the hook is null / dormant', async () => {
+    vi.mocked(readHookState).mockReturnValue(null)
+    const dir = await import('@/lib/agent-directory')
+    expect(dir.computeAgentActivity('/work/dir', NOW).state).toBe('idle')
+  })
+
+  it('getLocalEntriesForSync attaches activity to local entries (workingDir resolved from the registry)', async () => {
+    seedFile({ version: 5, lastSync: 'x', entries: {
+      'uuid-local': { agentId: 'uuid-local', name: 'dev-local', hostId: 'prod', ampRegistered: true, lastSeen: 'x', source: 'local' },
+    } })
+    vi.mocked(loadAgents).mockReturnValue([{ id: 'uuid-local', name: 'dev-local', hostId: 'prod', workingDirectory: '/work/dir' }] as any)
+    vi.mocked(readHookState).mockReturnValue({ status: 'busy', updatedAt: new Date(Date.now() - 1000).toISOString() } as any)
+    const dir = await import('@/lib/agent-directory')
+    const entries = dir.getLocalEntriesForSync()
+    expect(entries).toHaveLength(1)
+    expect(entries[0].activity?.state).toBe('active')
+  })
+})
+
+describe('getAllDirectoryEntries activity enrichment (local fresh, remote synced-as-is)', () => {
+  it('enriches local entries but preserves remote entries synced activity', async () => {
+    seedFile({ version: 5, lastSync: 'x', entries: {
+      'uuid-local': { agentId: 'uuid-local', name: 'dev-local', hostId: 'prod', ampRegistered: true, lastSeen: 'x', source: 'local' },
+      'uuid-remote': { agentId: 'uuid-remote', name: 'dev-remote', hostId: 'laptop', ampRegistered: true, lastSeen: 'x', source: 'remote',
+        activity: { state: 'stuck', observedStuck: true, lastActivityAt: 'x' } },
+    } })
+    vi.mocked(loadAgents).mockReturnValue([{ id: 'uuid-local', name: 'dev-local', hostId: 'prod', workingDirectory: '/w' }] as any)
+    vi.mocked(readHookState).mockReturnValue(null)  // local → idle
+    const dir = await import('@/lib/agent-directory')
+    const all = dir.getAllDirectoryEntries()
+    const local = all.find(e => e.agentId === 'uuid-local')
+    const remote = all.find(e => e.agentId === 'uuid-remote')
+    expect(local?.activity?.state).toBe('idle')                  // computed fresh on this host
+    expect(remote?.activity?.state).toBe('stuck')                // synced value untouched
+    expect(remote?.activity?.observedStuck).toBe(true)
   })
 })
