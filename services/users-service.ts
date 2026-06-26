@@ -220,8 +220,11 @@ export function autoCreateExternalUser(params: AutoCreateParams): ServiceResult<
  *
  * Used by gateways on every inbound message. Teams (multi-bot on one port) sends
  * `{ platform:'teams', platformUserId:<aad>, context:{ botSlug } }` so the stored
- * context.botSlug refreshes to the latest bot each contact — this is what makes
- * "most-recently-inbound bot wins" work for proactive DMs (see notifyUser).
+ * context.botSlug refreshes to the latest bot each contact. This still drives
+ * reply/thread resolution and the gateway's single-bot reuse, but is NO LONGER the
+ * proactive-DM bot selector: notifyUser no longer falls back to it (that recency
+ * guess mis-attributed multi-bot DMs — see notifyUser), so an unpinned proactive DM
+ * is forwarded with an absent botSlug and the gateway arbitrates.
  */
 export function updateLastSeen(
   userId: string,

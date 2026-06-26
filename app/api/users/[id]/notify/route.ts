@@ -8,8 +8,9 @@ import { notifyUser } from '@/services/users-service'
  * Routes through the appropriate gateway DM endpoint.
  *
  * Body: { message, platform?, subject?, botSlug? }
- * botSlug targets a specific multi-bot-platform bot (e.g. send as LeoAI);
- * omitted → falls back to the user's most-recently-inbound bot. (#13)
+ * botSlug targets a specific multi-bot-platform bot (e.g. send as a named bot);
+ * omitted → forwarded as absent and the gateway decides (409 for an ambiguous
+ * multi-bot user, reuse the lone bot for a single-bot user). (#13, multi-bot fix)
  */
 export async function POST(
   request: NextRequest,
