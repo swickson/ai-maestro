@@ -252,6 +252,20 @@ describe('syncWithPeers carries remote avatar through the pull-sync (cross-host 
     expect(stored?.source).toBe('remote')
     expect(stored?.avatar).toBe('/avatars/men_57.png')   // dropped (undefined) before the fix
   })
+
+  it('emits the local agent avatar in the sync payload (send-side bracket)', async () => {
+    // Brackets the other end of the path: rebuildLocalDirectory must populate
+    // avatar from the registry agent so getLocalEntriesForSync ships it to peers.
+    // Without this, the receive side above would have nothing to carry.
+    vi.mocked(loadAgents).mockReturnValue([
+      { id: 'uuid-local', name: 'dev-local', hostId: 'prod', workingDirectory: '/w', avatar: '/avatars/men_57.png' },
+    ] as any)
+    vi.mocked(readHookState).mockReturnValue(null)
+    const dir = await import('@/lib/agent-directory')
+    dir.rebuildLocalDirectory()
+    const sent = dir.getLocalEntriesForSync().find(e => e.agentId === 'uuid-local')
+    expect(sent?.avatar).toBe('/avatars/men_57.png')
+  })
 })
 
 describe('loadDirectory cache freshness (P2b — mtime invalidation)', () => {
