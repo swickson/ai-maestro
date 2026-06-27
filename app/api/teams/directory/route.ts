@@ -8,6 +8,11 @@
 import { NextResponse } from 'next/server'
 import { getLocalTeamsForSync } from '@/lib/team-registry'
 
+// Live mesh state — must never be statically cached. This route is GET-only,
+// so Next.js would otherwise cache the response and serve it stale until a
+// restart (cross-host team/agent edits never propagate). force-dynamic = always fresh.
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const teams = getLocalTeamsForSync()
