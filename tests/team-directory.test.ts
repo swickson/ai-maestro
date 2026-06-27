@@ -12,8 +12,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import fs from 'fs'
 import type { Team } from '@/types/team'
 import type { TeamTaskSummary } from '@/types/team'
+
+vi.mock('fs')
 
 // Local teams come from team-registry; getAllTeams + syncTeamsWithPeers both read it.
 // (Annotate the return type, not vi.fn's generics — Vitest v4's single-type-param
@@ -57,9 +60,30 @@ const REMOTE_SYNCED: TeamTaskSummary = {
   needsYouCount: 1,
 }
 
+// In-memory fs so remote-teams-directory.json is sandboxed (remote teams are now
+// file-backed with #281 mtime-invalidation). mockFs/mockMtimes live in the test
+// closure, so they PERSIST across vi.resetModules() — a fresh module instance
+// reads what a prior instance wrote, which is exactly the cross-instance bridge
+// the regression below exercises.
+let mockFs: Record<string, string>
+let mockMtimes: Record<string, number>
+
 beforeEach(() => {
   vi.resetModules()
   mockLoadTeams.mockReset()
+  mockFs = {}
+  mockMtimes = {}
+  vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+    const c = mockFs[p.toString()]
+    if (c === undefined) throw new Error(`ENOENT: ${p}`)
+    return c
+  })
+  vi.mocked(fs.writeFileSync).mockImplementation((p: any, data: any) => {
+    mockFs[p.toString()] = String(data)
+    mockMtimes[p.toString()] = Date.now()   // a write bumps the file's mtime, like a real fs
+  })
+  vi.mocked(fs.statSync).mockImplementation(((p: any) => ({ mtimeMs: mockMtimes[p.toString()] ?? 0 })) as any)
+  vi.mocked(fs.mkdirSync).mockImplementation(() => undefined as any)
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -142,5 +166,55 @@ describe('syncTeamsWithPeers — remote taskSummary stays live (review-caught #2
     expect(remote?.updatedAt).toBe(SAME_UPDATED_AT)        // metadata genuinely unchanged
     expect(remote?.taskSummary).toEqual(updatedSummary)    // …but the rollup refreshed
     expect(remote?.taskSummary?.needsYouCount).toBe(1)     // the NEEDS-YOU alarm now reaches peers
+  })
+})
+
+// ============================================================================
+// File-backed remote teams — the full-mode cross-instance bridge (review catch)
+// The team timer (server.mjs instance) and the pane reader (Next instance) are
+// DIFFERENT module instances. With an in-memory Map the reader never saw the
+// writer's synced teams in full mode. Persisting to remote-teams-directory.json +
+// reading it #281-style bridges them. This is the test that would have caught it.
+// ============================================================================
+
+describe('remote teams are file-backed across module instances (full-mode pane fix)', () => {
+  it('a fresh reader instance (no shared memory, no manual sync) sees a remote team a prior instance synced', async () => {
+    mockLoadTeams.mockReturnValue([])
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ teams: [team('remote-x', { hostId: 'peer-1', taskSummary: REMOTE_SYNCED })] }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    // WRITER instance — mirrors server.mjs's startTeamDirectorySync timer: sync persists to file.
+    const writer = await import('@/lib/team-directory')
+    await writer.syncTeamsWithPeers()
+
+    // READER instance — mirrors Next's /api/teams in full mode: a DIFFERENT module
+    // instance (fresh module cache after resetModules), no shared in-memory Map,
+    // and crucially NO sync triggered here — it must learn the team from the file.
+    vi.resetModules()
+    mockLoadTeams.mockReturnValue([])  // re-arm the team-registry mock for the new instance
+    const reader = await import('@/lib/team-directory')
+    const remote = reader.getAllTeams().find(t => t.id === 'remote-x')
+
+    // Pre-fix (in-memory Map), the reader's Map was empty → this was undefined.
+    expect(remote?.source).toBe('remote')
+    expect(remote?.taskSummary).toEqual(REMOTE_SYNCED)
+  })
+
+  it('getTeamDirectoryStats on a fresh reader instance counts the file-backed remote team', async () => {
+    mockLoadTeams.mockReturnValue([])
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ teams: [team('remote-y', { hostId: 'peer-1', taskSummary: REMOTE_SYNCED })] }),
+    })))
+    const writer = await import('@/lib/team-directory')
+    await writer.syncTeamsWithPeers()
+
+    vi.resetModules()
+    mockLoadTeams.mockReturnValue([])
+    const reader = await import('@/lib/team-directory')
+    expect(reader.getTeamDirectoryStats().remote).toBe(1)
   })
 })
