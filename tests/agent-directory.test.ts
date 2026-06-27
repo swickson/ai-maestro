@@ -233,6 +233,27 @@ describe('syncWithPeers carries remote activity through the pull-sync (Columbo #
   })
 })
 
+describe('syncWithPeers carries remote avatar through the pull-sync (cross-host wrong-avatar fix)', () => {
+  it('stores the avatar from a peer local entry onto the stored remote entry', async () => {
+    // Before the fix, the receive-side caller cherry-picked fields and omitted
+    // avatar → it dropped here, so a remote pane fell back to a hash-derived
+    // avatar that mismatched the agent's real stored one on a peer host.
+    const hosts = await import('@/lib/hosts-config')
+    vi.mocked(hosts.getPeerHosts).mockReturnValue([{ id: 'laptop', url: 'http://laptop:23000' } as any])
+    const peerEntry = {
+      agentId: 'uuid-remote', name: 'dev-remote', hostId: 'laptop', ampRegistered: true,
+      source: 'local', lastSeen: 'x',
+      avatar: '/avatars/men_57.png',
+    }
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ entries: [peerEntry] }) })) as any
+    const dir = await import('@/lib/agent-directory')
+    await dir.syncWithPeers()
+    const stored = dir.lookupAgentById('uuid-remote')
+    expect(stored?.source).toBe('remote')
+    expect(stored?.avatar).toBe('/avatars/men_57.png')   // dropped (undefined) before the fix
+  })
+})
+
 describe('loadDirectory cache freshness (P2b — mtime invalidation)', () => {
   const localEntry = (id: string, name: string) =>
     ({ agentId: id, name, hostId: 'prod', source: 'local', lastSeen: 'x' })

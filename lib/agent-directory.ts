@@ -59,6 +59,7 @@ export interface AgentDirectoryEntry {
   lastSeen: string              // ISO timestamp of last verification
   source: 'local' | 'remote'    // Where we learned about this agent
   activity?: AgentActivity      // Runtime state (P2) — read-time-fresh for local, synced for remote
+  avatar?: string               // Avatar URL/emoji — synced so remote panes render the agent's real avatar
 }
 
 /**
@@ -251,7 +252,8 @@ export function rebuildLocalDirectory(): AgentDirectory {
       ampAddress: agent.metadata?.amp?.address,
       ampRegistered: agent.ampRegistered === true,
       lastSeen: new Date().toISOString(),
-      source: 'local'
+      source: 'local',
+      avatar: agent.avatar || undefined
     }
     directory.entries[entryKey(newEntry)] = newEntry
   }
@@ -452,7 +454,12 @@ export async function syncWithPeers(timeout: number = 5000): Promise<{
                 // Carry the peer's runtime activity through the pull-sync (P2):
                 // the peer's getLocalEntriesForSync enriched it; without this it
                 // is dropped here and remote agents show no activity on the pane.
-                activity: entry.activity
+                activity: entry.activity,
+                // Carry the peer's avatar too — this caller cherry-picks fields,
+                // so without this the avatar is dropped on receive and remote
+                // panes fall back to a hash-derived avatar that mismatches the
+                // agent's real one (the cross-host wrong-avatar bug).
+                avatar: entry.avatar
               })
               result.newAgents++
             }

@@ -30,6 +30,7 @@ function entryToAgent(e: {
   label?: string
   hostId: string
   hostUrl?: string
+  avatar?: string
 }): Agent | null {
   if (!e.agentId) return null
   return {
@@ -38,11 +39,14 @@ function entryToAgent(e: {
     label: e.label,
     hostId: e.hostId,
     hostUrl: e.hostUrl,
+    avatar: e.avatar,
     sessions: [],
     program: '',
     taskDescription: '',
     // Minimal record — AgentBadge/InfraIcon read only the fields above plus
     // optionals; cast through unknown since the rest of Agent is absent by design.
+    // avatar rides the synced directory entry so off-host leads render their
+    // real avatar instead of AgentBadge's hash-derived fallback.
   } as unknown as Agent
 }
 
