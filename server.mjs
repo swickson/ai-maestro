@@ -2405,23 +2405,26 @@ async function startServer(handleRequest) {
       }
     }, 2000) // Run after 2 seconds to ensure routes are ready
 
-    // Sync agent directory with peers on startup (Phase 3: AMP Protocol Fix)
+    // Start the recurring directory-sync timers (agent + team) so cross-host
+    // state stays fresh on every host WITHOUT the mission-control pane being open.
+    // Both starters were defined (startDirectorySync / startTeamDirectorySync) but
+    // never wired into init — so agent activity only got a one-shot startup pull
+    // and team CRUD never propagated until a viewer's pane polled or a manual
+    // POST /api/.../directory/sync. This runs in BOTH modes (the server.listen
+    // callback is shared via startServer). Each starter does an initial sync
+    // (startDirectorySync also rebuilds the local directory) plus a 60s interval,
+    // so it supersedes the old one-shot agent startup-sync this replaces.
     setTimeout(async () => {
       try {
-        const response = await fetch(`http://localhost:${port}/api/agents/directory/sync`, {
-          method: 'POST',
-          signal: AbortSignal.timeout(30000)  // 30s timeout for sync
-        })
-        if (response.ok) {
-          const result = await response.json()
-          if (result.result?.newAgents > 0) {
-            console.log(`[Agent Directory] Startup sync: discovered ${result.result.newAgents} new agent(s)`)
-          }
-        }
+        const { startDirectorySync } = await import('./lib/agent-directory.ts')
+        const { startTeamDirectorySync } = await import('./lib/team-directory.ts')
+        startDirectorySync()
+        startTeamDirectorySync()
+        console.log('[Directory Sync] Recurring agent + team directory sync started (both modes)')
       } catch (error) {
-        console.error('[Agent Directory] Startup sync failed:', error.message)
+        console.error('[Directory Sync] Failed to start recurring directory sync:', error.message)
       }
-    }, 5000) // Run after 5 seconds (after host sync has a chance to complete)
+    }, 5000) // Run after 5 seconds (after host-id normalization has a chance to complete)
 
     // Sync with remote hosts on startup (register ourselves with known peers)
     setTimeout(async () => {

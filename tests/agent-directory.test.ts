@@ -17,9 +17,14 @@ import { readHookState } from '@/lib/inject-readiness'
 import { loadAgents } from '@/lib/agent-registry'
 
 vi.mock('fs')
+// isSelf() is drift-aware in real life (hostname/IP/alias-cache). selfAliases lets a
+// test simulate this machine being recognized under multiple names — including a
+// DRIFTED hostname (the stored hostId no longer === the runtime hostname).
+let selfAliases = new Set<string>(['prod'])
 vi.mock('@/lib/hosts-config', () => ({
   getSelfHostId: vi.fn(() => 'prod'),
   getPeerHosts: vi.fn(() => []),
+  isSelf: vi.fn((hostId: string) => selfAliases.has((hostId || '').toLowerCase())),
 }))
 vi.mock('@/lib/agent-registry', () => ({
   loadAgents: vi.fn(() => []),
@@ -40,6 +45,7 @@ function readFile(): any { return JSON.parse(mockFs[DIRECTORY_FILE]) }
 
 beforeEach(() => {
   vi.resetModules()
+  selfAliases = new Set<string>(['prod'])
   mockFs = {}
   mockMtimes = {}
   vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => p.toString() in mockFs || p.toString().endsWith('.aimaestro'))
@@ -277,5 +283,59 @@ describe('loadDirectory cache freshness (P2b — mtime invalidation)', () => {
     // so a follow-up read serves cache, not a re-read of the file it just wrote.
     dir.getAllDirectoryEntries()
     expect(vi.mocked(fs.readFileSync).mock.calls.length).toBe(readsAfterWrite)
+  })
+})
+
+// ============================================================================
+// rebuildLocalDirectory — drift-aware self-detection (isSelf, not raw ===)
+// Sibling of the getLocalTeamsForSync #284 fix (kanban 99608222). Three self-
+// filters here (stale-GC match, stillExists, add-loop "only local") all moved
+// from raw hostId=== to isSelf so a drifted runtime hostname can't drop this
+// host's own agents from the directory (skip-add / fail-to-GC).
+// ============================================================================
+
+describe('rebuildLocalDirectory drift-aware self-detection (isSelf)', () => {
+  it('adds local agents stored under a DRIFTED hostname that isSelf still recognizes', async () => {
+    const DRIFTED = 'prod-docked'
+    selfAliases.add(DRIFTED)            // this machine is now also known as prod-docked
+    seedFile({ version: 9, lastSync: 'x', entries: {} })
+    vi.mocked(loadAgents).mockReturnValue([
+      { id: 'uuid-local', name: 'dev-local', hostId: DRIFTED, ampRegistered: true } as any,
+    ])
+    const dir = await import('@/lib/agent-directory')
+    dir.rebuildLocalDirectory()
+    // A raw `hostId === 'prod'` would have SKIPPED this agent (drift); isSelf keeps it.
+    expect(Object.keys(readFile().entries)).toContain('uuid-local')
+    expect(readFile().entries['uuid-local'].source).toBe('local')
+  })
+
+  it('does NOT GC a local entry under a drifted-self hostname when its agent still exists', async () => {
+    const DRIFTED = 'prod-docked'
+    selfAliases.add(DRIFTED)
+    seedFile({ version: 9, lastSync: 'x', entries: {
+      'uuid-local': { agentId: 'uuid-local', name: 'dev-local', hostId: DRIFTED, ampRegistered: true, source: 'local', lastSeen: 'x' },
+    } })
+    vi.mocked(loadAgents).mockReturnValue([
+      { id: 'uuid-local', name: 'dev-local', hostId: DRIFTED, ampRegistered: true } as any,
+    ])
+    const dir = await import('@/lib/agent-directory')
+    dir.rebuildLocalDirectory()
+    // Under raw ===, the entry would be unrecognized-as-self (drift) and the
+    // stillExists check would also miss → either left stale or mis-pruned. isSelf
+    // recognizes it AND finds the agent → entry survives correctly.
+    expect(Object.keys(readFile().entries)).toContain('uuid-local')
+  })
+
+  it('excludes agents owned by a genuinely different host', async () => {
+    seedFile({ version: 9, lastSync: 'x', entries: {} })
+    vi.mocked(loadAgents).mockReturnValue([
+      { id: 'uuid-mine', name: 'mine', hostId: 'prod', ampRegistered: true } as any,
+      { id: 'uuid-theirs', name: 'theirs', hostId: 'some-other-host', ampRegistered: true } as any,
+    ])
+    const dir = await import('@/lib/agent-directory')
+    dir.rebuildLocalDirectory()
+    const keys = Object.keys(readFile().entries)
+    expect(keys).toContain('uuid-mine')
+    expect(keys).not.toContain('uuid-theirs')   // isSelf('some-other-host') === false, no over-match
   })
 })
