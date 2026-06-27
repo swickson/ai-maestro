@@ -30,6 +30,24 @@ vi.mock('uuid', () => ({
   }),
 }))
 
+// hosts-config: getSelfHostId returns the *current* runtime hostname; isSelf()
+// is drift-aware, recognizing this machine under its stored aliases too. selfAliases
+// lets a test simulate hostname drift (stored hostId no longer === runtime hostname).
+const SELF_HOST = 'self-host-current'
+let selfAliases = new Set<string>([SELF_HOST])
+vi.mock('@/lib/hosts-config', () => ({
+  getSelfHostId: vi.fn(() => SELF_HOST),
+  isSelf: vi.fn((hostId: string) => selfAliases.has(hostId)),
+}))
+
+vi.mock('@/lib/task-registry', () => ({
+  computeTeamTaskSummary: vi.fn(() => ({
+    counts: { backlog: 0, pending: 0, in_progress: 0, needs_input: 0, review: 0, completed: 0 },
+    total: 0,
+    needsYouCount: 0,
+  })),
+}))
+
 // ============================================================================
 // Import module under test (after mocks)
 // ============================================================================
@@ -41,6 +59,7 @@ import {
   createTeam,
   updateTeam,
   deleteTeam,
+  getLocalTeamsForSync,
 } from '@/lib/team-registry'
 import type { Team } from '@/types/team'
 
@@ -69,6 +88,7 @@ function makeTeam(overrides: Partial<Team> = {}): Team {
 beforeEach(() => {
   fsStore = {}
   uuidCounter = 0
+  selfAliases = new Set<string>([SELF_HOST])
   vi.clearAllMocks()
 })
 
@@ -258,5 +278,63 @@ describe('deleteTeam', () => {
     const remaining = loadTeams()
     expect(remaining).toHaveLength(1)
     expect(remaining[0].id).toBe(team1.id)
+  })
+})
+
+// ============================================================================
+// getLocalTeamsForSync — drift-aware self-detection (isSelf, not raw ===)
+// ============================================================================
+
+describe('getLocalTeamsForSync', () => {
+  function writeTeams(teams: Team[]) {
+    fsStore[TEAMS_FILE] = JSON.stringify({ version: 2, teams })
+  }
+
+  it('includes teams whose hostId matches the current self host', () => {
+    writeTeams([makeTeam({ id: 't1', name: 'Local', hostId: SELF_HOST })])
+
+    const result = getLocalTeamsForSync()
+    expect(result.map(t => t.id)).toEqual(['t1'])
+  })
+
+  it('includes teams stored under a DRIFTED hostname that isSelf() still recognizes', () => {
+    // Simulates a docked laptop: the team was created under the old hostname, but
+    // the runtime hostname has since changed. A raw `t.hostId === getSelfHostId()`
+    // would drop this team from the sync; isSelf() keeps it because the old name is
+    // a known alias of this machine.
+    const DRIFTED = 'self-host-docked'
+    selfAliases.add(DRIFTED)
+    writeTeams([makeTeam({ id: 't1', name: 'Drifted', hostId: DRIFTED })])
+
+    const result = getLocalTeamsForSync()
+    expect(result.map(t => t.id)).toEqual(['t1'])
+  })
+
+  it('excludes teams owned by a different host', () => {
+    writeTeams([
+      makeTeam({ id: 'mine', name: 'Mine', hostId: SELF_HOST }),
+      makeTeam({ id: 'theirs', name: 'Theirs', hostId: 'some-other-host' }),
+    ])
+
+    const result = getLocalTeamsForSync()
+    expect(result.map(t => t.id)).toEqual(['mine'])
+  })
+
+  it('excludes remote-sourced teams even when hostId looks local', () => {
+    writeTeams([
+      makeTeam({ id: 'local', name: 'Local', hostId: SELF_HOST }),
+      makeTeam({ id: 'remote', name: 'Remote', hostId: SELF_HOST, source: 'remote' }),
+    ])
+
+    const result = getLocalTeamsForSync()
+    expect(result.map(t => t.id)).toEqual(['local'])
+  })
+
+  it('attaches a taskSummary rollup to each returned team', () => {
+    writeTeams([makeTeam({ id: 't1', name: 'Local', hostId: SELF_HOST })])
+
+    const result = getLocalTeamsForSync()
+    expect(result[0].taskSummary).toBeDefined()
+    expect(result[0].taskSummary!.total).toBe(0)
   })
 })

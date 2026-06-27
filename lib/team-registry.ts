@@ -10,7 +10,7 @@ import path from 'path'
 import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { Team, TeamsFile } from '@/types/team'
-import { getSelfHostId } from './hosts-config'
+import { getSelfHostId, isSelf } from './hosts-config'
 import { computeTeamTaskSummary } from './task-registry'
 
 const AIMAESTRO_DIR = path.join(os.homedir(), '.aimaestro')
@@ -129,10 +129,13 @@ export function deleteTeam(id: string): boolean {
  */
 export function getLocalTeamsForSync(): Team[] {
   const teams = loadTeams()
-  const selfHostId = getSelfHostId()
+  // Use isSelf() rather than a raw hostId equality: when this machine's runtime
+  // hostname drifts from the stored hostId (e.g. a laptop docked under a different
+  // hostname), a raw === would exclude this host's own teams from the sync and the
+  // mesh would never see them. isSelf() is drift-aware (hostname/IP/alias-cache).
   // Attach the task-count rollup so it rides the directory sync to remote hosts
   // (peers can't read this host's task files; the summary is their only view).
   return teams
-    .filter(t => t.hostId === selfHostId && t.source !== 'remote')
+    .filter(t => isSelf(t.hostId ?? '') && t.source !== 'remote')
     .map(t => ({ ...t, taskSummary: computeTeamTaskSummary(t.id) }))
 }
