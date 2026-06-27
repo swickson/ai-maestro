@@ -14,7 +14,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { getSelfHostId, getPeerHosts } from './hosts-config'
+import { getPeerHosts, isSelf } from './hosts-config'
 import { loadAgents, normalizeHostId } from './agent-registry'
 import { readHookState, isBlockingPrompt, HOOK_BUSY_STALE_MS } from './inject-readiness'
 
@@ -210,14 +210,19 @@ export function clearDirectoryCache(): void {
 export function rebuildLocalDirectory(): AgentDirectory {
   const directory = loadDirectory()
   const agents = loadAgents()
-  const selfHostId = normalizeHostId(getSelfHostId())
 
+  // Use isSelf() for self-detection rather than a raw hostId equality: when this
+  // machine's runtime hostname drifts from the stored hostId (e.g. a docked
+  // laptop), a raw === would stop recognizing this host's own agents — stale
+  // entries wouldn't be GC'd and freshly-created local agents wouldn't be added
+  // to the directory (so they'd never publish). isSelf() is drift-aware
+  // (hostname/IP/alias-cache). Mirrors the getLocalTeamsForSync fix (#284).
   // Remove stale local entries (key-agnostic — match by stored identity, #42).
   for (const [key, entry] of Object.entries(directory.entries)) {
-    if (entry.source === 'local' && entry.hostId === selfHostId) {
+    if (entry.source === 'local' && isSelf(entry.hostId)) {
       // Check if agent still exists locally (by id when known, else by name).
       const stillExists = agents.some(a =>
-        normalizeHostId(a.hostId) === selfHostId &&
+        isSelf(a.hostId) &&
         (entry.agentId
           ? a.id === entry.agentId
           : (a.name || a.alias)?.toLowerCase() === entry.name.toLowerCase())
@@ -235,7 +240,7 @@ export function rebuildLocalDirectory(): AgentDirectory {
     if (!name) continue
 
     const hostId = normalizeHostId(agent.hostId)
-    if (hostId !== selfHostId) continue  // Only local agents
+    if (!isSelf(agent.hostId)) continue  // Only local agents (drift-aware)
 
     const newEntry: AgentDirectoryEntry = {
       agentId: agent.id,
