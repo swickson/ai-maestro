@@ -1,31 +1,32 @@
 'use client'
 
+import { getAvatarUrl } from '@/lib/hash-utils'
 import AgentBadge from '@/components/AgentBadge'
 import {
   MISSION_CONTROL_COLUMNS,
   summaryNeedsAttention,
 } from './missionControlColumns'
-import type { Team } from '@/types/team'
+import type { Team, TopTask } from '@/types/team'
 import type { Agent } from '@/types/agent'
 
 interface TeamRowProps {
   team: Team
-  /** Resolved orchestrator (team.chiefOfStaffId → Agent). Undefined until P1a lands or if no lead is set. */
+  /** Resolved orchestrator (team.chiefOfStaffId → Agent). Undefined if no lead is set. */
   orchestrator?: Agent
+  /** Agent lookup (federated + local) for resolving each top card's assignee avatar. */
+  agentsById: Record<string, Agent>
 }
 
 const noop = () => {}
 
 /**
- * One mission-control row = one team. Left cell carries the team name
- * prominently with the orchestrator's reused AgentBadge beneath it; the
- * remaining cells show that team's per-status task COUNTS.
- *
- * P2b: counts come from the synced `team.taskSummary` (the cross-host read
- * model) — NOT a per-team task poll. The page does one aggregate poll for every
- * team's summary, so a 30-team mesh is one request, not 30. PURE READ.
+ * One mission-control row = one team. Left cell: team name + orchestrator badge.
+ * Then one cell per active status column (Backlog/To-Do/In Progress/NEEDS-YOU/
+ * Review) — each renders that column's top card (highest-priority task in the
+ * status) plus a "+N" for the rest of the column, replacing the bare count
+ * badge. PURE READ.
  */
-export default function TeamRow({ team, orchestrator }: TeamRowProps) {
+export default function TeamRow({ team, orchestrator, agentsById }: TeamRowProps) {
   const summary = team.taskSummary
   const needsAttention = summaryNeedsAttention(summary)
 
@@ -54,18 +55,24 @@ export default function TeamRow({ team, orchestrator }: TeamRowProps) {
         )}
       </div>
 
-      {/* Status columns — one count cell per active status */}
+      {/* One card-stack per active status column */}
       {MISSION_CONTROL_COLUMNS.map(col => {
+        const topCard = summary?.topTaskByStatus?.[col.key]
         const count = summary?.counts[col.key] ?? 0
+        const remaining = Math.max(0, count - 1)
         const litRed = col.attention && count > 0
-        // Attention-red wins; else context columns recede behind the emphasized ones.
         const cellBg = litRed ? 'bg-red-950/40' : col.emphasis ? '' : 'bg-slate-950/40'
+        const assignee = topCard?.assigneeId ? agentsById[topCard.assigneeId] : undefined
         return (
           <div
             key={col.key}
-            className={`flex-1 min-w-[180px] p-2 border-r border-slate-800 flex items-center justify-center ${cellBg}`}
+            className={`flex-1 min-w-[220px] p-3 border-r border-slate-800 flex items-center ${cellBg}`}
           >
-            <CountCell count={count} attention={!!col.attention} emphasis={!!col.emphasis} />
+            {topCard ? (
+              <TopCardStack task={topCard} assignee={assignee} remaining={remaining} />
+            ) : (
+              <span className="text-slate-700 text-lg leading-none select-none mx-auto">·</span>
+            )}
           </div>
         )
       })}
@@ -74,21 +81,62 @@ export default function TeamRow({ team, orchestrator }: TeamRowProps) {
 }
 
 /**
- * A single status count. Zero recedes to a faint dash so the eye lands on the
- * columns that actually hold work; a lit NEEDS-YOU count goes red.
+ * The headline card for a column's top task, with offset cards behind it and a
+ * "+N" when the column holds more. Fills its column cell. House slate styling.
  */
-function CountCell({ count, attention, emphasis }: { count: number; attention: boolean; emphasis: boolean }) {
-  if (count === 0) {
-    return <span className="text-slate-700 text-lg leading-none select-none">·</span>
-  }
-  const tone = attention
-    ? 'bg-red-500/20 text-red-300 border-red-500/40'
-    : emphasis
-      ? 'bg-slate-700/60 text-slate-100 border-slate-600'
-      : 'bg-slate-800/60 text-slate-400 border-slate-700'
+function TopCardStack({
+  task,
+  assignee,
+  remaining,
+}: {
+  task: TopTask
+  assignee?: Agent
+  remaining: number
+}) {
   return (
-    <span className={`min-w-[2rem] px-2 py-1 rounded-lg border text-center text-base font-bold tabular-nums ${tone}`}>
-      {count}
-    </span>
+    <div className="relative w-full">
+      {/* Stacked cards behind (only when there's more in the column) */}
+      {remaining > 0 && (
+        <>
+          <div className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-xl bg-slate-800/40 border border-slate-700/40" />
+          {remaining > 1 && (
+            <div className="absolute inset-0 translate-x-3 translate-y-3 rounded-xl bg-slate-800/25 border border-slate-700/30" />
+          )}
+        </>
+      )}
+
+      {/* Top card — no status pill (the column header names the status). */}
+      <div className="relative w-full rounded-xl border border-slate-600 bg-slate-800/90 p-3 shadow-md">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm text-slate-100 leading-snug line-clamp-3">{task.subject}</p>
+          {assignee && <AssigneeAvatar agent={assignee} />}
+        </div>
+      </div>
+
+      {/* +N remaining tasks in this column */}
+      {remaining > 0 && (
+        <span className="absolute -right-2 -top-2 z-10 min-w-[1.5rem] px-1.5 py-0.5 rounded-full bg-blue-500/30 text-blue-200 border border-blue-400/50 text-[11px] font-bold text-center">
+          +{remaining}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** Small round assignee avatar (real face via #286-synced avatar, else id-hash fallback). */
+function AssigneeAvatar({ agent }: { agent: Agent }) {
+  const isEmoji = !!agent.avatar && agent.avatar.length <= 4 && !agent.avatar.startsWith('http') && !agent.avatar.startsWith('/')
+  const url = agent.avatar && !isEmoji && (agent.avatar.startsWith('http') || agent.avatar.startsWith('/'))
+    ? agent.avatar
+    : getAvatarUrl(agent.id)
+  const label = agent.label || agent.name
+  return (
+    <div className="flex-shrink-0" title={label}>
+      {isEmoji ? (
+        <span className="w-6 h-6 rounded-full bg-slate-700 flex items-center justify-center text-sm">{agent.avatar}</span>
+      ) : (
+        <img src={url} alt={label} className="w-6 h-6 rounded-full object-cover ring-1 ring-slate-600" />
+      )}
+    </div>
   )
 }

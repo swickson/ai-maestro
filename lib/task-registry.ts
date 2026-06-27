@@ -11,7 +11,47 @@ import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import { loadAgents } from '@/lib/agent-registry'
 import type { Task, TaskStatus, TaskWithDeps, TasksFile } from '@/types/task'
-import type { TeamTaskSummary } from '@/types/team'
+import type { TeamTaskSummary, TopTask } from '@/types/team'
+
+// The active status columns that get a headline card on the Mission Control
+// matrix. `completed` is excluded — done work isn't an at-a-glance need.
+const CARD_STACK_STATUSES: TaskStatus[] = ['backlog', 'pending', 'in_progress', 'needs_input', 'review']
+
+/**
+ * Pick the headline ("top") task for each active status column — one card per
+ * column for the Mission Control card-stack. Within a status the winner is the
+ * lowest `priority` number (0 = highest; undefined sorts last), tie-broken by
+ * most-recently-updated. Statuses with no task are omitted. Pure + exported for
+ * unit coverage.
+ */
+export function selectTopTaskPerStatus(tasks: Task[]): Partial<Record<TaskStatus, TopTask>> {
+  const result: Partial<Record<TaskStatus, TopTask>> = {}
+  for (const status of CARD_STACK_STATUSES) {
+    let best: Task | null = null
+    for (const t of tasks) {
+      if (t.status !== status) continue
+      if (best === null || isHigherPriority(t, best)) best = t
+    }
+    if (best) {
+      result[status] = {
+        id: best.id,
+        subject: best.subject,
+        status: best.status,
+        assigneeId: best.assigneeAgentId ?? null,
+        priority: best.priority,
+      }
+    }
+  }
+  return result
+}
+
+/** Lower `priority` number wins (undefined = lowest); tie-break most-recently updated. */
+function isHigherPriority(candidate: Task, current: Task): boolean {
+  const cp = candidate.priority ?? Number.MAX_SAFE_INTEGER
+  const pp = current.priority ?? Number.MAX_SAFE_INTEGER
+  if (cp !== pp) return cp < pp
+  return new Date(candidate.updatedAt).getTime() > new Date(current.updatedAt).getTime()
+}
 
 const TEAMS_DIR = path.join(os.homedir(), '.aimaestro', 'teams')
 
@@ -74,7 +114,12 @@ export function computeTeamTaskSummary(teamId: string): TeamTaskSummary {
   for (const t of tasks) {
     if (counts[t.status] !== undefined) counts[t.status]++
   }
-  return { counts, total: tasks.length, needsYouCount: counts.needs_input }
+  return {
+    counts,
+    total: tasks.length,
+    needsYouCount: counts.needs_input,
+    topTaskByStatus: selectTopTaskPerStatus(tasks),
+  }
 }
 
 /**

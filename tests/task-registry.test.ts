@@ -53,6 +53,7 @@ import {
   deleteTask,
   wouldCreateCycle,
   computeTeamTaskSummary,
+  selectTopTaskPerStatus,
 } from '@/lib/task-registry'
 import type { Task } from '@/types/task'
 
@@ -603,5 +604,74 @@ describe('computeTeamTaskSummary', () => {
     expect(summary.total).toBe(2)
     const bucketed = Object.values(summary.counts).reduce((a, b) => a + b, 0)
     expect(bucketed).toBe(1)
+  })
+})
+
+// ============================================================================
+// selectTopTaskPerStatus — the Mission Control per-column card headlines (Issue 2)
+// ============================================================================
+
+describe('selectTopTaskPerStatus', () => {
+  it('returns an empty map when there is no active work', () => {
+    expect(selectTopTaskPerStatus([])).toEqual({})
+    expect(selectTopTaskPerStatus([makeTask({ status: 'completed' })])).toEqual({})
+  })
+
+  it('picks one headline per active status column; completed is never represented', () => {
+    const byStatus = selectTopTaskPerStatus([
+      makeTask({ id: 'bk', status: 'backlog' }),
+      makeTask({ id: 'pd', status: 'pending' }),
+      makeTask({ id: 'ip', status: 'in_progress' }),
+      makeTask({ id: 'ni', status: 'needs_input' }),
+      makeTask({ id: 'rv', status: 'review' }),
+      makeTask({ id: 'done', status: 'completed' }),
+    ])
+    expect(byStatus.backlog?.id).toBe('bk')
+    expect(byStatus.pending?.id).toBe('pd')
+    expect(byStatus.in_progress?.id).toBe('ip')
+    expect(byStatus.needs_input?.id).toBe('ni')
+    expect(byStatus.review?.id).toBe('rv')
+    expect(byStatus).not.toHaveProperty('completed')
+  })
+
+  it('omits a status column that has no task', () => {
+    const byStatus = selectTopTaskPerStatus([makeTask({ id: 'only', status: 'in_progress' })])
+    expect(Object.keys(byStatus)).toEqual(['in_progress'])
+  })
+
+  it('within a status, lowest priority number wins (0 = highest); undefined sorts last', () => {
+    const byStatus = selectTopTaskPerStatus([
+      makeTask({ id: 'p5', status: 'pending', priority: 5 }),
+      makeTask({ id: 'p0', status: 'pending', priority: 0 }),
+      makeTask({ id: 'pNone', status: 'pending' }),
+    ])
+    expect(byStatus.pending?.id).toBe('p0')
+  })
+
+  it('tie-breaks equal priority within a status by most-recently-updated', () => {
+    const byStatus = selectTopTaskPerStatus([
+      makeTask({ id: 'older', status: 'review', priority: 1, updatedAt: '2026-01-01T00:00:00.000Z' }),
+      makeTask({ id: 'newer', status: 'review', priority: 1, updatedAt: '2026-02-01T00:00:00.000Z' }),
+    ])
+    expect(byStatus.review?.id).toBe('newer')
+  })
+
+  it('projects the card shape incl assigneeId (assigneeAgentId → assigneeId, null when unassigned)', () => {
+    const byStatus = selectTopTaskPerStatus([
+      makeTask({ id: 'a', status: 'in_progress', subject: 'Ship it', assigneeAgentId: 'agent-1', priority: 2 }),
+      makeTask({ id: 'b', status: 'pending', assigneeAgentId: null }),
+    ])
+    expect(byStatus.in_progress).toEqual({ id: 'a', subject: 'Ship it', status: 'in_progress', assigneeId: 'agent-1', priority: 2 })
+    expect(byStatus.pending?.assigneeId).toBeNull()
+  })
+
+  it('computeTeamTaskSummary carries the per-status top cards', () => {
+    saveTasks('team-1', [
+      makeTask({ id: 'bg', teamId: 'team-1', status: 'backlog' }),
+      makeTask({ id: 'work', teamId: 'team-1', status: 'in_progress', subject: 'Current work' }),
+    ])
+    const summary = computeTeamTaskSummary('team-1')
+    expect(summary.topTaskByStatus?.in_progress?.subject).toBe('Current work')
+    expect(summary.topTaskByStatus?.backlog?.id).toBe('bg')
   })
 })

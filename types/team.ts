@@ -35,6 +35,29 @@ export interface TeamTaskSummary {
   total: number
   /** counts.needs_input — the agent-declared "operator must act" count (NEEDS-YOU). */
   needsYouCount: number
+  /**
+   * The headline ("top") task for each ACTIVE status column on the Mission
+   * Control matrix — one card per column (backlog/pending/in_progress/
+   * needs_input/review), bounded to ≤5 per team. Each column renders its top
+   * card + a "+N" for the rest of that column (counts[status] - 1). Carries
+   * assigneeId only; the viewing host resolves the assignee avatar at render
+   * from the federated agent directory (#286-synced), so the real face shows
+   * even for a remote team's assignee. `completed` is never represented.
+   */
+  topTaskByStatus?: Partial<Record<TaskStatus, TopTask>>
+}
+
+/**
+ * The headline task shown on one column's Mission Control card. Selection
+ * (see selectTopTaskPerStatus): within a status, lowest `priority` number
+ * (0 = highest), tie-broken by most-recently-updated.
+ */
+export interface TopTask {
+  id: string
+  subject: string
+  status: TaskStatus
+  assigneeId: string | null
+  priority?: number
 }
 
 export interface Team {
