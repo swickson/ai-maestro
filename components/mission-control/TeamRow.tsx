@@ -5,6 +5,7 @@ import AgentBadge from '@/components/AgentBadge'
 import {
   MISSION_CONTROL_COLUMNS,
   summaryNeedsAttention,
+  columnCellMode,
 } from './missionControlColumns'
 import type { Team, TopTask } from '@/types/team'
 import type { Agent } from '@/types/agent'
@@ -23,8 +24,10 @@ const noop = () => {}
  * One mission-control row = one team. Left cell: team name + orchestrator badge.
  * Then one cell per active status column (Backlog/To-Do/In Progress/NEEDS-YOU/
  * Review) — each renders that column's top card (highest-priority task in the
- * status) plus a "+N" for the rest of the column, replacing the bare count
- * badge. PURE READ.
+ * status) plus a "+N" for the rest. If the synced summary has a count but no top
+ * card (a pre-card-stack peer during a staggered deploy), it falls back to a
+ * count badge so active work — including NEEDS-YOU — never silently vanishes.
+ * PURE READ.
  */
 export default function TeamRow({ team, orchestrator, agentsById }: TeamRowProps) {
   const summary = team.taskSummary
@@ -63,13 +66,16 @@ export default function TeamRow({ team, orchestrator, agentsById }: TeamRowProps
         const litRed = col.attention && count > 0
         const cellBg = litRed ? 'bg-red-950/40' : col.emphasis ? '' : 'bg-slate-950/40'
         const assignee = topCard?.assigneeId ? agentsById[topCard.assigneeId] : undefined
+        const mode = columnCellMode(!!topCard, count)
         return (
           <div
             key={col.key}
             className={`flex-1 min-w-[220px] p-3 border-r border-slate-800 flex items-center ${cellBg}`}
           >
-            {topCard ? (
+            {mode === 'card' && topCard ? (
               <TopCardStack task={topCard} assignee={assignee} remaining={remaining} />
+            ) : mode === 'count' ? (
+              <CountBadge count={count} attention={!!col.attention} emphasis={!!col.emphasis} />
             ) : (
               <span className="text-slate-700 text-lg leading-none select-none mx-auto">·</span>
             )}
@@ -138,5 +144,24 @@ function AssigneeAvatar({ agent }: { agent: Agent }) {
         <img src={url} alt={label} className="w-6 h-6 rounded-full object-cover ring-1 ring-slate-600" />
       )}
     </div>
+  )
+}
+
+/**
+ * Version-skew fallback: a count badge for a column that has work (count>0) but
+ * no top card — i.e. a pre-card-stack peer's synced summary (counts, no
+ * topTaskByStatus) during a staggered deploy. Mirrors the old count style so
+ * active work, and especially NEEDS-YOU, stays visible across versions.
+ */
+function CountBadge({ count, attention, emphasis }: { count: number; attention: boolean; emphasis: boolean }) {
+  const tone = attention
+    ? 'bg-red-500/20 text-red-300 border-red-500/40'
+    : emphasis
+      ? 'bg-slate-700/60 text-slate-100 border-slate-600'
+      : 'bg-slate-800/60 text-slate-400 border-slate-700'
+  return (
+    <span className={`mx-auto min-w-[2rem] px-2 py-1 rounded-lg border text-center text-base font-bold tabular-nums ${tone}`}>
+      {count}
+    </span>
   )
 }

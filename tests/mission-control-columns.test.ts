@@ -19,6 +19,7 @@ import {
   groupTasksByColumn,
   teamNeedsAttention,
   summaryNeedsAttention,
+  columnCellMode,
 } from '@/components/mission-control/missionControlColumns'
 import type { TaskWithDeps } from '@/types/task'
 import type { TeamTaskSummary } from '@/types/team'
@@ -133,5 +134,26 @@ describe('summaryNeedsAttention (cross-host read model)', () => {
 
   it('treats a missing summary as no alarm (team not yet synced)', () => {
     expect(summaryNeedsAttention(undefined)).toBe(false)
+  })
+})
+
+describe('columnCellMode (version-skew graceful degradation)', () => {
+  it('renders the card when a top card is present', () => {
+    expect(columnCellMode(true, 5)).toBe('card')
+    expect(columnCellMode(true, 1)).toBe('card')
+  })
+
+  it('renders the COUNT (not empty) when there is work but no top card — the pre-card-stack peer case', () => {
+    // A peer on a version that computes counts but NOT topTaskByStatus: during a
+    // staggered deploy its synced summary has count>0 with no top card. The cell
+    // must show the count, NOT a dot, or active work silently vanishes.
+    expect(columnCellMode(false, 3)).toBe('count')
+    // The load-bearing review catch: NEEDS-YOU with a count but no top card
+    // must NOT render empty (would hide the operator alarm during a rollout).
+    expect(columnCellMode(false, 1)).toBe('count')
+  })
+
+  it('renders empty only when the column genuinely has no work', () => {
+    expect(columnCellMode(false, 0)).toBe('empty')
   })
 })
