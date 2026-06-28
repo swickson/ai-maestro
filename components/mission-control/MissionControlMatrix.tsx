@@ -7,18 +7,19 @@ import type { Agent } from '@/types/agent'
 
 interface MissionControlMatrixProps {
   teams: Team[]
-  /** Agent lookup by id, for resolving each team's orchestrator (chiefOfStaffId). */
+  /** Agent lookup by id (federated + local), for resolving each team's orchestrator and card assignees. */
   agentsById: Record<string, Agent>
 }
 
 /**
- * The mission-control matrix: team rows × active-status columns. The header row
- * uses the same flex widths as TeamRow so columns stay aligned. House-component
- * styling only (slate/gray, Space Grotesk) — no Stitch neon theme.
+ * The mission-control matrix: team rows × active-status columns. Each column
+ * cell renders that status's top card + a "+N" for the rest (TeamRow). The
+ * header uses the same flex widths as TeamRow so columns stay aligned.
+ * House-component styling only (slate/gray, Space Grotesk).
  */
 export default function MissionControlMatrix({ teams, agentsById }: MissionControlMatrixProps) {
   return (
-    <div className="min-w-[1100px]">
+    <div className="min-w-[1340px]">
       {/* Column header row */}
       <div className="flex border-b border-slate-700 bg-slate-900/90 sticky top-0 z-10">
         <div className="w-60 flex-shrink-0 px-3 py-2 border-r border-slate-800">
@@ -29,7 +30,7 @@ export default function MissionControlMatrix({ teams, agentsById }: MissionContr
         {MISSION_CONTROL_COLUMNS.map(col => (
           <div
             key={col.key}
-            className={`flex-1 min-w-[180px] px-3 py-2 border-r border-slate-800 ${
+            className={`flex-1 min-w-[220px] px-3 py-2 border-r border-slate-800 ${
               col.emphasis ? '' : 'bg-slate-950/40'
             }`}
           >
@@ -54,6 +55,7 @@ export default function MissionControlMatrix({ teams, agentsById }: MissionContr
           key={team.id}
           team={team}
           orchestrator={team.chiefOfStaffId ? agentsById[team.chiefOfStaffId] : undefined}
+          agentsById={agentsById}
         />
       ))}
 

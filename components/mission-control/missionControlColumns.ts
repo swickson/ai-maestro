@@ -75,3 +75,18 @@ export function teamNeedsAttention(grouped: Record<string, TaskWithDeps[]>): boo
 export function summaryNeedsAttention(summary?: TeamTaskSummary): boolean {
   return (summary?.needsYouCount ?? 0) > 0
 }
+
+/**
+ * What a matrix column cell should render, given whether it has a top card and
+ * its task count. The `count` fallback is the VERSION-SKEW guard: a peer on a
+ * pre-card-stack version computes `counts` but NOT `topTaskByStatus`, so during
+ * a staggered deploy its summary has count>0 with no top card — render the count
+ * (not an empty dot) so active work, including NEEDS-YOU, never silently
+ * vanishes on a newer pane. Pure + exported for unit coverage.
+ */
+export type ColumnCellMode = 'card' | 'count' | 'empty'
+export function columnCellMode(hasTopCard: boolean, count: number): ColumnCellMode {
+  if (hasTopCard) return 'card'
+  if (count > 0) return 'count'
+  return 'empty'
+}
