@@ -64,7 +64,7 @@
         "Portable agents (export, import, clone, transfer)",
         "Webhook subscriptions for external integrations",
         "Team Meetings with multi-agent war room sessions",
-        "Kanban Board with 5-column drag-and-drop task management"
+        "Kanban Board with 6-column drag-and-drop task management"
       ],
       "installUrl": "https://github.com/23blocks-OS/ai-maestro#installation",
       "requirements": "Node.js 18.17+/20.x, tmux 3.0+, macOS 12.0+ or Windows 10/11 (WSL2) or Linux"
@@ -139,7 +139,7 @@
                 <li><strong>Mobile Access:</strong> Touch-optimized interface with secure Tailscale VPN.</li>
                 <li><strong>Portable Agents:</strong> Export/import agents as .zip files for cross-host transfer and cloning.</li>
                 <li><strong>Team Meetings:</strong> Assemble agents into a war room with shared terminal views, task lists, and meeting chat.</li>
-                <li><strong>Kanban Board:</strong> Full-screen drag-and-drop board with 5 columns (Backlog, To Do, In Progress, Review, Done) and task dependency tracking.</li>
+                <li><strong>Kanban Board:</strong> Full-screen drag-and-drop board with 6 columns (Backlog, To Do, In Progress, Needs You, Review, Done) and task dependency tracking.</li>
             </ul>
         </section>
 
@@ -206,7 +206,7 @@
 
             <h3>Kanban Board</h3>
             <ul>
-                <li>Full-screen overlay with 5 status columns: Backlog, To Do, In Progress, Review, Done</li>
+                <li>Full-screen overlay with 6 status columns: Backlog, To Do, In Progress, Needs You, Review, Done</li>
                 <li>HTML5 drag-and-drop to move tasks between columns</li>
                 <li>Task dependency chains with automatic unblocking</li>
                 <li>Assign tasks to specific agents</li>
@@ -221,6 +221,7 @@
                 <li><strong>Backlog:</strong> Ideas and future work items</li>
                 <li><strong>To Do (Pending):</strong> Ready to be picked up</li>
                 <li><strong>In Progress:</strong> Currently being worked on</li>
+                <li><strong>Needs You (needs_input):</strong> Waiting for operator input or a human decision</li>
                 <li><strong>Review:</strong> Waiting for review or validation</li>
                 <li><strong>Done (Completed):</strong> Finished work</li>
             </ul>

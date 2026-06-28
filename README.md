@@ -121,7 +121,7 @@ Three layers of intelligence that grow over time: **Memory** (agents remember pa
 
 *Talking isn't working. I needed agents to coordinate on actual deliverables.*
 
-Assemble agents into teams, run meetings in split-pane war rooms, and track tasks on a full Kanban board with drag-and-drop, dependencies, and 5 status columns. Cross-machine teams work seamlessly. This is project management for your AI workforce.
+Assemble agents into teams, run meetings in split-pane war rooms, and track tasks on a full Kanban board with drag-and-drop, dependencies, and 6 status columns. Cross-machine teams work seamlessly. This is project management for your AI workforce.
 
 ### Agent Identity
 

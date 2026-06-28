@@ -254,7 +254,7 @@ Key components:
 
 **Task system:**
 - Tasks stored per-team in `~/.aimaestro/teams/tasks-{teamId}.json`
-- 5 statuses: `backlog` → `pending` → `in_progress` → `review` → `completed`
+- 6 statuses: `backlog` → `pending` → `in_progress` → `needs_input` → `review` → `completed`
 - Dependency chains: tasks can block other tasks, auto-unblock on completion
 - `useTasks` hook polls every 5s for multi-tab sync
 

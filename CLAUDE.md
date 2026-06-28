@@ -417,7 +417,7 @@ const getCategoryColor = (category: string) => {
 
 **Task system:**
 - Tasks stored per-team in `~/.aimaestro/teams/tasks-{teamId}.json`
-- 5 statuses: `backlog` → `pending` → `in_progress` → `review` → `completed`
+- 6 statuses: `backlog` → `pending` → `in_progress` → `needs_input` → `review` → `completed`
 - Dependency chains: tasks can block other tasks, auto-unblock on completion
 - `useTasks` hook polls every 5s for multi-tab sync
 
@@ -480,7 +480,7 @@ components/
     TaskCard.tsx              - Task card with status, assignee, dependencies
     TaskCreateForm.tsx        - Full task creation form with all fields
     TaskDetailView.tsx        - Detailed task view with edit capabilities
-    TaskKanbanBoard.tsx       - Full-screen kanban overlay with 5 columns + drag-and-drop
+    TaskKanbanBoard.tsx       - Full-screen kanban overlay with 6 columns + drag-and-drop
     KanbanColumn.tsx          - Single kanban column with drop zone
     KanbanCard.tsx            - Compact draggable task card for kanban
     DependencyPicker.tsx      - Dependency selection for task relationships
@@ -988,10 +988,10 @@ When implementing features:
 
 **Team Meeting & Kanban (v0.20.19+):**
 10. `app/team-meeting/page.tsx` - Team meeting page with reducer state machine
-11. `components/team-meeting/TaskKanbanBoard.tsx` - Full-screen kanban overlay with 5 columns + drag-and-drop
+11. `components/team-meeting/TaskKanbanBoard.tsx` - Full-screen kanban overlay with 6 columns + drag-and-drop
 12. `components/team-meeting/KanbanColumn.tsx` - Single kanban column with drop zone
 13. `components/team-meeting/KanbanCard.tsx` - Compact draggable task card
-14. `types/task.ts` - Task types with 5 statuses: backlog, pending, in_progress, review, completed
+14. `types/task.ts` - Task types with 6 statuses: backlog, pending, in_progress, needs_input, review, completed
 15. `lib/task-registry.ts` - File-based CRUD for team task persistence
 16. `hooks/useTasks.ts` - Task hook with tasksByStatus, optimistic updates, polling
 
