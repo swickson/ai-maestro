@@ -24,3 +24,15 @@ describe('live mesh-state directory routes opt out of Next static caching', () =
     expect(src).toMatch(/export\s+const\s+dynamic\s*=\s*['"]force-dynamic['"]/)
   })
 })
+
+// Same static-cache class, non-directory: a GET that reads live system state.
+const LIVE_SYSTEM_STATE_ROUTES = [
+  'app/api/diagnostics/route.ts',  // runs live diagnostics (tmux/node-pty/registry/disk)
+]
+
+describe('live system-state routes opt out of Next static caching', () => {
+  it.each(LIVE_SYSTEM_STATE_ROUTES)('%s declares force-dynamic', (rel) => {
+    const src = fs.readFileSync(path.join(process.cwd(), rel), 'utf-8')
+    expect(src).toMatch(/export\s+const\s+dynamic\s*=\s*['"]force-dynamic['"]/)
+  })
+})
