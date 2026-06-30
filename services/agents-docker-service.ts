@@ -1798,7 +1798,6 @@ export function buildCloudAiTeamSrcMount(
 // Returns null for worker + unprofiled agents (no mount = today's shape preserved).
 export function buildCloudSkillsMount(
   profile: 'worker' | 'orchestrator' | undefined,
-  hostHome: string = os.homedir(),
   repoRoot: string = process.cwd()
 ): SandboxMount | null {
   if (profile !== 'orchestrator') return null
@@ -1916,7 +1915,7 @@ export function buildCloudCommonMounts(
   } = opts
   const aiTeamMount = buildCloudAiTeamMount(profile, teamId, hostHome)
   const aiTeamSrcMount = buildCloudAiTeamSrcMount(profile, teamId, hostHome)
-  const skillsMount = buildCloudSkillsMount(profile, hostHome, repoRoot)
+  const skillsMount = buildCloudSkillsMount(profile, repoRoot)
   const transportMount = buildCloudTransportRepoMount(transportRepo)
   const instructionsMount = buildCloudInstructionsMount(agentId, program, hostHome)
   return [
