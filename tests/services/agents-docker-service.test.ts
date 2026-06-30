@@ -68,6 +68,7 @@ import {
   buildCloudGitConfigMount,
   buildCloudAiTeamMount,
   buildCloudAiTeamSrcMount,
+  buildCloudSkillsMount,
   buildCloudTransportRepoMount,
   buildCloudCommonMounts,
   buildCloudCommonPrecreateDirs,
@@ -2953,6 +2954,44 @@ describe('buildCloudAiTeamSrcMount (#194 — cloud-orchestrator §1 source bridg
     const mount = buildCloudAiTeamSrcMount('orchestrator', 'alpha', HOME)
     const srcFile = cloudInstructionsSourcePath('Whistler', 'alpha', HOME)
     expect(path.dirname(srcFile)).toBe(mount!.hostPath)
+  })
+})
+
+describe('buildCloudSkillsMount (orchestrator-only Teams-gateway skill mount)', () => {
+  let tmpRepo: string
+  beforeEach(() => { tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'aim-skill-mnt-')) })
+  afterEach(() => { fs.rmSync(tmpRepo, { recursive: true, force: true }) })
+
+  const seedSkill = () => {
+    const dir = path.join(tmpRepo, 'plugin', 'plugins', 'ai-maestro', 'skills', 'aim-teams-gateway')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: aim-teams-gateway\n---\n')
+  }
+
+  it('returns null for unprofiled AND worker agents (orchestrator-only)', () => {
+    seedSkill()
+    expect(buildCloudSkillsMount(undefined, tmpRepo)).toBeNull()
+    expect(buildCloudSkillsMount('worker', tmpRepo)).toBeNull()
+  })
+
+  it('orchestrator + source present → RO subpath mount at ~/.claude/skills/aim-teams-gateway', () => {
+    seedSkill()
+    expect(buildCloudSkillsMount('orchestrator', tmpRepo)).toEqual({
+      hostPath: path.join(tmpRepo, 'plugin', 'plugins', 'ai-maestro', 'skills', 'aim-teams-gateway'),
+      containerPath: '/home/claude/.claude/skills/aim-teams-gateway',
+      readOnly: true,
+    })
+  })
+
+  it('orchestrator but source ABSENT → null (graceful cross-host degradation, never fails container create)', () => {
+    expect(buildCloudSkillsMount('orchestrator', tmpRepo)).toBeNull()
+  })
+
+  it('mounts the NAMED skill subpath, not the whole skills dir (must not shadow image-baked skills)', () => {
+    seedSkill()
+    const m = buildCloudSkillsMount('orchestrator', tmpRepo)
+    expect(m?.containerPath).toBe('/home/claude/.claude/skills/aim-teams-gateway')
+    expect(m?.containerPath).not.toBe('/home/claude/.claude/skills')
   })
 })
 

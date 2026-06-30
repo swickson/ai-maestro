@@ -1782,6 +1782,34 @@ export function buildCloudAiTeamSrcMount(
   }
 }
 
+// Orchestrator-only Teams-gateway SKILL mount. Persists the `aim-teams-gateway`
+// skill across recreate / update-runtime for ORCHESTRATOR-profile cloud agents
+// (the class that operates a Teams bot — workers don't need it, so this is
+// folded into the orchestrator provisioning path, NOT baked into the base image).
+// Source-of-truth = the version-controlled plugin submodule skill dir (ships with
+// the install). RO **subpath** mount into Claude's native skill-discovery path
+// (~/.claude/skills/<name>) — a SUBPATH so it does NOT shadow any image-baked
+// skills, and a SYSTEM mount so it is permitted under the OPERATOR_RESERVED
+// ~/.claude root (operator mounts there are rejected; system mounts are not).
+// Mirrors buildCloudAiTeamSrcMount's orchestrator-gate + buildCloudInstructionsMount's
+// existsSync-guard (a host whose submodule lacks the skill skips the mount rather
+// than failing container creation — graceful cross-host degradation). Claude-
+// specific (~/.claude/skills); codex/gemini orchestrators ignore it harmlessly.
+// Returns null for worker + unprofiled agents (no mount = today's shape preserved).
+export function buildCloudSkillsMount(
+  profile: 'worker' | 'orchestrator' | undefined,
+  repoRoot: string = process.cwd()
+): SandboxMount | null {
+  if (profile !== 'orchestrator') return null
+  const hostPath = path.join(repoRoot, 'plugin', 'plugins', 'ai-maestro', 'skills', 'aim-teams-gateway')
+  if (!fs.existsSync(hostPath)) return null
+  return {
+    hostPath,
+    containerPath: path.posix.join(CONTAINER_HOME, '.claude', 'skills', 'aim-teams-gateway'),
+    readOnly: true,
+  }
+}
+
 // ── Per-agent instruction file (issue #191, WS2 follow-up) ───────────────────
 //
 // Seed each agent's slim §1 instruction file from the orchestrator-owned source
@@ -1887,6 +1915,7 @@ export function buildCloudCommonMounts(
   } = opts
   const aiTeamMount = buildCloudAiTeamMount(profile, teamId, hostHome)
   const aiTeamSrcMount = buildCloudAiTeamSrcMount(profile, teamId, hostHome)
+  const skillsMount = buildCloudSkillsMount(profile, repoRoot)
   const transportMount = buildCloudTransportRepoMount(transportRepo)
   const instructionsMount = buildCloudInstructionsMount(agentId, program, hostHome)
   return [
@@ -1908,6 +1937,8 @@ export function buildCloudCommonMounts(
     ...(aiTeamMount ? [aiTeamMount] : []),
     // #194 orchestrator-only RW §1 instruction-source mount (null for worker/unprofiled)
     ...(aiTeamSrcMount ? [aiTeamSrcMount] : []),
+    // orchestrator-only Teams-gateway skill mount (null for worker/unprofiled/absent-source)
+    ...(skillsMount ? [skillsMount] : []),
     ...(transportMount ? [transportMount] : []),
     // #191 instruction mount — gated on instructions.md existing on host
     // (provisionCloudInstructions seeds it from the orchestrator source)
