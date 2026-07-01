@@ -145,6 +145,7 @@ import {
   getStartupInfo,
   proxyHealthCheck,
   resolveStartCommand,
+  TUI_READY_PATTERN,
 } from '@/services/agents-core-service'
 
 // ============================================================================
@@ -1209,5 +1210,43 @@ describe('resolveStartCommand', () => {
 
   it('defaults unknown programs to claude', () => {
     expect(resolveStartCommand('something-else')).toBe('claude')
+  })
+})
+
+// ============================================================================
+// TUI_READY_PATTERN — cloud wake readiness detection across AI-tool TUIs
+// Regression for the opencode wake-injection gap: opencode's TUI chrome matched
+// NONE of the claude/codex/gemini ready tokens, so the on-wake hook was never
+// injected on a cloud opencode worker's first wake. Fix adds "Ask anything".
+// ============================================================================
+
+describe('TUI_READY_PATTERN', () => {
+  it('matches claude/codex/gemini ready chrome (no regression)', () => {
+    expect(TUI_READY_PATTERN.test('> Try "edit <path>"\n ? for shortcuts')).toBe(true)
+    expect(TUI_READY_PATTERN.test('waiting for input')).toBe(true)
+    expect(TUI_READY_PATTERN.test('ready')).toBe(true)
+  })
+
+  it('matches opencode idle composer (the fix — "Ask anything" placeholder = ready)', () => {
+    const opencodeIdlePane = [
+      '   ┃  Ask anything... "Fix a TODO in the codebase"',
+      '   ┃  Build · GLM-5.2 OpenRouter',
+      '                              tab agents  ctrl+p commands',
+      '  /workspace                                       1.17.8',
+    ].join('\n')
+    expect(TUI_READY_PATTERN.test(opencodeIdlePane)).toBe(true)
+  })
+
+  it('does NOT false-signal ready on opencode mid-response (footer present, no composer)', () => {
+    // While opencode streams a turn the "ctrl+p commands" footer is still
+    // rendered but the "Ask anything" composer placeholder is gone. Matching the
+    // footer would type the hook into a busy pane; assert we do NOT match it.
+    const opencodeBusyPane = [
+      '   ┃  Reading AGENTS.md and following the on-wake routine…',
+      '   ▣  Build · GLM-5.2 · 3.3s',
+      '                        9.0K (1%) · $0.01  ctrl+p commands',
+      '  /workspace                                       1.17.8',
+    ].join('\n')
+    expect(TUI_READY_PATTERN.test(opencodeBusyPane)).toBe(false)
   })
 })
