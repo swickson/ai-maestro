@@ -285,7 +285,7 @@ async function waitForPrompt(
   // Claude: ">", Codex: ">", Gemini: "❯", Aider: ">", Shell: "$" or "%"
   // Also match "? for shortcuts" (Claude) and "shortcuts" (end of TUI init)
   const promptPattern = /[>❯$%]\s*$/m
-  const tuiReadyPattern = /\?\s*for\s*shortcuts|waiting for input|ready/i
+  const tuiReadyPattern = TUI_READY_PATTERN
 
   while (Date.now() < deadline) {
     try {
@@ -389,6 +389,19 @@ async function waitForContainerTmux(
 // long-term fix (kanban to file post-merge).
 export const FIRST_RUN_MODAL_PATTERN = /Trust folder|Trust this folder|Don'?t trust|Trust parent folder|Choose the text style|theme that looks best|Auto \(match terminal\)/i
 
+// Signals an AI-tool TUI is idle and ready for the on-wake hook to be typed in.
+// - "? for shortcuts" / "waiting for input": claude/codex/gemini chrome.
+// - "ready": generic.
+// - "Ask anything": opencode's idle-composer placeholder — shown ONLY when the
+//   input is empty and opencode is ready, NOT while it streams a response. We
+//   deliberately do NOT match opencode's always-present "ctrl+p commands" footer,
+//   which renders even mid-response and would false-signal ready while opencode is
+//   still working (typing the hook into a busy pane → lost/raced).
+// DURABILITY: opencode's composer placeholder can drift between releases —
+// re-verify this token against a live opencode pane on any opencode version bump.
+// (Cloud agents run autoupdate:false + a pinned opencode so it won't drift under us.)
+export const TUI_READY_PATTERN = /\?\s*for\s*shortcuts|waiting for input|ready|Ask anything/i
+
 /**
  * In-container variant of waitForPrompt: polls capturePaneFromContainer,
  * matches the same prompt indicators as the host path, AND auto-dismisses
@@ -409,7 +422,7 @@ async function waitForPromptInContainer(
   await new Promise(resolve => setTimeout(resolve, initialDelayMs))
   const deadline = Date.now() + timeoutMs
   const promptPattern = /[>❯$%]\s*$/m
-  const tuiReadyPattern = /\?\s*for\s*shortcuts|waiting for input|ready/i
+  const tuiReadyPattern = TUI_READY_PATTERN
   let modalDismissCount = 0
 
   while (Date.now() < deadline) {
